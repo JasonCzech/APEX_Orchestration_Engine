@@ -39,7 +39,12 @@ for (const profile of ['admin', 'operator'] as const) {
         launches.push(request.postDataJSON())
         return route.fulfill(launches.length === 1 ? { status: 422, json: { title: 'Selected environment target changed', status: 422 } } : { status: 202, json: { thread_id: 'launched', run_id: 'run', stream_url: '/stream' } })
       } else if (path === '/v1/pipelines/launched') json = { thread_id: 'launched', title: 'Reviewed workload', thread_status: 'idle', project_id: 'workflow', app_id: 'app', phase_strip: [], pending_gate: null, values: { phase_results: {}, phases_plan: [] }, interrupts: [] }
-      else if (path === '/v1/prompts') json = []
+      else if (path === '/v1/prompts') json = [
+        { id: 'system', namespace: 'system', key: 'default', phase: null, is_default: true, selection_enabled: true, active_version: { id: 'system-v1', version: 1 } },
+        ...['story_analysis', 'test_planning', 'env_triage', 'script_scenario', 'execution', 'reporting', 'postmortem'].map(phase => ({ id: phase, namespace: 'phase', key: `${phase}/system`, phase, is_default: true, selection_enabled: true, active_version: { id: `${phase}-v1`, version: 1 } })),
+      ]
+      else if (path.startsWith('/v1/prompts/')) json = { id: path.split('/').at(-1), version: 1, content: 'Default prompt instructions' }
+      else if (path === '/v1/pipelines/analysis/connections') json = []
       else json = { items: [], total: 0, limit: 100, offset: 0 }
       return route.fulfill({ json })
     })

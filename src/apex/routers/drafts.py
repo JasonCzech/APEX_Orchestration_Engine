@@ -199,7 +199,39 @@ def _read_model(draft: Draft) -> DraftRead:
     )
 
 
+def _draft_participants_allowed(identity: ConsumerIdentity, payload: dict[str, Any]) -> bool:
+    if identity.is_unscoped:
+        return True
+    scope = payload.get("scope", {})
+    topology = scope.get("test_scope") if isinstance(scope, dict) else None
+    if topology is None:
+        return True
+    if not isinstance(topology, dict):
+        return False
+    participants = topology.get("participants", [])
+    if not isinstance(participants, list):
+        return False
+    for participant in participants:
+        if not isinstance(participant, dict):
+            return False
+        project = participant.get("project_id")
+        app = participant.get("application_id")
+        environment = participant.get("environment_id")
+        if not project:
+            # Empty rows are valid editable drafts; associated application or
+            # environment identities cannot discard their authorizing project.
+            if app or environment:
+                return False
+        elif not isinstance(project, str) or not identity.allows_scope(
+            project_id=project, app_id=app or None
+        ):
+            return False
+    return True
+
+
 def _visible(identity: ConsumerIdentity, draft: Draft) -> bool:
+    if not _draft_participants_allowed(identity, draft.payload):
+        return False
     if identity.is_unscoped or draft.project_id is None:
         return True
     # Creation provenance is not an authorization grant. If an operator's
@@ -208,6 +240,8 @@ def _visible(identity: ConsumerIdentity, draft: Draft) -> bool:
 
 
 def _writable(identity: ConsumerIdentity, draft: Draft) -> bool:
+    if not _draft_participants_allowed(identity, draft.payload):
+        return False
     if draft.project_id is None:
         return identity.is_unscoped
     return identity.contains_scope(ScopeRef(project_id=draft.project_id))
@@ -258,14 +292,35 @@ async def list_drafts(
 ) -> list[DraftRead]:
     ensure_scope(identity, project_id=project)
     parameters = inspect.signature(repo.list_all).parameters
-    if "limit" in parameters:
+    if "limit" in parameters and identity.is_unscoped:
         kwargs: dict[str, Any] = {"project_id": project, "limit": limit, "offset": offset}
         if "allowed_scopes" in parameters:
             kwargs["allowed_scopes"] = None if identity.is_unscoped else tuple(identity.scopes)
         drafts = await repo.list_all(**kwargs)
-    else:
+        return [_read_model(draft) for draft in drafts if _visible(identity, draft)]
+    if "limit" not in parameters:
         drafts = await repo.list_all(project_id=project)
-    return [_read_model(draft) for draft in drafts if _visible(identity, draft)]
+        visible = [draft for draft in drafts if _visible(identity, draft)]
+        return [_read_model(draft) for draft in visible[offset : offset + limit]]
+    result = []
+    visible_count = 0
+    for scan_offset in range(0, MAX_DB_LIST_OFFSET + 100, 100):
+        kwargs = {"project_id": project, "limit": 100, "offset": scan_offset}
+        if "allowed_scopes" in parameters:
+            kwargs["allowed_scopes"] = tuple(identity.scopes)
+        drafts = await repo.list_all(**kwargs)
+        for draft in drafts:
+            if _visible(identity, draft):
+                if visible_count >= offset:
+                    result.append(_read_model(draft))
+                visible_count += 1
+                if len(result) == limit:
+                    return result
+        if len(drafts) < 100:
+            return result
+    raise HTTPException(
+        503, "Draft visibility could not be fully verified; narrow the project filter"
+    )
 
 
 @router.post("", operation_id="createDraft", status_code=201)
@@ -273,6 +328,8 @@ async def create_draft(
     body: DraftCreateRequest, identity: OperatorIdentity, repo: DraftsRepo
 ) -> DraftRead:
     _ensure_create_scope(identity, body.project_id)
+    if not _draft_participants_allowed(identity, body.payload):
+        raise HTTPException(403, "Access to all draft participants is required")
     draft = await repo.create(
         title=body.title,
         project_id=body.project_id,
@@ -293,6 +350,8 @@ async def update_draft(
     draft_id: DraftId, body: DraftUpdateRequest, identity: OperatorIdentity, repo: DraftsRepo
 ) -> DraftRead:
     current = await _writable_or_404(repo, identity, draft_id)
+    if not _draft_participants_allowed(identity, body.payload):
+        raise HTTPException(403, "Access to all draft participants is required")
     project_id = body.project_id if "project_id" in body.model_fields_set else current.project_id
     if project_id != current.project_id:
         _ensure_create_scope(identity, project_id)

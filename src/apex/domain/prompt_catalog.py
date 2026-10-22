@@ -6,7 +6,14 @@ policy is composed by the runtime, independently of editable catalog versions.
 
 from apex.domain.pipeline import PHASE_ORDER, Phase
 
-CATALOG_REVISION = "2026-09-08.1"
+CATALOG_REVISION = "2026-10-22.1"
+
+SHARED_SYSTEM_PROMPT = """\
+Guide this performance-testing pipeline using the selected phase instructions,
+application and environment context, and supplied evidence. Maintain continuity
+between phases, identify missing requirements explicitly, and produce only the
+current phase's requested deliverable within the engine's policy and output contract.
+"""
 
 PLATFORM_POLICY = """You are an APEX performance-engineering agent.
 Instruction order: this platform policy and the runtime output contract take

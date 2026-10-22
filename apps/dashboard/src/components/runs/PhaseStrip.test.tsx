@@ -45,7 +45,7 @@ describe('PhaseStrip', () => {
     const segment = screen.getByLabelText('Execution — Executing (attempt 2)')
     expect(segment).toHaveAttribute('title', 'Execution — Executing (attempt 2)')
     // no attempt -> suffix omitted
-    expect(screen.getByLabelText('Reporting — Pending')).toBeInTheDocument()
+    expect(screen.getByLabelText('Reporting & Analysis — Pending')).toBeInTheDocument()
   })
 
   it('renders focusable buttons and invokes onSelect with the phase when interactive', async () => {

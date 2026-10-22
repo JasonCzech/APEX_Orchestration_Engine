@@ -191,15 +191,27 @@ describe('dev-data store', () => {
 
   it('launches the production wizard entrypoint idempotently with a fresh phase snapshot', async () => {
     const store = createDevDataStore()
+    const testScope = {
+      schema_version: 1,
+      participants: [
+        { id: 'acc', project_id: 'telecom-modernization', application_id: 'app-digital-device', environment_id: 'env-perf', layer: 'frontend' },
+        { id: 'bsse', project_id: 'telecom-modernization', application_id: 'app-usage-billing', environment_id: 'env-qc-reference', layer: 'backend' },
+      ],
+      primary_participant_id: 'acc',
+      traffic_entry_participant_id: 'acc',
+    }
     const request = () => new Request('http://localhost/v1/pipelines', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'ACC Add-a-Line Peak Certification', request: 'Certify the flagship.', project_id: 'telecom-modernization', app_id: 'app-digital-device' }),
+      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'ACC Add-a-Line Peak Certification', request: 'Certify the flagship.', project_id: 'telecom-modernization', app_id: 'app-digital-device', test_scope: testScope }),
     })
-    const launched = await jsonOf<{ thread_id: string; run_id: string }>(await store.handleApexRequest(request()))
+    const launchResponse = await store.handleApexRequest(request())
+    expect(launchResponse?.status).toBe(202)
+    const launched = await jsonOf<{ thread_id: string; run_id: string }>(launchResponse)
     const replay = await jsonOf<{ thread_id: string; run_id: string }>(await store.handleApexRequest(request()))
     expect(replay).toEqual(launched)
-    const detail = await jsonOf<{ current_phase: string; phase_strip: Array<{ phase: string; status: string }> }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${launched.thread_id}`)))
+    const detail = await jsonOf<{ current_phase: string; phase_strip: Array<{ phase: string; status: string }>; test_scope: unknown }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${launched.thread_id}`)))
+    expect(detail.test_scope).toEqual(testScope)
     expect(detail.current_phase).toBe('story_analysis')
     expect(detail.phase_strip.find((phase) => phase.phase === 'story_analysis')?.status).toBe('running')
     expect(detail.phase_strip.filter((phase) => phase.phase !== 'story_analysis').every((phase) => phase.status === 'pending')).toBe(true)
@@ -555,4 +567,16 @@ it('rejects retired ADO imports in demo mode without redirecting them to Jira', 
     expect(response?.status).toBe(422)
     expect(await response?.text()).toContain('Jira Align')
   }
+})
+
+
+it('replaces the demo default when creating a prompt with Make default selected', async () => {
+  const store = createDevDataStore()
+  const created = await jsonOf<{ id: string; is_default: boolean }>(await store.handleApexRequest(new Request('http://localhost/v1/prompts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ namespace: 'system', key: 'alternative-system', content: 'Shared guidance', is_default: true, selection_enabled: true }),
+  })))
+  expect(created.is_default).toBe(true)
+  const systems = await jsonOf<Array<{ id: string; is_default: boolean }>>(await store.handleApexRequest(new Request('http://localhost/v1/prompts?namespace=system')))
+  expect(systems.filter(row => row.is_default).map(row => row.id)).toEqual([created.id])
 })

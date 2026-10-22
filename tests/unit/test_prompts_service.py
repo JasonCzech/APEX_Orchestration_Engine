@@ -4,6 +4,8 @@ FakePromptRepository is the canonical fake for the prompt aggregate; the router
 tests reuse it via import.
 """
 
+from typing import Any
+
 import pytest
 
 from apex.persistence.models import Prompt, PromptVersion
@@ -46,9 +48,13 @@ class FakePromptRepository:
         allow_application: bool = False,
         limit: int = 100,
         offset: int = 0,
+        **filters,
     ) -> list[Prompt]:
         self.search_calls += 1
         rows = list(self.prompts.values())
+        for field in ("phase", "application_id", "environment_id", "selection_enabled"):
+            if filters.get(field) is not None:
+                rows = [p for p in rows if getattr(p, field) == filters[field]]
         if namespace is not None:
             rows = [p for p in rows if p.namespace == namespace]
         if not allow_application:
@@ -107,6 +113,13 @@ class FakePromptRepository:
         self.versions[version.id] = version
         prompt.active_version_id = version.id
 
+    async def set_default(self, prompt_id: str) -> Prompt:
+        prompt = self.prompts[prompt_id]
+        for row in self.prompts.values():
+            if row.namespace == prompt.namespace and row.phase == prompt.phase:
+                row.is_default = row.id == prompt_id
+        return prompt
+
     async def save(self, prompt: Prompt) -> None:
         self.prompts[prompt.id] = prompt
 
@@ -151,7 +164,7 @@ async def test_create_prompt_makes_v1_and_points_active(catalog: PromptCatalogSe
 async def test_prompt_catalog_rejects_credentials_before_first_write(
     catalog: PromptCatalogService,
     repo: FakePromptRepository,
-    kwargs: dict[str, str],
+    kwargs: dict[str, Any],
 ) -> None:
     with pytest.raises(PromptCredentialMaterialError) as excinfo:
         await catalog.create_prompt(namespace="phase", key="safe-key", **kwargs)

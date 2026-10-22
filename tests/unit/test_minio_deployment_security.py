@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,10 @@ GATEWAY_IMAGE = (
 RAW_MINIO_IMAGE = (
     "minio/minio:RELEASE.2024-07-16T23-46-41Z"
     "@sha256:77ff9f7e12549d269990b167fa21da010fa8b0beb40d6064569b8887e37c456b"
+)
+DEV_MINIO_IMAGE = (
+    "bitnamilegacy/minio:2025.7.23-debian-12-r5"
+    "@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20"
 )
 
 
@@ -115,7 +120,46 @@ def test_compose_minio_has_no_network_visible_unfiltered_listener() -> None:
         storage = services["minio-storage"]
 
         assert gateway["image"] == GATEWAY_IMAGE
-        assert storage["image"] == RAW_MINIO_IMAGE
+        assert storage["image"] == (
+            DEV_MINIO_IMAGE if path.name == "docker-compose.dev.yaml" else RAW_MINIO_IMAGE
+        )
+        if path.name == "docker-compose.dev.yaml":
+            # Existing volumes were created by the prior root-running image.
+            assert storage["user"] == "0:0"
+            assert storage["entrypoint"] == ["minio"]
+            assert "miniodata:/bitnami/minio/data" in storage["volumes"]
+            assert "/bitnami/minio/data" in storage["command"]
         assert storage["network_mode"] == "service:minio"
         assert "127.0.0.1:9100" in storage["command"]
         assert "ports" not in storage
+
+
+def test_ci_minio_uses_available_image_behind_loopback_gateway() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yaml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["integration"]["steps"]
+        if step.get("name") == "Start MinIO"
+    )
+    commands = [
+        shlex.split(line)
+        for line in step["run"].replace("\\\n", "").splitlines()
+        if line.lstrip().startswith("docker run ")
+    ]
+    gateway, storage = commands
+
+    assert gateway[-1] == GATEWAY_IMAGE
+    assert storage[storage.index("--network") + 1] == "container:apex-minio-gateway"
+    assert storage[storage.index("--user") + 1] == "0:0"
+    assert storage[storage.index("--entrypoint") + 1] == "minio"
+    assert storage[-7] == DEV_MINIO_IMAGE
+    assert storage[-6:] == [
+        "server",
+        "/bitnami/minio/data",
+        "--address",
+        "127.0.0.1:9100",
+        "--console-address",
+        "127.0.0.1:9101",
+    ]
+    assert "-p" not in storage
+    assert "--publish" not in storage

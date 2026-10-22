@@ -74,6 +74,7 @@ class PhaseStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     AWAITING_PROMPT_REVIEW = "awaiting_prompt_review"
+    AWAITING_HUMAN_COMPLETION = "awaiting_human_completion"
     AWAITING_OUTPUT_REVIEW = "awaiting_output_review"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -115,7 +116,7 @@ class ApprovalRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=256)
-    gate: Literal["prompt_review", "phase_review"]
+    gate: Literal["prompt_review", "phase_review", "human_completion"]
     action: NoNulStr = Field(min_length=1, max_length=32)
     actor: NoNulStr = Field(default="unknown", min_length=1, max_length=255)
     at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)

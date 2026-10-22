@@ -11,7 +11,7 @@ export type Application = components['schemas']['ApplicationOut']
 export type Environment = components['schemas']['EnvironmentOut']
 const CATALOG_PAGE_SIZE = 200
 
-async function fetchApplications(project: string, signal?: AbortSignal): Promise<Application[]> {
+export async function fetchApplications(project: string, signal?: AbortSignal): Promise<Application[]> {
   return fetchAllOffsetPages({
     label: 'Applications',
     pageSize: CATALOG_PAGE_SIZE,
@@ -32,7 +32,7 @@ async function fetchApplications(project: string, signal?: AbortSignal): Promise
   })
 }
 
-async function fetchEnvironments(
+export async function fetchEnvironments(
   application: string,
   signal?: AbortSignal,
 ): Promise<Environment[]> {

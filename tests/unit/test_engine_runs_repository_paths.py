@@ -70,6 +70,8 @@ async def test_engine_run_queries_enforce_app_and_project_visibility() -> None:
         connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
         Base.metadata.tables["apex.connections"].create(connection)
         Base.metadata.tables["apex.engine_runs"].create(connection)
+        Base.metadata.tables["apex.run_scope_bindings"].create(connection)
+        Base.metadata.tables["apex.run_participants"].create(connection)
     try:
         with Session(engine, expire_on_commit=False) as session:
             rows = [

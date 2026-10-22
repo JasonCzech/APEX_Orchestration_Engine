@@ -26,7 +26,7 @@ class LaunchReadinessError(ValueError):
 
 
 async def execution_readiness(config: PipelineConfigurable) -> ExecutionReadiness:
-    if Phase.EXECUTION not in config.selected_phases():
+    if Phase.EXECUTION not in config.agent_phases():
         return ExecutionReadiness(
             execution_selected=False, configuration_valid=True, requires_application=False
         )
@@ -37,7 +37,7 @@ async def execution_readiness(config: PipelineConfigurable) -> ExecutionReadines
         metadata = await resolver.resolve_metadata(
             PortKind.EXECUTION_ENGINE,
             connection_id=config.connections.get(PortKind.EXECUTION_ENGINE.value),
-            project_id=config.project_id,
+            project_id=config.traffic_project_id,
             expected_provider=config.engine,
         )
         artifact_metadata = await resolver.resolve_metadata(

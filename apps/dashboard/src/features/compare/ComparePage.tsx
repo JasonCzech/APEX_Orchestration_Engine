@@ -216,7 +216,7 @@ export function ComparePage() {
       if (!snapshot) return undefined
       const normalized = normalizedPhases(snapshot.state, snapshot.detail.phase_strip, snapshot.stateParseFailed, snapshot.detail).find((entry) => entry.phase === phase)
       if (normalized?.status === 'none') return { status: 'none' }
-      return { ...snapshot.state.phase_results?.[phase], status: normalized?.status, attempt: normalized?.attempt }
+      return { ...snapshot.state.phase_results?.[phase], status: normalized?.status, attempt: normalized?.attempt ?? undefined }
     })
 
   const summaries: Array<TestResultSummary | undefined> = runs.map(

@@ -358,3 +358,12 @@ export function useDocument(id: string): UseQueryResult<DocumentOut, Error> {
     return data
   } })
 }
+
+/** Authorized documents applicable to any participant; upload ownership stays explicit. */
+export function useTestScopeDocuments(scope: import('@/features/new-test/wizardState').WizardScope) {
+  const query = useDocumentsList(scope.test_scope ? undefined : scope.project_id || undefined)
+  const participants = scope.test_scope?.participants
+  return { ...query, data: query.data?.filter(doc => participants
+    ? !doc.project_id || participants.some(p => p.project_id === doc.project_id && (!doc.app_id || p.application_id === doc.app_id))
+    : !doc.app_id || doc.app_id === scope.app_id) }
+}

@@ -92,7 +92,8 @@ def test_offline_upgrade_serializes_before_schema_bootstrap() -> None:
     sql = result.stdout
     lock_sql = f"SELECT pg_advisory_xact_lock({DATABASE_ROLE_LOCK_KEY})"
 
-    assert sql.index("BEGIN;") < sql.index(lock_sql)
+    normalize_sql = "SET LOCAL search_path TO public;"
+    assert sql.index("BEGIN;") < sql.index(normalize_sql) < sql.index(lock_sql)
     assert sql.index(lock_sql) < sql.index("IF to_regnamespace('apex') IS NULL THEN")
 
 

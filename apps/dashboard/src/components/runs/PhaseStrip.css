@@ -254,3 +254,9 @@ button.phase-seg:hover {
 
 .phase-step--unknown .phase-step-circle { border-style: dashed; color: var(--text-muted); }
 .phase-seg--unknown { border: 1px dashed var(--text-muted); }
+
+.phase-step--human_completion .phase-step-circle {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.phase-step-connector--human_completion { background: var(--border); }

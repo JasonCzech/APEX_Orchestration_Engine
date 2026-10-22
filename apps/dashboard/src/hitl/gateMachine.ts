@@ -1,3 +1,4 @@
+import { promptContextEdits } from '@/features/prompts/promptContextEdits'
 /**
  * HITL gate machine (plan Part 2 — "HITL gate machine", ratified design).
  *
@@ -23,7 +24,7 @@
  */
 import type { EngineRetryKind, GateInterruptPayload } from '@apex/pipeline-events'
 
-export type GateKind = 'prompt_review' | 'phase_review' | EngineRetryKind
+export type GateKind = 'prompt_review' | 'phase_review' | 'human_completion' | 'analysis_recovery' | EngineRetryKind
 
 export function isEngineRetryGateKind(kind: GateKind): kind is EngineRetryKind {
   return kind.startsWith('engine_') && kind.endsWith('_retry')
@@ -38,10 +39,23 @@ export interface GateInstance {
   payload: GateInterruptPayload | null
 }
 
+/** Draft and editor buffers belong to the complete task/evidence contract. */
+export function gateDraftSignature(gate: GateInstance): string {
+  if (gate.payload?.kind === 'human_completion') {
+    // Native checks can reject a completion after HTTP 202. Error feedback
+    // leaves the task intact; a new revision or requirements must reset it.
+    const task = { ...gate.payload }
+    delete task.error
+    return JSON.stringify(task)
+  }
+  return JSON.stringify(gate.payload)
+}
+
 export interface PromptDraft {
   system: string
   user: string
   application?: string
+  context_edits?: Array<{ prompt_id: string; content: string }>
 }
 
 /** Operator working copy — only the keys the resume body can carry. */
@@ -50,6 +64,7 @@ export interface GateDraft {
   instructions?: string
   message?: string
   note?: string
+  output?: Record<string, unknown>
 }
 
 /** EDIT payload: partial prompt patches merge over the current draft. */
@@ -58,9 +73,12 @@ export interface GateDraftPatch {
   instructions?: string
   message?: string
   note?: string
+  output?: Record<string, unknown>
 }
 
 export type GateAction =
+  | 'assign_hitl'
+  | 'complete'
   | 'approve'
   | 'modify'
   | 'skip_phase'
@@ -71,6 +89,8 @@ export type GateAction =
 
 /** Actions valid for each gate family; payload.actions can only narrow this set. */
 export const GATE_KIND_ACTIONS: Record<GateKind, readonly GateAction[]> = {
+  human_completion: ['complete', 'abort'],
+  analysis_recovery: ['retry', 'assign_hitl', 'abort'],
   prompt_review: ['approve', 'modify', 'skip_phase', 'abort'],
   phase_review: ['approve', 'revise', 'discuss', 'abort'],
   engine_provision_retry: ['retry'],
@@ -83,8 +103,12 @@ export function isActionAllowedForGate(kind: GateKind, action: GateAction): bool
   return GATE_KIND_ACTIONS[kind].includes(action)
 }
 
-/** Actions whose 202 means "the agent is working and the gate will reopen". */
-export type ReopeningAction = Extract<GateAction, 'modify' | 'discuss' | 'revise' | 'retry'>
+/** Actions whose 202 still needs a subsequent graph result. */
+export type ReopeningAction = Extract<GateAction, 'modify' | 'discuss' | 'revise' | 'retry' | 'complete'>
+
+export function isReopeningAction(action: GateAction): action is ReopeningAction {
+  return action === 'modify' || action === 'discuss' || action === 'revise' || action === 'retry' || action === 'complete'
+}
 
 export type GateMachineState =
   | { tag: 'no_gate' }
@@ -134,6 +158,9 @@ export function originalPromptOf(gate: GateInstance): PromptDraft {
     if (gate.payload.prompt.application !== null && gate.payload.prompt.application !== undefined) {
       prompt.application = gate.payload.prompt.application
     }
+    if (gate.payload.prompt.system_locked) {
+      prompt.context_edits = promptContextEdits(gate.payload.prompt.contexts ?? [])
+    }
     return prompt
   }
   return { system: '', user: '' }
@@ -161,6 +188,7 @@ export function isPromptDirty(gate: GateInstance, draft: GateDraft): boolean {
     draft.prompt.system !== original.system ||
     draft.prompt.user !== original.user ||
     (draft.prompt.application ?? '') !== (original.application ?? '') ||
+    JSON.stringify(draft.prompt.context_edits) !== JSON.stringify(original.context_edits) ||
     (draft.note ?? '') !== originalNoteOf(gate)
   )
 }
@@ -170,6 +198,7 @@ function mergeDraft(gate: GateInstance, draft: GateDraft, patch: GateDraftPatch)
   if (patch.prompt) {
     next.prompt = { ...originalPromptOf(gate), ...draft.prompt, ...patch.prompt }
   }
+  if (patch.output !== undefined) next.output = patch.output
   if (patch.instructions !== undefined) next.instructions = patch.instructions
   if (patch.message !== undefined) next.message = patch.message
   if (patch.note !== undefined) next.note = patch.note
@@ -188,8 +217,9 @@ function rediscover(
   state: GateMachineState & { gate: GateInstance },
   gate: GateInstance,
   reopenSameId = false,
+  draft?: GateDraft,
 ): GateMachineState {
-  return gate.interrupt_id === state.gate.interrupt_id && !reopenSameId ? state : openFor(gate)
+  return gate.interrupt_id === state.gate.interrupt_id && !reopenSameId ? state : openFor(gate, draft)
 }
 
 export function gateReducer(state: GateMachineState, event: GateEvent): GateMachineState {
@@ -206,7 +236,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'open':
       switch (event.type) {
         case 'GATE_DISCOVERED':
-          return rediscover(state, event.gate, event.reopenSameId)
+          return rediscover(state, event.gate, event.reopenSameId, event.draft)
         case 'GATE_CLEARED':
           // The pending interrupt vanished without us resuming it: another
           // operator (or surface) actioned the gate.
@@ -225,10 +255,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'submitting':
       switch (event.type) {
         case 'RESUME_ACCEPTED':
-          return state.action === 'modify' ||
-            state.action === 'discuss' ||
-            state.action === 'revise' ||
-            state.action === 'retry'
+          return isReopeningAction(state.action)
             ? { tag: 'awaiting_agent', gate: state.gate, action: state.action }
             : GATE_MACHINE_INITIAL
         case 'RESUME_REJECTED':
@@ -253,7 +280,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
         case 'GATE_DISCOVERED':
           // A changed id, or a refreshed same-id snapshot explicitly marked
           // by useGate, is the next review with a fresh draft.
-          return rediscover(state, event.gate, event.reopenSameId)
+          return rediscover(state, event.gate, event.reopenSameId, event.draft)
         case 'GATE_CLEARED':
           // The consumed interrupt normally disappears while the agent works.
           // Once a refreshed snapshot also says the run settled, however, a
@@ -269,7 +296,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
           // A different gate replacing the superseded one opens directly; the
           // SAME id re-echoed by a stale cache must not clear the banner —
           // [View current state] (refetch + RESET) is the recovery path.
-          return rediscover(state, event.gate, event.reopenSameId)
+          return rediscover(state, event.gate, event.reopenSameId, event.draft)
         default:
           return state
       }
@@ -285,7 +312,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
           return { ...state, draft }
         }
         case 'GATE_DISCOVERED':
-          return rediscover(state, event.gate, event.reopenSameId)
+          return rediscover(state, event.gate, event.reopenSameId, event.draft)
         case 'GATE_CLEARED':
           return { tag: 'superseded', gate: state.gate, by: 'cleared' }
         default:
@@ -302,15 +329,28 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
  */
 export interface ResumeBody {
   action: GateAction
+  task_id?: string
+  expected_revision?: number
   prompt?: PromptDraft
   instructions?: string
   message?: string
   note?: string
+  output?: Record<string, unknown>
 }
 
-export function buildResumeBody(action: GateAction, draft: GateDraft): ResumeBody {
+export function buildResumeBody(action: GateAction, draft: GateDraft, gate?: GateInstance | null): ResumeBody {
   const body: ResumeBody = { action }
-  if (action === 'modify' && draft.prompt) body.prompt = draft.prompt
+  if (action === 'complete' && gate?.payload?.kind === 'human_completion') {
+    body.task_id = gate.payload.task_id
+    body.expected_revision = gate.payload.revision
+    body.output = draft.output
+  }
+  if (action === 'modify' && draft.prompt) {
+    body.prompt = draft.prompt
+    if (gate?.payload?.kind === 'prompt_review' && gate.payload.prompt.system_locked) {
+      body.prompt = { system: draft.prompt.system, user: draft.prompt.user, context_edits: draft.prompt.context_edits ?? promptContextEdits(gate.payload.prompt.contexts ?? []) }
+    }
+  }
   if (action === 'revise' && draft.instructions !== undefined) {
     body.instructions = draft.instructions
   }

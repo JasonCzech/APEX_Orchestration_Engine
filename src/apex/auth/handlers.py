@@ -8,7 +8,9 @@ the server runtime.
 import asyncio
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any, Never, cast
+from uuid import UUID, uuid5
 
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
@@ -69,6 +71,27 @@ _MAX_STORE_FILTER_NODES = 2_000
 _MAX_STORE_INDEX_PATHS = 32
 _MAX_STORE_MAX_DEPTH = 32
 _MAX_STORE_TTL_MINUTES = 60 * 24 * 365 * 10
+# LangGraph resolves these registered graph aliases to deterministic system
+# assistant IDs before invoking the run hook. Only these exact global records
+# receive the same read exemption that the runtime gives system assistants.
+_SYSTEM_ASSISTANT_GRAPHS = {
+    str(uuid5(UUID("6ba7b821-9dad-11d1-80b4-00c04fd430c8"), graph_id)): graph_id
+    for graph_id in ("pipeline", "context", "playground")
+}
+_ASSISTANT_SERVER_OWNED_CONFIG = frozenset(
+    {
+        "prompt_manifest",
+        "test_scope_snapshot",
+        "environment_target",
+        "environment_target_version",
+        "rerun_phases",
+        "cycle_dispatch_id",
+        RUNTIME_ACTOR_ID_KEY,
+        "langgraph_auth_user",
+        "langgraph_auth_user_id",
+        "langgraph_auth_permissions",
+    }
+)
 
 # These fields are inserted by LangGraph after its public request validator has
 # stripped caller-supplied reserved keys and before the Runs.create auth hook is
@@ -121,6 +144,7 @@ _LAUNCH_IDEMPOTENCY_METADATA_KEYS = frozenset(
     {
         "launch_idempotency_key",
         "launch_idempotency_fingerprint",
+        "launch_request_intent",
         "launch_principal_id",
     }
 )
@@ -135,6 +159,7 @@ _IMMUTABLE_THREAD_METADATA_KEYS = frozenset(
         "project_id",
         "app_id",
         "created_by",
+        "test_scope",
         "graph_id",
         "assistant_id",
         _DIRECT_RUNS_ALLOWED_METADATA_KEY,
@@ -336,6 +361,14 @@ def ensure_thread_scope(
     project. App-narrowed scopes are also pinned to `app_id`; project-wide scopes
     may omit it.
     """
+    if metadata.get("test_scope"):
+        from apex.domain.test_scope import TestScopeV1
+        from apex.services.test_scope import allows_test_scope
+
+        if not allows_test_scope(identity, TestScopeV1.model_validate(metadata["test_scope"])):
+            _deny_authz(
+                identity, action=action, detail="Access to every test participant is required"
+            )
     project_id = _project_id(metadata.get("project_id"))
     app_id = _project_id(metadata.get("app_id"))
     if identity.is_unscoped:
@@ -1022,6 +1055,132 @@ def _run_arguments(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+async def _load_native_launch_defaults(
+    ctx: Auth.types.AuthContext, assistant_id: str, thread_id: str | None
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Read defaults with the caller's native assistant/thread read authority.
+
+    The runtime applies these records *after* the create-run hook. Reading them
+    here lets admission validate the same effective settings without a privileged
+    loopback credential. Keep backend selection and decryption aligned with the
+    installed native read endpoints, including the production gRPC backend.
+    """
+    from langgraph_api.encryption.middleware import decrypt_response
+    from langgraph_api.encryption.shared import using_aes_encryption
+    from langgraph_api.feature_flags import IS_POSTGRES_OR_GRPC_BACKEND
+    from langgraph_api.schema import ASSISTANT_ENCRYPTION_FIELDS
+    from langgraph_api.serde import json_loads
+    from langgraph_runtime.database import connect
+    from starlette.exceptions import HTTPException
+
+    if IS_POSTGRES_OR_GRPC_BACKEND:
+        from langgraph_api.grpc.ops import Assistants, Threads
+    else:
+        from langgraph_runtime.ops import Assistants, Threads
+
+    resolved_id = next(
+        (key for key, graph in _SYSTEM_ASSISTANT_GRAPHS.items() if graph == assistant_id),
+        assistant_id,
+    )
+    try:
+        UUID(resolved_id)
+    except ValueError:
+        raise Auth.exceptions.HTTPException(404, "Assistant unavailable") from None
+    try:
+        async with connect() as conn:
+            assistant = await anext(
+                await Assistants.get(cast(Any, conn), UUID(resolved_id), ctx=ctx), None
+            )
+            if assistant is None:
+                raise Auth.exceptions.HTTPException(404, "Assistant unavailable")
+            thread = None
+            if thread_id is not None:
+                thread = await anext(
+                    await Threads.get(
+                        cast(Any, conn),
+                        UUID(thread_id),
+                        ctx=ctx,
+                        read_mask_paths=["metadata", "config"],
+                    ),
+                    None,
+                )
+                if thread is None:
+                    raise Auth.exceptions.HTTPException(404, "Thread unavailable")
+        if not IS_POSTGRES_OR_GRPC_BACKEND or using_aes_encryption():
+            assistant = await decrypt_response(assistant, "assistant", ASSISTANT_ENCRYPTION_FIELDS)
+            if thread is not None:
+                thread = await decrypt_response(thread, "thread", ["config"])
+        assistant_config = json_loads(cast(Any, assistant.get("config") or {}))
+        assistant_context = json_loads(assistant.get("context") or {})
+        thread_config = json_loads(cast(Any, thread.get("config") or {})) if thread else {}
+        defaults = assistant_config.get("configurable") or {}
+        thread_defaults = thread_config.get("configurable") or {}
+        if (
+            not isinstance(defaults, dict)
+            or not isinstance(assistant_context, dict)
+            or not isinstance(thread_defaults, dict)
+            or (defaults and assistant_context and defaults != assistant_context)
+        ):
+            raise ValueError("Ambiguous native defaults")
+        graph_id = assistant.get("graph_id")
+        if graph_id not in {"pipeline", "context", "playground"}:
+            raise ValueError("Unsupported assistant graph")
+        return str(graph_id), deepcopy(defaults or assistant_context), deepcopy(thread_defaults)
+    except (HTTPException, Auth.exceptions.HTTPException) as exc:
+        if exc.status_code in {403, 404}:
+            raise Auth.exceptions.HTTPException(404, "Assistant or thread unavailable") from None
+        raise
+    except (TypeError, ValueError, AttributeError):
+        raise Auth.exceptions.HTTPException(422, "Assistant configuration is invalid") from None
+    except Exception:
+        raise Auth.exceptions.HTTPException(503, "Assistant configuration is unavailable") from None
+
+
+async def _materialize_native_launch_defaults(
+    ctx: Auth.types.AuthContext, payload: dict[str, Any], *, trusted_loopback: bool
+) -> str:
+    run_args = _run_arguments(payload)
+    assistant_id = str(payload.get("assistant_id") or run_args.get("assistant_id") or "pipeline")
+    graph_id = _SYSTEM_ASSISTANT_GRAPHS.get(assistant_id, assistant_id)
+    if trusted_loopback:
+        # The facade supplies an already admitted configuration. In particular,
+        # resume/rerun must retain its frozen manifest and scope despite later
+        # assistant edits, so never refresh defaults on this path.
+        return graph_id
+    graph_id, assistant_defaults, thread_defaults = await _load_native_launch_defaults(
+        ctx, assistant_id, payload.get("thread_id")
+    )
+    if any(assistant_defaults.get(key) is not None for key in _ASSISTANT_SERVER_OWNED_CONFIG):
+        raise Auth.exceptions.HTTPException(422, "Assistant contains server-owned configuration")
+    # A serialized configuration may include null values for optional internal
+    # fields. Treat them as absent; meaningful server-owned defaults are refused.
+    assistant_defaults = {
+        key: value
+        for key, value in assistant_defaults.items()
+        if key not in _ASSISTANT_SERVER_OWNED_CONFIG or value is not None
+    }
+    thread_defaults = {
+        key: value
+        for key, value in thread_defaults.items()
+        if key not in _ASSISTANT_SERVER_OWNED_CONFIG or value is not None
+    }
+    config = run_args.setdefault("config", {})
+    configurable = config.setdefault("configurable", {})
+    # These are shallow JSONB merges in the runtime: an explicit list/map
+    # replaces its inherited value, rather than merging individual entries.
+    effective = {**assistant_defaults, **thread_defaults, **configurable}
+    configurable.clear()
+    configurable.update(effective)
+    context = run_args.get("context")
+    if isinstance(context, dict):
+        # create_valid_run captured both mappings before this hook. Preserve
+        # their identities and the caller's context precedence.
+        merged_context = {**assistant_defaults, **thread_defaults, **context}
+        context.clear()
+        context.update(merged_context)
+    return graph_id
+
+
 def _project_id(value: Any) -> str | None:
     if value is None:
         return None
@@ -1215,11 +1374,30 @@ async def _load_run_environment_context(
     return environment.application_id
 
 
+async def _resolve_native_test_scope(repository, identity, topology, *, live):
+    from apex.services.environments import EnvironmentTargetNotApprovedError
+    from apex.services.test_scope import resolve_test_scope
+
+    failure = None
+    snapshot = None
+    try:
+        snapshot = await resolve_test_scope(repository, identity, topology, live=live)
+    except EnvironmentTargetNotApprovedError:
+        failure = (422, "Selected environment has no approved execution target")
+    except LookupError:
+        failure = (404, "Environment target not found")
+    if failure is not None:
+        raise Auth.exceptions.HTTPException(status_code=failure[0], detail=failure[1])
+    assert snapshot is not None
+    return snapshot
+
+
 async def ensure_run_environment(
     identity: ConsumerIdentity,
     value: Auth.types.RunsCreate,
     *,
     action: str = "runs.create",
+    preserve_snapshot: bool = False,
 ) -> Auth.types.HandlerResult:
     """Replace caller target data with an authorized, catalog-resolved immutable target."""
 
@@ -1247,6 +1425,55 @@ async def ensure_run_environment(
             identity,
             action=action,
             detail="inline load_test.script_refs are not allowed; select an approved environment",
+        )
+
+    if configurable.get("test_scope"):
+        from apex.domain.test_scope import TestScopeV1
+        from apex.persistence.db import get_sessionmaker
+        from apex.persistence.repositories.catalog import CatalogRepository
+
+        topology = TestScopeV1.model_validate(configurable["test_scope"])
+        effective = PipelineConfigurable.model_validate(
+            {
+                key: value
+                for key, value in configurable.items()
+                if key in PipelineConfigurable.model_fields and key != "test_scope_snapshot"
+            }
+        )
+        live = effective.engine != "sim" and any(
+            phase.value == "execution" for phase in effective.agent_phases()
+        )
+        async with get_sessionmaker()() as session:
+            snapshot = await _resolve_native_test_scope(
+                CatalogRepository(session), identity, topology, live=live
+            )
+        original_snapshot = configurable.get("test_scope_snapshot") if preserve_snapshot else None
+        if original_snapshot is not None:
+            snapshot = original_snapshot
+        configurable["test_scope_snapshot"] = snapshot
+        configurable["environment_id"] = (
+            topology.traffic_entry.environment_id if topology.traffic_entry else None
+        )
+        configurable.pop("environment_target", None)
+        configurable.pop("environment_target_version", None)
+        if target := snapshot.get("execution_target"):
+            configurable["environment_target"] = target["base_url"]
+            configurable["environment_target_version"] = target["version"]
+        metadata["test_scope"] = topology.model_dump(mode="json")
+        _stamp_run_scope(
+            payload,
+            run_args,
+            input_payload,
+            config_payload,
+            configurable,
+            metadata,
+            config_metadata,
+            project_id=topology.primary.project_id,
+            app_id=topology.primary.application_id,
+        )
+        return cast(
+            "Auth.types.FilterType",
+            _metadata_filter(topology.primary.project_id, topology.primary.application_id),
         )
 
     # This field is server-owned. Always discard a caller value before resolving.
@@ -1581,6 +1808,7 @@ def ensure_run_controls(
     *,
     action: str = "runs.create",
     trusted_loopback: bool = False,
+    validate_effective_config: bool = True,
 ) -> None:
     """Enforce cost and payload budgets for direct LangGraph SDK run creation."""
 
@@ -1609,6 +1837,11 @@ def ensure_run_controls(
                 "use the validated /v1 pipeline APIs for lifecycle transitions"
             )
         if not trusted_loopback:
+            if (
+                configurable.get("rerun_phases") is not None
+                or _mapping(run_args.get("context")).get("rerun_phases") is not None
+            ):
+                raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
             if "cycle_dispatch_id" in configurable:
                 raise ValueError("Cycle dispatch bindings are server-owned")
             if (
@@ -1697,7 +1930,8 @@ def ensure_run_controls(
             runtime_config,
             trusted_loopback=trusted_loopback,
         )
-        PipelineConfigurable.model_validate(application_config)
+        if validate_effective_config:
+            PipelineConfigurable.model_validate(application_config)
         validate_public_run_input(input_payload)
         context_keys = {
             "subject",
@@ -1983,9 +2217,46 @@ async def on_threads_create(
     )
     # Attribution is server-owned; never preserve a caller-supplied identity.
     metadata["created_by"] = identity.consumer_id
+    topology = None
+    thread_id = payload.get("thread_id")
+    if metadata.get("test_scope"):
+        from uuid import UUID
+
+        from apex.domain.test_scope import TestScopeV1
+        from apex.persistence.db import get_sessionmaker
+        from apex.persistence.repositories.catalog import CatalogRepository
+
+        topology = TestScopeV1.model_validate(metadata["test_scope"])
+        topology.validate_admission()
+        async with get_sessionmaker()() as session:
+            await _resolve_native_test_scope(
+                CatalogRepository(session), identity, topology, live=False
+            )
+        for field, expected in (
+            ("project_id", topology.primary.project_id),
+            ("app_id", topology.primary.application_id),
+        ):
+            if metadata.get(field) is not None and metadata[field] != expected:
+                raise Auth.exceptions.HTTPException(
+                    status_code=422,
+                    detail=f"{field} metadata must match the primary test participant",
+                )
+            metadata[field] = expected
+        # Native Threads.put has already captured this identity. Replacing it
+        # here would bind a different ID than the thread actually inserted.
+        # The HTTP boundary rejects public caller-selected IDs before capture.
+        if not isinstance(thread_id, (str, UUID)) or not str(thread_id):
+            raise Auth.exceptions.HTTPException(
+                status_code=422, detail="Native thread identity is required for test_scope"
+            )
     ensure_thread_scope(identity, metadata, action=action)
     value["metadata"] = metadata
     await _ensure_catalog_app_scope(identity, value)
+    if topology is not None:
+        from apex.services.test_scope import persist_test_scope
+
+        assert thread_id is not None  # Validated before any admission or persistence.
+        await persist_test_scope(thread_id, topology)
     return scope_filter(identity)
 
 
@@ -2026,13 +2297,59 @@ async def on_threads_create_run(
         value,
         action=action,
         trusted_loopback=trusted_loopback,
+        validate_effective_config=trusted_loopback,
     )
+    assistant_graph_id = await _materialize_native_launch_defaults(
+        ctx, payload, trusted_loopback=trusted_loopback
+    )
+    # Recheck inherited content and the fully merged controls before any scope,
+    # execution target, prompt or model admission uses them.
+    _validate_run_persisted_inputs(
+        identity, value, action=action, trusted_loopback=trusted_loopback
+    )
+    ensure_run_controls(identity, value, action=action, trusted_loopback=trusted_loopback)
     result = ensure_run_scope(identity, value, action=action)
     run_configurable = _mapping(_mapping(_run_arguments(payload).get("config")).get("configurable"))
+    supplied_context = _mapping(_run_arguments(payload).get("context"))
+    if not trusted_loopback and (
+        run_configurable.get("rerun_phases") is not None
+        or supplied_context.get("rerun_phases") is not None
+    ):
+        raise Auth.exceptions.HTTPException(status_code=422, detail="rerun_phases is server-owned")
+    if not trusted_loopback and (
+        run_configurable.get("prompt_manifest") is not None
+        or supplied_context.get("prompt_manifest") is not None
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="prompt_manifest is server-owned"
+        )
+
+    if (
+        not trusted_loopback
+        and assistant_graph_id not in {"context", "playground"}
+        and run_configurable.get("test_scope") is None
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="test_scope is required for new pipeline launches"
+        )
+    if run_configurable.get("test_scope"):
+        from apex.domain.test_scope import TestScopeV1
+        from apex.services.test_scope import verify_persisted_test_scope
+
+        thread_id = payload.get("thread_id")
+        if not thread_id:
+            raise Auth.exceptions.HTTPException(
+                status_code=422, detail="Create a thread with test_scope before launching"
+            )
+        await verify_persisted_test_scope(
+            identity, thread_id, TestScopeV1.model_validate(run_configurable["test_scope"])
+        )
     bound_cycle = trusted_loopback and bool(run_configurable.get("cycle_dispatch_id"))
     if not bound_cycle:
         await _ensure_catalog_app_scope(identity, value)
-        environment_filter = await ensure_run_environment(identity, value, action=action)
+        environment_filter = await ensure_run_environment(
+            identity, value, action=action, preserve_snapshot=trusted_loopback
+        )
         if environment_filter is not None:
             result = environment_filter
     # A server-owned Cycle binding must keep its frozen target, even when the
@@ -2059,8 +2376,41 @@ async def on_threads_create_run(
     from apex.services.model_pricing import admit_models
 
     runtime_config = run_config.setdefault("configurable", {})
+    # The native runtime reads an assistant before entering this hook and merges
+    # it again afterwards. Pin even absent application settings so a concurrent
+    # assistant edit cannot reintroduce a stale engine, prompt or scope choice.
+    # The facade already freezes new launches; retain its supplied snapshot for
+    # trusted continuations, including historical sparse configurations.
+    if not trusted_loopback:
+        effective_config = PipelineConfigurable.model_validate(
+            {
+                key: value
+                for key, value in runtime_config.items()
+                if key in PipelineConfigurable.model_fields
+            }
+        )
+        runtime_config.update(effective_config.snapshot())
+        if payload.get("assistant_id"):
+            runtime_config["assistant_id"] = str(payload["assistant_id"])
     command = run_args.get("command")
     continuing = isinstance(command, dict) and "resume" in command and run_args.get("input") is None
+    if not continuing and runtime_config.get("analysis") is not None:
+        from apex.services.analysis_readiness import require_analysis_readiness
+
+        try:
+            await require_analysis_readiness(
+                PipelineConfigurable.model_validate(
+                    {
+                        key: value
+                        for key, value in runtime_config.items()
+                        if key in PipelineConfigurable.model_fields
+                    }
+                )
+            )
+        except ValueError:
+            raise HTTPException(
+                422, "Analysis configuration is unavailable or incompatible"
+            ) from None
     try:
         resolved_models = await admit_models(
             runtime_config,
@@ -2072,6 +2422,25 @@ async def on_threads_create_run(
         raise
     except Exception:
         raise HTTPException(503, "Model availability cannot be checked; retry later") from None
+    if (
+        runtime_config.get("prompt_selections") is not None
+        and runtime_config.get("prompt_manifest") is None
+    ):
+        from apex.services.prompt_selections import prepare_prompt_manifest
+
+        try:
+            await prepare_prompt_manifest(runtime_config, identity, _mapping(run_args.get("input")))
+        except (HTTPException, ValueError):
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "prompt_manifest_preparation_failed",
+                consumer_id=identity.consumer_id,
+                category="invalid_or_unavailable_selection",
+            )
+            raise
+        if isinstance(run_args.get("context"), dict):
+            run_args["context"]["prompt_manifest"] = runtime_config["prompt_manifest"]
     runtime_config["model_by_phase"] = resolved_models
     if isinstance(run_args.get("context"), dict):
         run_args["context"]["model_by_phase"] = resolved_models
@@ -2079,6 +2448,15 @@ async def on_threads_create_run(
     run_config["configurable"][RUNTIME_ACTOR_ID_KEY] = identity.consumer_id
     run_context = run_args.get("context")
     if isinstance(run_context, dict):
+        # Catalog target resolution and manifest preparation happen after native
+        # context was copied. Both persisted surfaces must carry the same result.
+        run_context.update(
+            {
+                key: value
+                for key, value in runtime_config.items()
+                if key in PipelineConfigurable.model_fields
+            }
+        )
         run_context[RUNTIME_ACTOR_ID_KEY] = identity.consumer_id
     if trusted_loopback:
         return result
@@ -2089,7 +2467,13 @@ async def on_threads_create_run(
 async def on_threads_read(
     ctx: Auth.types.AuthContext, value: Auth.types.ThreadsRead
 ) -> Auth.types.HandlerResult:
-    return scope_filter(identity_from_user(ctx.user))
+    identity = identity_from_user(ctx.user)
+    from apex.services.test_scope import can_access_thread
+
+    thread_id = _mapping(value).get("thread_id")
+    if thread_id and not await can_access_thread(identity, thread_id):
+        return False
+    return scope_filter(identity)
 
 
 @auth.on.threads.search
@@ -2226,6 +2610,22 @@ async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.t
     if ctx.action == "delete":
         return
     payload = _mapping(value)
+    assistant_config = _mapping(_mapping(payload.get("config")).get("configurable"))
+    assistant_context = _mapping(payload.get("context"))
+    if (
+        assistant_config.get("rerun_phases") is not None
+        or assistant_context.get("rerun_phases") is not None
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="rerun_phases cannot be stored in an assistant"
+        )
+    if (
+        assistant_config.get("prompt_manifest") is not None
+        or assistant_context.get("prompt_manifest") is not None
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="prompt_manifest cannot be stored in an assistant"
+        )
     for field, label in (("graph_id", "assistant graph_id"), ("name", "assistant name")):
         _validate_persisted_text_field(
             identity,
@@ -2309,6 +2709,8 @@ async def on_assistants_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.ty
     # reject an out-of-scope selector.
     if _mapping(payload.get("metadata")):
         ensure_metadata_scope(identity, value, action=action)
+    if ctx.action == "read" and str(payload.get("assistant_id")) in _SYSTEM_ASSISTANT_GRAPHS:
+        return None
     return scope_filter(identity)
 
 

@@ -12,6 +12,7 @@ from apex.domain.prompt_catalog import (
     CATALOG_REVISION,
     DEFAULT_PHASE_PROMPTS,
     PLATFORM_POLICY,
+    SHARED_SYSTEM_PROMPT,
 )
 
 TARGET = Path(__file__).resolve().parents[1] / "apps/dashboard/src/dev-data/telecomPrompts.ts"
@@ -48,6 +49,8 @@ def render() -> str:
         "export const SCRIPT_VARIANT_PROMPTS: TelecomPromptSeed[] = []\n\n"
         "export const APPLICATION_PROMPT_TEMPLATE = "
         + json.dumps(APPLICATION_TEMPLATE, ensure_ascii=False)
+        + "\nexport const SHARED_SYSTEM_PROMPT = "
+        + json.dumps(SHARED_SYSTEM_PROMPT, ensure_ascii=False)
         + "\n"
     )
 

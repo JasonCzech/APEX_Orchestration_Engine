@@ -25,7 +25,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from string import Formatter
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 from uuid import uuid4
 
 import structlog
@@ -123,6 +123,11 @@ class PromptStore(Protocol):
         allow_application: bool = False,
         limit: int = 100,
         offset: int = 0,
+        phase: str | None = None,
+        application_id: str | None = None,
+        include_shared: bool = False,
+        environment_id: str | None = None,
+        selection_enabled: bool | None = None,
     ) -> list[Prompt]: ...
 
     async def get_version(self, version_id: str) -> PromptVersion | None: ...
@@ -149,6 +154,8 @@ class PromptStore(Protocol):
 
     async def save(self, prompt: Prompt) -> None: ...
 
+    async def set_default(self, prompt_id: str) -> Prompt: ...
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -174,6 +181,7 @@ class PromptCatalogService:
         allow_application: bool = False,
         limit: int = 100,
         offset: int = 0,
+        **filters: Any,
     ) -> list[tuple[Prompt, PromptVersion | None]]:
         prompts = await self._store.search(
             namespace=namespace,
@@ -182,6 +190,7 @@ class PromptCatalogService:
             allow_application=allow_application,
             limit=limit,
             offset=offset,
+            **filters,
         )
         active_ids = [p.active_version_id for p in prompts if p.active_version_id]
         versions = {v.id: v for v in await self._store.get_versions_by_ids(active_ids)}
@@ -209,6 +218,7 @@ class PromptCatalogService:
         description: str | None = None,
         note: str | None = None,
         created_by: str | None = None,
+        applicability: dict[str, Any] | None = None,
     ) -> tuple[Prompt, PromptVersion]:
         if contains_credential_material(
             {
@@ -225,12 +235,28 @@ class PromptCatalogService:
             )
         if await self._store.get_by_key(namespace, key) is not None:
             raise DuplicatePromptError(f"prompt {namespace}/{key} already exists")
+        metadata = {}
+        if applicability is not None:
+            from apex.domain.prompt_selection import PromptApplicability
+
+            metadata = PromptApplicability(namespace=namespace, **applicability).model_dump(
+                mode="json", exclude={"namespace"}
+            )
+            if not content.strip():
+                raise ValueError("Prompt content must not be blank")
+            validate_associations = getattr(self._store, "validate_associations", None)
+            if validate_associations:
+                await validate_associations(metadata["application_id"], metadata["environment_id"])
+        make_default = bool(metadata.get("is_default"))
+        if metadata:
+            metadata["is_default"] = False
         now = _utcnow()
         prompt = Prompt(
             id=uuid4().hex,
             namespace=namespace,
             key=key,
             description=description,
+            **metadata,
             created_at=now,
             updated_at=now,
         )
@@ -251,6 +277,8 @@ class PromptCatalogService:
             duplicate = True
         if duplicate:
             raise DuplicatePromptError(f"prompt {namespace}/{key} already exists")
+        if make_default:
+            await self._store.set_default(prompt.id)
         return prompt, version
 
     async def save_version(
@@ -268,6 +296,8 @@ class PromptCatalogService:
                 "prompt version must not contain credential material"
             )
         prompt = await self._require(prompt_id)
+        if prompt.selection_enabled and not content.strip():
+            raise ValueError("Prompt content must not be blank")
         version = PromptVersion(
             id=uuid4().hex,
             prompt_id=prompt.id,
@@ -335,13 +365,22 @@ class PromptCatalogService:
             raise PromptCredentialMaterialError(
                 "legacy prompt version contains credential material"
             )
+        if prompt.selection_enabled and not version.content.strip():
+            raise ValueError("Prompt content must not be blank")
         prompt.active_version_id = version.id
         prompt.updated_at = _utcnow()
         await self._store.save(prompt)
         return prompt, version
 
+    async def set_default(self, prompt_id: str) -> tuple[Prompt, PromptVersion | None]:
+        await self._require(prompt_id)
+        await self._store.set_default(prompt_id)
+        return await self.get_prompt(prompt_id, allow_application=True)
+
     async def set_archived(self, prompt_id: str, archived: bool) -> Prompt:
         prompt = await self._require(prompt_id)
+        if archived and prompt.is_default:
+            raise ValueError("Designate a replacement default before archiving this prompt")
         prompt.archived_at = _utcnow() if archived else None
         prompt.updated_at = _utcnow()
         await self._store.save(prompt)
@@ -355,7 +394,11 @@ class PromptCatalogService:
 
     async def _require_readable(self, prompt_id: str, *, allow_application: bool) -> Prompt:
         prompt = await self._require(prompt_id)
-        if prompt.namespace == APPLICATION_NAMESPACE and not allow_application:
+        if (
+            prompt.namespace in {APPLICATION_NAMESPACE, "environment"}
+            and not allow_application
+            and getattr(self._store, "identity", None) is None
+        ):
             # Match a genuinely absent id so restricted rows cannot be enumerated.
             raise PromptNotFoundError(f"prompt {prompt_id} not found")
         return prompt
@@ -457,6 +500,9 @@ def render_template(template: str, variables: Mapping[str, Any]) -> str:
 
 
 class ResolvedPhasePrompt(TypedDict):
+    system_locked: NotRequired[bool]
+    contexts: NotRequired[list[dict[str, Any]]]
+    selections: NotRequired[list[dict[str, Any]]]
     system: str
     user: str
     application: str | None
@@ -499,6 +545,9 @@ def render_catalog_template(template: str, variables: Mapping[str, Any]) -> str:
 
 
 class PromptReviewDraft(TypedDict):
+    system_locked: NotRequired[bool]
+    contexts: NotRequired[list[dict[str, Any]]]
+    selections: NotRequired[list[dict[str, Any]]]
     system: str
     phase_prompt: str
     application: str | None
@@ -583,7 +632,12 @@ def _compose_resolved(
 
 
 def _credential_safe_resolved(resolved: ResolvedPhasePrompt) -> ResolvedPhasePrompt:
-    if contains_credential_material(resolved):
+    scan_limits = (
+        {"max_string_chars": 500_000, "max_total_chars": 1_200_000}
+        if resolved.get("system_locked")
+        else {}
+    )
+    if contains_credential_material(resolved, **scan_limits):
         raise PromptCredentialMaterialError("resolved prompt must not contain credential material")
     return resolved
 
@@ -599,6 +653,10 @@ def resolve_phase_prompt_no_catalog(
     Used as the safe fallback when catalog IO is unavailable or a sync graph
     node is already running inside an event loop.
     """
+    if cfg.prompt_selections is not None:
+        from apex.services.prompt_selections import resolve_manifest
+
+        return resolve_manifest(phase, cfg, dict(variables or {}))
     return _compose_resolved(
         phase,
         cfg,
@@ -632,7 +690,18 @@ def prompt_review_from_resolved(
         updated_at=updated_at or _utcnow().isoformat(),
         updated_by=updated_by,
     )
-    if contains_credential_material(draft):
+    if "system_locked" in resolved:
+        draft["system_locked"] = resolved["system_locked"]
+    if "contexts" in resolved:
+        draft["contexts"] = resolved["contexts"]
+    if "selections" in resolved:
+        draft["selections"] = resolved["selections"]
+    scan_limits = (
+        {"max_string_chars": 500_000, "max_total_chars": 1_200_000}
+        if draft.get("system_locked")
+        else {}
+    )
+    if contains_credential_material(draft, **scan_limits):
         raise PromptCredentialMaterialError("prompt review must not contain credential material")
     return draft
 
@@ -648,6 +717,12 @@ def resolved_from_prompt_review(draft: Mapping[str, Any]) -> ResolvedPhasePrompt
         application=draft.get("application") if draft.get("application") is not None else None,
         source=dict(source) if isinstance(source, dict) else _source("run_override", ["run"]),
     )
+    if "system_locked" in draft:
+        resolved["system_locked"] = draft["system_locked"]
+    if "contexts" in draft:
+        resolved["contexts"] = draft["contexts"]
+    if "selections" in draft:
+        resolved["selections"] = draft["selections"]
     return _credential_safe_resolved(resolved)
 
 
@@ -669,6 +744,10 @@ class PromptResolver:
         *,
         variables: Mapping[str, Any] | None = None,
     ) -> ResolvedPhasePrompt:
+        if cfg.prompt_selections is not None:
+            from apex.services.prompt_selections import resolve_manifest
+
+            return resolve_manifest(phase, cfg, dict(variables or {}))
         variables = dict(variables or {})
         system_v, user_v, application_v = await self._load_catalog_prompts(phase, cfg.app_id)
         return _compose_resolved(
@@ -729,6 +808,10 @@ async def resolve_phase_prompts(
     store: ActiveVersionReader | None = None,
 ) -> dict[Phase, ResolvedPhasePrompt]:
     """Resolve multiple phase prompts using one catalog session when possible."""
+    if cfg.prompt_selections is not None:
+        from apex.services.prompt_selections import resolve_manifest
+
+        return {phase: resolve_manifest(phase, cfg, dict(variables or {})) for phase in phases}
     variables = dict(variables or {})
     if store is not None:
         resolver = PromptResolver(store=store)
@@ -822,6 +905,10 @@ async def resolve_phase_prompt(
     store: ActiveVersionReader | None = None,
 ) -> ResolvedPhasePrompt:
     """Module-level convenience wrapper around PromptResolver."""
+    if cfg.prompt_selections is not None:
+        from apex.services.prompt_selections import resolve_manifest
+
+        return resolve_manifest(phase, cfg, dict(variables or {}))
     return await PromptResolver(store=store).resolve_phase_prompt(
         phase,
         cfg,
@@ -841,6 +928,10 @@ def resolve_phase_prompt_sync(
     asyncio.run is safe. If a loop *is* running in this thread (defensive),
     skip catalog IO rather than block the loop: override -> builtin only.
     """
+    if cfg.prompt_selections is not None:
+        from apex.services.prompt_selections import resolve_manifest
+
+        return resolve_manifest(phase, cfg, dict(variables or {}))
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -857,6 +948,10 @@ def resolve_phase_prompts_sync(
     variables: Mapping[str, Any] | None = None,
 ) -> dict[Phase, ResolvedPhasePrompt]:
     """Sync bridge for batch plan-resolver seeding."""
+    if cfg.prompt_selections is not None:
+        from apex.services.prompt_selections import resolve_manifest
+
+        return {phase: resolve_manifest(phase, cfg, dict(variables or {})) for phase in phases}
     try:
         asyncio.get_running_loop()
     except RuntimeError:

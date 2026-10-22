@@ -46,9 +46,11 @@ import { queryKeys } from '@/api/queryKeys'
 import {
   buildResumeBody,
   gateOf,
+  gateDraftSignature,
   gateReducer,
   GATE_MACHINE_INITIAL,
   isActionAllowedForGate,
+  isReopeningAction,
   type GateAction,
   type GateDraft,
   type GateDraftPatch,
@@ -61,7 +63,7 @@ import { useResumeGate } from './useResumeGate'
 function isGateKind(value: unknown): value is GateKind {
   return (
     value === 'prompt_review' ||
-    value === 'phase_review' ||
+    value === 'phase_review' || value === 'human_completion' || value === 'analysis_recovery' ||
     value === 'engine_provision_retry' ||
     value === 'engine_cleanup_retry' ||
     value === 'engine_collection_retry' ||
@@ -140,10 +142,6 @@ export interface UseGateResult {
   viewCurrent: () => void
 }
 
-function reopensGate(action: GateAction): boolean {
-  return action === 'modify' || action === 'discuss' || action === 'revise' || action === 'retry'
-}
-
 function gatePayloadSignature(gate: GateInstance | null): string {
   return JSON.stringify(gate?.payload ?? null)
 }
@@ -179,7 +177,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
 
   const resume = useResumeGate({
     onAccepted: (runId, variables) => {
-      if (reopensGate(variables.body.action)) {
+      if (isReopeningAction(variables.body.action)) {
         // LangGraph can reuse the same interrupt id when the same node calls
         // interrupt() again. Wait for a post-resume snapshot generation, then
         // explicitly reopen even when the id is unchanged.
@@ -198,7 +196,9 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         settledGateIdRef.current = variables.interruptId
         settledGatePayloadRef.current = gatePayloadSignature(gateOf(stateRef.current))
       }
-      queryClient.removeQueries({ queryKey: ['gate-draft', threadId, variables.interruptId], exact: true })
+      if (variables.body.action !== 'complete') {
+        queryClient.removeQueries({ queryKey: ['gate-draft', threadId, variables.interruptId], exact: true })
+      }
       submittedReopeningBaselineRef.current = null
       setLastAccepted({ interruptId: variables.interruptId, action: variables.body.action, runId })
       dispatch({ type: 'RESUME_ACCEPTED' })
@@ -234,6 +234,13 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   // an accepted resume that landed on no_gate) re-evaluate the cached snapshot.
   useLayoutEffect(() => {
     if (!interrupts) return
+    const savedDraftFor = (gate: GateInstance): GateDraft | undefined => {
+      const key = ['gate-draft', threadId, gate.interrupt_id]
+      const saved = queryClient.getQueryData<{ signature: string; draft: GateDraft }>(key)
+      if (saved?.signature === gateDraftSignature(gate)) return saved.draft
+      if (saved) queryClient.removeQueries({ queryKey: key, exact: true })
+      return undefined
+    }
     if (snapshotGate) {
       const currentGate = gateOf(stateRef.current)
       const sameIdPayloadChanged =
@@ -248,14 +255,17 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
           thread.data?.detail.updated_at !== reopening.baselineServerUpdatedAt
         if (refreshed && (reopening.observedClear || payloadChanged || serverAdvanced)) {
           reopeningRef.current = null
-          dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: true })
+          dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: true, draft: savedDraftFor(snapshotGate) })
         } else {
           // Pre-resume cache echo: leave awaiting_agent intact.
           dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate })
         }
         return
       }
-      if (reopening) reopeningRef.current = null
+      if (reopening) {
+        queryClient.removeQueries({ queryKey: ['gate-draft', threadId, reopening.interruptId], exact: true })
+        reopeningRef.current = null
+      }
       const settledPayloadChanged =
         snapshotGate.interrupt_id === settledGateIdRef.current &&
         gatePayloadSignature(snapshotGate) !== settledGatePayloadRef.current
@@ -267,9 +277,8 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         // LangGraph may reuse an interrupt id for a newer payload. Treat a
         // changed payload as a new gate even when no explicit re-gate action
         // originated in this tab; otherwise a second tab can approve stale UI.
-        const saved = queryClient.getQueryData<{ signature: string; draft: GateDraft }>(['gate-draft', threadId, snapshotGate.interrupt_id])
         dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: sameIdPayloadChanged,
-          ...(saved?.signature === gatePayloadSignature(snapshotGate) ? { draft: saved.draft } : {}) })
+          draft: savedDraftFor(snapshotGate) })
         return
       }
     }
@@ -285,7 +294,10 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         const threadStatus = thread.data?.detail.thread_status
         reopeningSettled =
           refreshed && (threadStatus === 'idle' || threadStatus === 'error')
-        if (reopeningSettled) reopeningRef.current = null
+        if (reopeningSettled) {
+          queryClient.removeQueries({ queryKey: ['gate-draft', threadId, reopening.interruptId], exact: true })
+          reopeningRef.current = null
+        }
       }
     }
     dispatch({ type: 'GATE_CLEARED', settled: reopeningSettled })
@@ -328,7 +340,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       // to browser storage, and clear them with the session's query cache.
       queryClient.setQueryDefaults(['gate-draft'], { gcTime: Infinity })
       queryClient.setQueryData(['gate-draft', threadId, next.gate.interrupt_id], {
-        signature: gatePayloadSignature(next.gate), draft: next.draft,
+        signature: gateDraftSignature(next.gate), draft: next.draft,
       })
     }
     dispatch({ type: 'EDIT', patch })
@@ -345,7 +357,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       const submitEvent = { type: 'SUBMIT', action } as const
       const submitting = gateReducer(current, submitEvent)
       if (submitting === current) return
-      if (reopensGate(action)) {
+      if (isReopeningAction(action)) {
         submittedReopeningBaselineRef.current = {
           interruptId: current.gate.interrupt_id,
           baselineUpdatedAt: thread.dataUpdatedAt,
@@ -364,7 +376,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       mutate({
         threadId,
         interruptId: current.gate.interrupt_id,
-        body: buildResumeBody(action, current.draft),
+        body: buildResumeBody(action, current.draft, current.gate),
       })
     },
     [thread.data?.detail.updated_at, thread.dataUpdatedAt, threadId, mutate],

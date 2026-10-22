@@ -643,6 +643,27 @@ describe("thread-state mirror schemas", () => {
     expect(parsed.run_config?.["connections"]).toEqual({ work_tracking: "conn-work" });
   });
 
+  it("retains human completion provenance when parsing completed phase state", () => {
+    const parsed = PipelineStateSchema.parse({
+      phase_results: {
+        story_analysis: {
+          phase: "story_analysis",
+          status: "succeeded",
+          attempt: 1,
+          executor: "hitl",
+          approvals: [{
+            id: "story_analysis-a1-human-r1",
+            gate: "human_completion",
+            action: "complete",
+            actor: "operator-1",
+          }],
+        },
+      },
+    });
+    expect(parsed.phase_results?.story_analysis?.approvals?.[0]?.gate).toBe("human_completion");
+    expect(parsed.phase_results?.story_analysis?.approvals?.[0]?.actor).toBe("operator-1");
+  });
+
   it("preserves explicit incomplete projection notices for state and review evidence", () => {
     expect(PipelineStateSchema.parse({ projection_truncated: true }).projection_truncated).toBe(true);
     expect(PhaseResultEntrySchema.parse({ projection_truncated: true }).projection_truncated).toBe(true);

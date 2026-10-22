@@ -1053,3 +1053,152 @@ def test_script_scenario_review_spec_keeps_explicit_acceptance_thresholds(slas: 
         cast(PipelineState, {"title": "Reviewed workload"}), cfg, 1
     )
     assert spec["slas"] == slas
+
+
+def test_selected_manifest_survives_resume_and_context_edits_are_phase_local() -> None:
+    phases = ["story_analysis", "test_planning"]
+    system = {
+        "namespace": "system",
+        "key": "shared",
+        "prompt_id": "sys",
+        "version_id": "sys-v1",
+        "version": 1,
+        "content": "One pipeline system",
+    }
+    contexts = [
+        {
+            "namespace": "application",
+            "key": "shared",
+            "is_shared": True,
+            "prompt_id": "app",
+            "version_id": "app-v1",
+            "version": 1,
+            "content": "Original context",
+        }
+    ]
+    phase_entries = {
+        phase: {
+            "namespace": "phase",
+            "phase": phase,
+            "key": phase,
+            "prompt_id": phase,
+            "version_id": phase + "-v1",
+            "version": 1,
+            "content": "Context for " + phase,
+        }
+        for phase in phases
+    }
+
+    def ref(entry):
+        return {"prompt_id": entry["prompt_id"], "version_id": entry["version_id"]}
+
+    manifest = {
+        "schema_version": 1,
+        "system": system,
+        "phases": phase_entries,
+        "application": contexts,
+        "environment": [],
+    }
+    selections = {
+        "schema_version": 1,
+        "system": ref(system),
+        "phases": {phase: ref(entry) for phase, entry in phase_entries.items()},
+        "application": [ref(contexts[0])],
+        "environment": [],
+    }
+    cfg = config(
+        "manifest-resume",
+        phases=phases,
+        prompt_selections=selections,
+        prompt_manifest=manifest,
+        gates={phase: {"prompt_review": "gated", "output_review": "auto"} for phase in phases},
+    )
+    g = compiled()
+    initial = g.invoke({"title": "Manifest test", "request": "Analyze checkout"}, cfg)
+    first = pending_interrupt(initial)
+    assert first["prompt"]["system_locked"] is True
+    rejected = g.invoke(Command(resume={"action": "modify", "prompt": {"system": "Changed"}}), cfg)
+    assert pending_interrupt(rejected)["prompt"]["system"] == "One pipeline system"
+    edited = g.invoke(
+        Command(
+            resume={
+                "action": "modify",
+                "prompt": {
+                    "user": "Edited phase context",
+                    "context_edits": [{"prompt_id": "app", "content": "Only this phase"}],
+                },
+            }
+        ),
+        cfg,
+    )
+    assert pending_interrupt(edited)["prompt"]["contexts"][0]["content"] == "Only this phase", (
+        pending_interrupt(edited)
+    )
+    next_phase = g.invoke(Command(resume={"action": "approve"}), cfg)
+    prompt = pending_interrupt(next_phase)["prompt"]
+    assert prompt["system"] == "One pipeline system"
+    assert prompt["contexts"][0]["content"] == "Original context"
+    completed = g.invoke(Command(resume={"action": "approve"}), cfg)
+    assert completed["run_config"]["prompt_manifest"]["system"]["content"] == "One pipeline system"
+    assert (
+        completed["phase_results"]["story_analysis"]["resolved_prompt"]["contexts"][0]["content"]
+        == "Only this phase"
+    )
+    assert (
+        completed["phase_results"]["test_planning"]["resolved_prompt"]["contexts"][0]["content"]
+        == "Original context"
+    )
+
+
+def test_combined_system_survives_all_phases_and_checkpoint():
+    participants = [
+        {
+            "id": name,
+            "project_id": f"project-{i}",
+            "application_id": f"app-{i}",
+            "environment_id": f"env-{i}",
+            "layer": layer,
+        }
+        for i, (name, layer) in enumerate(
+            [("web", "frontend"), ("api", "middle"), ("queue", "middle"), ("database", "backend")]
+        )
+    ]
+    scope = {
+        "schema_version": 1,
+        "participants": participants,
+        "primary_participant_id": "api",
+        "traffic_entry_participant_id": "web",
+    }
+    snapshot = {
+        **scope,
+        "participants": [
+            {
+                **p,
+                "application_name": p["id"],
+                "application_description": "backend evidence"
+                if p["layer"] == "backend"
+                else "dependency",
+            }
+            for p in participants
+        ],
+    }
+    g = compiled()
+    cfg = config(
+        "combined-system",
+        gates=all_auto(),
+        engine="sim",
+        test_scope=scope,
+        test_scope_snapshot=snapshot,
+    )
+    result = g.invoke(
+        {"title": "Combined system", "request": "Evaluate API latency through the frontend"}, cfg
+    )
+    assert "__interrupt__" not in result
+    assert result["run_config"]["test_scope"] == scope
+    assert result["run_config"]["project_id"] == "project-1"
+    assert result["run_config"]["environment_id"] == "env-0"
+    assert all(
+        result["phase_results"][phase.value]["status"] == "succeeded" for phase in PHASE_ORDER
+    )
+    restored = g.get_state(cfg).values
+    assert restored["run_config"]["test_scope_snapshot"] == snapshot

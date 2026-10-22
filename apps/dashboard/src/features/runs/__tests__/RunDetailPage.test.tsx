@@ -147,7 +147,7 @@ describe('RunDetailPage', () => {
 
     await screen.findByRole('region', { name: 'Run overview' })
     expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`)
-    expect(screen.getByRole('link', { name: 'Open Reporting' })).toHaveAttribute('href', `/runs/${THREAD_ID}/phases/reporting`)
+    expect(screen.getByRole('link', { name: 'Open Reporting & Analysis' })).toHaveAttribute('href', `/runs/${THREAD_ID}/phases/reporting`)
   })
 
   it.each(['resolved', 'missing', 'unavailable'] as const)('uses one application label in scope and run context (%s)', async catalog => {
@@ -183,7 +183,7 @@ describe('RunDetailPage', () => {
       pending_gate: { interrupt_id: 'int-1', kind: null, phase: null } }
     server.use(pipelineDetailHandler(detail))
     renderRunRoutes([`/runs/${THREAD_ID}`])
-    await waitFor(() => expect(screen.getByRole('status', { name: 'Run updates' })).toHaveTextContent('Review phase results open on Reporting.'))
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Run updates' })).toHaveTextContent('Review phase results open on Reporting & Analysis.'))
     expect(screen.getByRole('status', { name: 'Run updates' })).not.toHaveTextContent('null')
   })
 
@@ -194,7 +194,7 @@ describe('RunDetailPage', () => {
     server.use(pipelineDetailHandler(detail))
     const { queryClient } = renderRunRoutes([`/runs/${THREAD_ID}`])
     const region = await screen.findByRole('status', { name: 'Run updates' })
-    await waitFor(() => expect(region).toHaveTextContent('Review phase results open on Reporting.'))
+    await waitFor(() => expect(region).toHaveTextContent('Review phase results open on Reporting & Analysis.'))
     const mutations: MutationRecord[] = []
     const observer = new MutationObserver(records => mutations.push(...records))
     observer.observe(region, { childList: true, subtree: true, characterData: true })
@@ -207,7 +207,7 @@ describe('RunDetailPage', () => {
     try {
       detail.updated_at = '2026-06-01T10:12:00+00:00'
       await refresh()
-      await waitFor(() => expect(region).toHaveTextContent('Review phase results updated on Reporting.'))
+      await waitFor(() => expect(region).toHaveTextContent('Review phase results updated on Reporting & Analysis.'))
       expect(mutations.length).toBeGreaterThan(0)
       await refresh()
       expect(mutations).toHaveLength(0)
@@ -218,7 +218,7 @@ describe('RunDetailPage', () => {
       }
       await refresh()
       await waitFor(() => expect(mutations.length).toBeGreaterThan(0))
-      expect(region).toHaveTextContent('Review phase results updated on Reporting.')
+      expect(region).toHaveTextContent('Review phase results updated on Reporting & Analysis.')
       await refresh()
       expect(mutations).toHaveLength(0)
     } finally {
@@ -424,7 +424,7 @@ describe('RunDetailPage', () => {
       within(progress).getByRole('button', { name: 'Env Triage — Skipped (attempt 1)' }),
     ).toBeInTheDocument()
     expect(
-      within(progress).getByRole('button', { name: 'Reporting — Executing (attempt 1)' }),
+      within(progress).getByRole('button', { name: 'Reporting & Analysis — Executing (attempt 1)' }),
     ).toBeInTheDocument()
   })
 
@@ -525,8 +525,8 @@ describe('RunDetailPage', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Review phase results open on Reporting')
-    expect(banner).toHaveTextContent('Reporting')
+    expect(banner).toHaveTextContent('Review phase results open on Reporting & Analysis')
+    expect(banner).toHaveTextContent('Reporting & Analysis')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
       `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,

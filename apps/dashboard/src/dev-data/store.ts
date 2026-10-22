@@ -1,10 +1,11 @@
+import { parseTestScope, testScopeIssues } from '@/features/new-test/testScope'
 import { ACC_DEMO_CONTEXT, ACC_DEMO_DEPENDENCIES, ACC_DEMO_TEST_PLAN, ACC_DEMO_TEST_DATA } from './telecomFixtures'
 import type { components } from '@apex/api-client'
 import type { Assistant, Run, Thread } from '@langchain/langgraph-sdk'
 
 import { PHASE_NAMES, type PhaseName, type PipelineState } from '@apex/pipeline-events'
 
-import { APPLICATION_PROMPT_TEMPLATE, SCRIPT_VARIANT_PROMPTS, TELECOM_PHASE_PROMPTS } from './telecomPrompts'
+import { APPLICATION_PROMPT_TEMPLATE, SHARED_SYSTEM_PROMPT, SCRIPT_VARIANT_PROMPTS, TELECOM_PHASE_PROMPTS } from './telecomPrompts'
 import {
   deterministicAgentReply,
   FLAGSHIP_ALIGN_QUERY,
@@ -116,6 +117,17 @@ interface ContextSummaryJob {
   threadId: string
   subject: string
   summary: string
+}
+
+type PromptSelections = NonNullable<NonNullable<StartPipelineRequest['configurable']>['prompt_selections']>
+type DemoManifestEntry = {
+  namespace: string; key: string; prompt_id: string; version_id: string; version: number;
+  content: string; overridden: boolean; phase?: PhaseName | null;
+  application_id?: string | null; environment_id?: string | null; is_shared?: boolean;
+}
+
+function composeDemoContexts(entries: DemoManifestEntry[]): string {
+  return entries.map(item => `=== ${item.namespace.toUpperCase()} CONTEXT: ${item.key} ===\n${item.content}`).join('\n\n')
 }
 
 interface PromptRecord extends PromptDetail {
@@ -595,7 +607,7 @@ export class DevDataStore {
     version: TELECOM_DATASET_VERSION,
     environment: 'offline-demo',
     features: { engines: true, documents: true, dummy_data: true },
-    limits: { max_context_packets: 32 },
+    limits: { max_test_participants: 32, max_context_packets: 32 },
     consumer: {
       name: 'Demo Presenter',
       role: 'admin',
@@ -1277,15 +1289,30 @@ export class DevDataStore {
         const idempotencyKey = body.idempotency_key?.trim() || null
         const replay = idempotencyKey ? this.pipelineLaunches.get(idempotencyKey) : null
         if (replay) return jsonResponse(replay, 202)
-        const thread = this.createThread({ metadata: { project_id: body.project_id ?? TELECOM_PROJECT_ID } })
         const configurable = { ...(body.configurable ?? {}) }
+        const topology = parseTestScope(body.test_scope ?? configurable.test_scope)
+        if (testScopeIssues(topology).length) return problemResponse(422, 'Invalid test scope', testScopeIssues(topology).join(' '))
+        if (topology) {
+          configurable.test_scope = topology
+          const primary = topology.participants.find(p => p.id === topology.primary_participant_id)!
+          const entry = topology.participants.find(p => p.id === topology.traffic_entry_participant_id)
+          configurable.project_id = primary.project_id
+          configurable.app_id = primary.application_id
+          configurable.environment_id = entry?.environment_id ?? null
+        }
         const configuredPhases = body.phases ?? configurable['phases']
         if (Array.isArray(configuredPhases)) configurable['phases'] = configuredPhases
+        let selected: PipelineState['prompt_reviews'] | undefined
+        try { selected = this.freezePromptSelections(body, configurable) } catch {
+          return problemResponse(422, 'Invalid prompt selection', 'Select an eligible prompt and version for every included phase.')
+        }
+        const thread = this.createThread({ metadata: { project_id: body.project_id ?? TELECOM_PROJECT_ID } })
         const run = this.createRun(thread.thread_id, body.assistant_id ?? 'pipeline', {
           input: { title: body.title, request: body.request },
           config: { configurable },
         })
         const detail = this.pipelineDetails.get(thread.thread_id)!
+        detail.test_scope = topology as unknown as Record<string, unknown>
         detail.project_id = body.project_id ?? TELECOM_PROJECT_ID
         detail.app_id = body.app_id ?? 'app-digital-device'
         const state = detail.values as PipelineState
@@ -1294,6 +1321,7 @@ export class DevDataStore {
           id: packet.id ?? `launch-context-${index + 1}`,
         }))
         state.run_config = configurable
+        if (selected) state.prompt_reviews = selected
         detail.values = { ...state, document_ids: body.document_ids ?? [] } as Record<string, unknown>
         const response: StartPipelineResponse = {
           thread_id: thread.thread_id,
@@ -1390,10 +1418,16 @@ export class DevDataStore {
       if (method === 'PATCH') {
         return request.json().then((body) => {
           const patch = body as Partial<typeof fallback>
+          const contextEdits = (body as { context_edits?: Array<{ prompt_id: string; content: string }> }).context_edits
+          const contexts = fallback.contexts as DemoManifestEntry[] | undefined
+          if (fallback.system_locked && patch.system !== fallback.system) return problemResponse(422, 'System Prompt is locked', 'The shared system prompt cannot change after launch.')
+          if (fallback.system_locked && (!contextEdits || contextEdits.length !== (contexts?.length ?? 0) || contextEdits.some((item, index) => item.prompt_id !== contexts?.[index]?.prompt_id || !item.content.trim()))) return problemResponse(422, 'Invalid context edits', 'Context membership is fixed after launch.')
+          const editedContexts = contexts?.map((item, index) => ({ ...item, content: contextEdits?.[index]?.content ?? item.content }))
           const review = {
+            ...(fallback.system_locked ? { system_locked: true, contexts: editedContexts, selections: fallback.selections } : {}),
             system: patch.system ?? fallback.system,
             phase_prompt: patch.phase_prompt ?? fallback.phase_prompt,
-            application: patch.application === undefined ? fallback.application : patch.application,
+            application: fallback.system_locked ? composeDemoContexts(editedContexts ?? []) || null : patch.application === undefined ? fallback.application : patch.application,
             additional_context: patch.additional_context ?? fallback.additional_context,
             source: { origin: 'run_override' as const, ref: fallback.source?.ref ?? null, editor: 'dev' },
             updated_at: nowIso(),
@@ -1406,6 +1440,15 @@ export class DevDataStore {
           return jsonResponse(review)
         })
       }
+    }
+    if (method === 'GET' && parts[4] === 'setup') {
+      const detail = this.pipelineDetails.get(threadId)
+      if (!detail) return problemResponse(404, 'Not found', 'Test not found')
+      const state = detail.values as PipelineState
+      const cfg = state.run_config as Record<string, unknown> | undefined
+      if (!cfg) return problemResponse(409, 'Setup unavailable', 'This historical test has no saved configuration.')
+      const configurable = Object.fromEntries(Object.entries(cfg).filter(([key]) => ['engine', 'phases', 'gates', 'model_by_phase', 'agent_backend', 'load_test', 'connections', 'prompt_selections', 'prompt_overrides', 'limits'].includes(key)))
+      return jsonResponse({ title: detail.title, request: state.request ?? '', project_id: detail.project_id, app_id: detail.app_id, environment_id: cfg['environment_id'] ?? null, configurable })
     }
     if (method === 'GET' && parts.length === 4) {
       const detail = this.pipelineDetails.get(threadId)
@@ -1437,6 +1480,17 @@ export class DevDataStore {
         const isRerunGate = detail.values?.['demo_rerun_gate'] === true
         if (requestBody.message || requestBody.note || requestBody.instructions) this.appendDialogue(detail, gatePhase, requestBody.message ?? requestBody.note ?? requestBody.instructions ?? '')
         if (requestBody.prompt) {
+          const state = detail.values as PipelineState
+          const review = state.prompt_reviews?.[gatePhase]
+          if (review?.system_locked) {
+            const edit = requestBody.prompt
+            if (edit['system'] !== undefined && edit['system'] !== review.system) return problemResponse(422, 'System Prompt is locked', 'Set up a new test to change the shared system prompt.')
+            const contexts = review.contexts as DemoManifestEntry[]
+            const contextEdits = edit['context_edits'] as Array<{ prompt_id: string; content: string }> | undefined
+            if (contextEdits && (contextEdits.length !== contexts.length || contextEdits.some((item, index) => item.prompt_id !== contexts[index]?.prompt_id || !item.content.trim()))) return problemResponse(422, 'Invalid context edits', 'Context membership is fixed after launch.')
+            const changed = contexts.map((item, index) => ({ ...item, content: contextEdits?.[index]?.content ?? item.content }))
+            state.prompt_reviews![gatePhase] = { ...review, phase_prompt: typeof edit['user'] === 'string' ? edit['user'] : review.phase_prompt, contexts: changed, application: composeDemoContexts(changed) || null, source: { ...review.source, origin: 'gate_edit', editor: 'dev' } }
+          }
           detail.values = { ...(detail.values ?? {}), prompt_edit_history: [...((detail.values?.['prompt_edit_history'] as unknown[]) ?? []), { at: nowIso(), interrupt_id: interruptId, prompt: requestBody.prompt }] }
         }
         detail.pending_gate = null
@@ -1942,13 +1996,22 @@ export class DevDataStore {
       const includeArchived = params.get('include_archived') === 'true'
       const rows = this.prompts
         .filter((prompt) => (!ns || prompt.namespace === ns) && (includeArchived || !prompt.archived_at) && matchesText([prompt.namespace, prompt.key, prompt.description], q))
+        .filter(prompt => params.get('selection_enabled') === null || prompt.selection_enabled === (params.get('selection_enabled') === 'true'))
+        .filter(prompt => !params.get('phase') || prompt.phase === params.get('phase'))
+        .filter(prompt => !params.get('environment_id') || prompt.environment_id === params.get('environment_id'))
+        .filter(prompt => !params.get('application_id') || prompt.application_id === params.get('application_id') || (params.get('include_shared') === 'true' && prompt.is_shared))
         .map((prompt) => this.promptSummary(prompt))
-      return jsonResponse(rows)
+      return jsonResponse(rows.slice(Number(params.get('offset') ?? 0), Number(params.get('offset') ?? 0) + Number(params.get('limit') ?? 100)))
     }
     if (method === 'POST' && path === '/v1/prompts') {
-      const body = (await request.json()) as { namespace: string; key: string; content: string; description?: string | null; note?: string | null }
+      const body = (await request.json()) as components['schemas']['CreatePromptRequest']
+      if (body.is_default && (body.selection_enabled === false || !['system', 'phase'].includes(body.namespace) || !body.content.trim() || (body.namespace === 'phase' && !body.phase))) return problemResponse(422, 'invalid_default', 'Only eligible system and phase prompts can be defaults.')
       const version: PromptVersionDetail = { id: this.id('v'), version: 1, content: body.content, note: body.note ?? null, created_by: 'dev', created_at: nowIso(), parent_version_id: null }
-      const prompt: PromptRecord = { id: this.id('prompt'), namespace: body.namespace, key: body.key, description: body.description ?? null, content: body.content, note: body.note ?? null, active_version: { id: version.id, version: 1 }, updated_at: nowIso(), archived_at: null, versions: [version] }
+      const prompt: PromptRecord = { phase: body.phase ?? null, application_id: body.application_id ?? null, environment_id: body.environment_id ?? null, is_shared: body.is_shared ?? false, is_default: false, selection_enabled: body.selection_enabled ?? true, id: this.id('prompt'), namespace: body.namespace, key: body.key, description: body.description ?? null, content: body.content, note: body.note ?? null, active_version: { id: version.id, version: 1 }, updated_at: nowIso(), archived_at: null, versions: [version] }
+      if (body.is_default) {
+        for (const row of this.prompts) if (row.namespace === prompt.namespace && (prompt.namespace !== 'phase' || row.phase === prompt.phase)) row.is_default = false
+        prompt.is_default = true
+      }
       this.prompts.unshift(prompt)
       return jsonResponse(this.promptDetail(prompt), 201)
     }
@@ -1957,7 +2020,13 @@ export class DevDataStore {
     const prompt = this.prompts.find((item) => item.id === id)
     if (!prompt) return problemResponse(404, 'not_found', `Prompt ${id} was not found.`)
     if (method === 'GET' && parts.length === 4) return jsonResponse(this.promptDetail(prompt))
+    if (method === 'POST' && parts[4] === 'default') {
+      if (!prompt.selection_enabled || prompt.archived_at || !['system', 'phase'].includes(prompt.namespace)) return problemResponse(409, 'invalid_default', 'Only selectable system and phase prompts can be defaults.')
+      for (const row of this.prompts) if (row.namespace === prompt.namespace && (prompt.namespace !== 'phase' || row.phase === prompt.phase)) row.is_default = row.id === prompt.id
+      return jsonResponse(this.promptDetail(prompt))
+    }
     if (method === 'POST' && parts[4] === 'archive') {
+      if (prompt.is_default) return problemResponse(409, 'default_prompt', 'Choose a replacement default first.')
       prompt.archived_at = nowIso()
       return jsonResponse(this.promptSummary(prompt))
     }
@@ -2171,6 +2240,9 @@ export class DevDataStore {
     )
     return [
       ...phase,
+      this.prompt('prompt-system-default', 'system', 'default', 'Shared pipeline guidance', SHARED_SYSTEM_PROMPT, created, updated, false),
+      { ...this.prompt('prompt-shared-evidence', 'application', 'evidence', 'Shared evidence requirements', 'Cite evidence and mark unknown requirements.', created, updated, false), application_id: null, is_shared: true },
+      { ...this.prompt('prompt-environment-perf', 'environment', 'performance-safety', 'Performance environment context', 'Use only the approved performance environment and synthetic test data.', created, updated, false), environment_id: 'env-perf', selection_enabled: true },
       this.prompt('prompt-app-device', 'application', 'app-digital-device', 'ACC add-a-line requirements', APPLICATION_PROMPT_TEMPLATE + '\n' + ACC_DEMO_CONTEXT, created, updated, false, 'telecom demo application context'),
       this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate BSSe submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
       this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate existing account eligibility, line limits, resulting line counts, and charges in BSSe TEST without production account data.', created, updated, false, 'telecom demo application context'),
@@ -2178,20 +2250,53 @@ export class DevDataStore {
     ]
   }
 
+  private freezePromptSelections(body: StartPipelineRequest, configurable: Record<string, unknown>): PipelineState['prompt_reviews'] | undefined {
+    const selections = configurable['prompt_selections'] as PromptSelections | undefined
+    if (configurable['prompt_manifest']) throw new Error('Server-owned manifest')
+    if (!selections) return undefined
+    if (Object.keys((configurable['prompt_overrides'] ?? {}) as object).length) throw new Error('Mixed selection contract')
+    const phases = (configurable['phases'] ?? PHASE_NAMES) as PhaseName[]
+    if (Object.keys(selections.phases).length !== phases.length) throw new Error('Phase coverage')
+    const freeze = (selection: PromptSelections['system'] | undefined, category: string, phase?: PhaseName): DemoManifestEntry => {
+      const row = this.prompts.find(item => item.id === selection?.prompt_id)
+      const version = row?.versions.find(item => item.id === selection?.version_id)
+      if (!selection || !row || !version || row.archived_at || !row.selection_enabled || row.namespace !== category) throw new Error('Unavailable selection')
+      if (category === 'phase' && row.phase !== phase) throw new Error('Phase mismatch')
+      if (category === 'application' && !row.is_shared && !(parseTestScope(configurable.test_scope)?.participants.some(p => p.application_id === row.application_id) ?? row.application_id === body.app_id)) throw new Error('Application mismatch')
+      if (category === 'environment' && !(parseTestScope(configurable.test_scope)?.participants.some(p => p.environment_id === row.environment_id) ?? row.environment_id === configurable['environment_id'])) throw new Error('Environment mismatch')
+      const content = selection.override_content ?? version.content
+      if (!content.trim()) throw new Error('Empty prompt')
+      return { namespace: category, key: row.key, prompt_id: row.id, version_id: version.id, version: version.version, content, overridden: selection.override_content != null, phase: row.phase, application_id: row.application_id, environment_id: row.environment_id, is_shared: row.is_shared }
+    }
+    const list = (category: 'application' | 'environment') => {
+      const entries = selections[category] ?? []
+      if (entries.length > 32 || new Set(entries.map(item => item.prompt_id)).size !== entries.length) throw new Error('Context cardinality')
+      return entries.map(item => freeze(item, category))
+    }
+    const manifest = { schema_version: 1, system: freeze(selections.system, 'system'), phases: Object.fromEntries(phases.map(phase => [phase, freeze(selections.phases[phase], 'phase', phase)])), application: list('application'), environment: list('environment') }
+    configurable['prompt_manifest'] = manifest
+    const render = (content: string) => content.replace(/(?<!\{)\{(title|request)\}(?!\})/g, (_, key: string) => key === 'title' ? body.title : body.request ?? '')
+    return Object.fromEntries(phases.map(phase => {
+      const entries = [manifest.system, manifest.phases[phase]!, ...manifest.application, ...manifest.environment]
+      const contexts = entries.slice(2).map(item => ({ ...item, content: render(item.content) }))
+      return [phase, { system: render(manifest.system.content), phase_prompt: render(manifest.phases[phase]!.content), application: composeDemoContexts(contexts) || null, additional_context: '', system_locked: true, contexts, selections: entries.map(item => Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'content'))), source: { origin: 'catalog', ref: 'manifest:v1' }, updated_at: nowIso(), updated_by: 'dev' }]
+    })) as PipelineState['prompt_reviews']
+  }
+
   private prompt(id: string, namespace: string, key: string, description: string, content: string, created: string, updated: string, archived: boolean, sourceNote = 'telecom demo seed'): PromptRecord {
     const v1: PromptVersionDetail = { id: `${id}-v1`, version: 1, content, note: sourceNote, created_by: 'Demo Curator', created_at: created, parent_version_id: null }
     const v2: PromptVersionDetail = { id: `${id}-v2`, version: 2, content: `${content}\n\nCite the supplied evidence and clearly label assumptions.`, note: `${sourceNote}; active evidence-attribution revision`, created_by: 'Demo Curator', created_at: updated, parent_version_id: v1.id }
-    return { id, namespace, key, description, content: v2.content, note: v2.note, active_version: { id: v2.id, version: 2 }, archived_at: archived ? isoMinutesAgo(300, this.activationTime) : null, updated_at: updated, versions: [v1, v2] }
+    return { phase: namespace === 'phase' && key.endsWith('/system') ? key.split('/')[0] as PhaseName : null, application_id: namespace === 'application' ? key : null, is_default: namespace === 'system' || (namespace === 'phase' && key.endsWith('/system')), is_shared: false, selection_enabled: namespace === 'system' || namespace === 'application' || (namespace === 'phase' && key.endsWith('/system')), id, namespace, key, description, content: v2.content, note: v2.note, active_version: { id: v2.id, version: 2 }, archived_at: archived ? isoMinutesAgo(300, this.activationTime) : null, updated_at: updated, versions: [v1, v2] }
   }
 
   private promptSummary(prompt: PromptRecord): PromptSummary {
     const { id, namespace, key, description, archived_at, active_version, updated_at } = prompt
-    return { id, namespace, key, description, archived_at, active_version, updated_at }
+    return { phase: prompt.phase, application_id: prompt.application_id, environment_id: prompt.environment_id, is_default: prompt.is_default, is_shared: prompt.is_shared, selection_enabled: prompt.selection_enabled, id, namespace, key, description, archived_at, active_version, updated_at }
   }
 
   private promptDetail(prompt: PromptRecord): PromptDetail {
     const { id, namespace, key, description, archived_at, active_version, updated_at, content, note } = prompt
-    return { id, namespace, key, description, archived_at, active_version, updated_at, content, note }
+    return { ...this.promptSummary(prompt), id, namespace, key, description, archived_at, active_version, updated_at, content, note }
   }
 
   private makeLogs(): LogEntry[] {
@@ -2351,6 +2456,7 @@ export class DevDataStore {
   }
 
   private addPromptGate(detail: PipelineDetail, revised = false): void {
+    const selectedReview = (detail.values as PipelineState)?.prompt_reviews?.test_planning
     const interruptId = revised ? this.id('int-prompt-revision') : 'int-prompt'
     detail.pending_gate = { interrupt_id: interruptId, kind: 'prompt_review', phase: 'test_planning' }
     detail.interrupts = [
@@ -2362,7 +2468,7 @@ export class DevDataStore {
           schema_version: 1,
           kind: 'prompt_review',
           phase: 'test_planning',
-          prompt: {
+          prompt: selectedReview?.system_locked ? { ...selectedReview, user: selectedReview.phase_prompt } : {
             system: 'You are the test planning phase operator.',
             user: revised
               ? ACC_DEMO_TEST_PLAN + '\nReview emphasis: eligibility rejection and delayed activation.'

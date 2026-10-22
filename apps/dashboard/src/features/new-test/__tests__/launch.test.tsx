@@ -9,10 +9,11 @@ import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { server } from '@/test/server'
+import { PHASE_NAMES } from '@apex/pipeline-events'
 import { idempotencyPayloadSignature, SAFE_RETRY_RECOVERY_ERROR } from '@/utils/durableIdempotency'
 
 import { launchWizardRun } from '../useWizardLaunch'
-import { buildLaunchPreview, emptyDraft } from '../wizardState'
+import { emptyDraft } from '../wizardState'
 import { fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 const { assistantsSearch } = vi.hoisted(() => ({
@@ -31,24 +32,35 @@ describe('wizard launch', () => {
     window.sessionStorage.clear()
   })
 
-  it.each(['attempt', 'blocked'] as const)('keeps an unresolved default-plan %s quarantined across the explicit-phase upgrade', async (recordKind) => {
+  it.each([null, ['reporting'], []] as const)('quarantines pre-upgrade attempts and tombstones for phase selection %j', async (phases) => {
+    for (const recordKind of ['attempt', 'blocked'] as const) {
     const draft = emptyDraft()
     draft.title = 'Unresolved prior launch'
     draft.request = 'Run the default workflow'
-    const preview = buildLaunchPreview(draft)
-    const oldConfigurable = { ...preview.configurable }
-    delete oldConfigurable.phases
+    draft.config.phases = phases === null ? null : [...phases]
+    draft.prompt_overrides = { 'phase/reporting': { content: 'Retained authored override' } }
+    draft.legacy_prompt_overrides = structuredClone(draft.prompt_overrides)
+    draft.legacy_prompt_override_removals = []
+    draft.prompt_overrides = {}
+    draft.prompt_override_removals = ['phase/reporting']
+    // Frozen previous bundle payload, deliberately independent of current preview.
+    const oldConfigurable = {
+      engine: 'sim', project_id: '',
+      gates: Object.fromEntries(PHASE_NAMES.map(phase => [phase, { prompt_review: 'gated', output_review: 'gated' }])),
+      ...(phases === null || phases.length ? { prompt_overrides: { 'phase/reporting': { content: 'Retained authored override' } } } : {}),
+      ...(phases === null ? {} : { phases: [...phases] }),
+    }
     const priorIntent = {
-      assistant_id: preview.assistant_id,
-      title: preview.input.title,
-      request: preview.input.request,
+      assistant_id: 'pipeline',
+      title: draft.title,
+      request: draft.request,
       scope: {
         project_id: draft.scope.project_id.trim(),
         app_id: draft.scope.app_id,
         environment_id: draft.scope.environment_id,
       },
       configurable: oldConfigurable,
-      document_ids: preview.document_ids,
+      document_ids: [],
       work_items: [],
       context_summary_ids: [],
     }
@@ -80,6 +92,7 @@ describe('wizard launch', () => {
 
     await expect(launchWizardRun(draft)).rejects.toThrow(SAFE_RETRY_RECOVERY_ERROR)
     expect(requests).toEqual([])
+    }
   })
 
   it('launches with the exact configurable, deletes the draft, and navigates', async () => {
@@ -121,16 +134,28 @@ describe('wizard launch', () => {
       title: (json['input'] as Record<string, unknown>)['title'],
       request: (json['input'] as Record<string, unknown>)['request'],
       project_id: 'demo',
+      app_id: 'app-checkout',
+      test_scope: (json['configurable'] as Record<string, unknown>)['test_scope'],
       idempotency_key: expect.any(String),
       configurable: json['configurable'],
     })
 
-    // Snapshot the exact configurable contract sent to the backend.
-    expect(json).toMatchInlineSnapshot(`
+    // Snapshot the exact configurable contract, normalizing the generated participant ID.
+    const scope = (json['configurable'] as { test_scope: import('../testScope').TestScopeV1 }).test_scope
+    expect(scope.participants[0]?.id).toBe(scope.primary_participant_id)
+    expect(scope.traffic_entry_participant_id).toBe(scope.primary_participant_id)
+    const stableJson = JSON.parse(JSON.stringify(json, (_key, value: unknown) => value === scope.primary_participant_id ? 'backend-participant' : value))
+    expect(stableJson).toMatchInlineSnapshot(`
       {
         "assistant_id": "pipeline",
         "configurable": {
+          "analysis": {
+            "schema_version": 1,
+            "selections": [],
+          },
+          "app_id": "app-checkout",
           "engine": "sim",
+          "environment_id": "env-staging",
           "gates": {
             "env_triage": {
               "output_review": "gated",
@@ -161,6 +186,18 @@ describe('wizard launch', () => {
               "prompt_review": "gated",
             },
           },
+          "phase_execution": {
+            "owners": {
+              "env_triage": "langgraph",
+              "execution": "langgraph",
+              "postmortem": "langgraph",
+              "reporting": "langgraph",
+              "script_scenario": "langgraph",
+              "story_analysis": "langgraph",
+              "test_planning": "langgraph",
+            },
+            "schema_version": 1,
+          },
           "phases": [
             "story_analysis",
             "test_planning",
@@ -171,6 +208,59 @@ describe('wizard launch', () => {
             "postmortem",
           ],
           "project_id": "demo",
+          "prompt_selections": {
+            "application": [],
+            "environment": [],
+            "phases": {
+              "env_triage": {
+                "prompt_id": "phase-env_triage",
+                "version_id": "phase-env_triage-v1",
+              },
+              "execution": {
+                "prompt_id": "phase-execution",
+                "version_id": "phase-execution-v1",
+              },
+              "postmortem": {
+                "prompt_id": "phase-postmortem",
+                "version_id": "phase-postmortem-v1",
+              },
+              "reporting": {
+                "prompt_id": "phase-reporting",
+                "version_id": "phase-reporting-v1",
+              },
+              "script_scenario": {
+                "prompt_id": "phase-script_scenario",
+                "version_id": "phase-script_scenario-v1",
+              },
+              "story_analysis": {
+                "prompt_id": "phase-story_analysis",
+                "version_id": "phase-story_analysis-v1",
+              },
+              "test_planning": {
+                "prompt_id": "phase-test_planning",
+                "version_id": "phase-test_planning-v1",
+              },
+            },
+            "schema_version": 1,
+            "system": {
+              "prompt_id": "system-default",
+              "version_id": "system-default-v1",
+            },
+          },
+          "test_scope": {
+            "participants": [
+              {
+                "application_id": "app-checkout",
+                "environment_id": "env-staging",
+                "id": "backend-participant",
+                "layer": "backend",
+                "project_id": "demo",
+              },
+            ],
+            "primary_participant_id": "backend-participant",
+            "schema_version": 1,
+            "traffic_entry_participant_id": "backend-participant",
+          },
         },
         "document_ids": [],
         "input": {
@@ -178,6 +268,7 @@ describe('wizard launch', () => {
           "title": "Checkout soak",
         },
         "metadata": {
+          "app_id": "app-checkout",
           "project_id": "demo",
           "title": "Checkout soak",
         },

@@ -1605,6 +1605,65 @@ class ApexLoadExecutionEngine:
 
     # ── native control plane ──────────────────────────────────────────────────
 
+    async def validate_analysis_source(
+        self,
+        run_id: str,
+        *,
+        require_application: bool,
+        release_id: str | None,
+        mapping_revision: str | None,
+    ) -> None:
+        test = await self._get_native_test(run_id, context="analysis source")
+        if str(test.get("status", "")).upper() not in {
+            "COMPLETE",
+            "COMPLETED",
+            "FAILED",
+            "ABORTED",
+        }:
+            raise ValueError("Analysis requires a terminal native execution")
+        if require_application:
+            if (
+                not self._release_mapping
+                or not release_id
+                or mapping_revision != self._release_mapping["revision"]
+            ):
+                raise ValueError(
+                    "Imported execution requires a current application/release mapping"
+                )
+            if (
+                test.get("application_id") != self._release_mapping["application_id"]
+                or test.get("release_id") != release_id
+            ):
+                raise ValueError(
+                    "Imported execution does not match the selected application and release"
+                )
+
+    async def submit_native_analysis(self, run_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        await self._get_native_test(run_id, context="RCA analysis")
+        response = await self._request(
+            "POST",
+            f"/api/v1/tests/{quote(run_id, safe='')}/archive/root-cause/analyses",
+            json={"enrich": False},
+            headers={"Idempotency-Key": idempotency_key},
+        )
+        return _json_object(response, context="RCA submission")
+
+    async def get_native_analysis(self, run_id: str, analysis_id: str) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        await self._get_native_test(run_id, context="RCA analysis")
+        response = await self._request(
+            "GET",
+            f"/api/v1/tests/{quote(run_id, safe='')}/archive/root-cause/analyses/"
+            f"{quote(analysis_id, safe='')}",
+        )
+        result = _json_object(response, context="RCA status")
+        if result.get("archive_changed"):
+            raise ValueError("RCA evidence archive changed; new analysis is required")
+        return result
+
     async def native_capabilities(self) -> dict[str, Any]:
         self._configured_native_project_id()
         matrix_response, template_response = await asyncio.gather(

@@ -42,6 +42,7 @@ export const PORT_KINDS: readonly PortKind[] = [
   'cluster_inventory',
   'source_control',
   'execution_engine',
+  'analysis',
   'artifact_store',
   'secrets',
 ]

@@ -1,4 +1,7 @@
+import { parseTestScope } from '../testScope'
+import { parsePromptSelections, emptyPromptSelections } from '@/features/prompts/promptCategories'
 import { ReleaseMappingPicker } from '../ReleaseMappingPicker'
+import { AnalysisFields } from './AnalysisFields'
 import { WorkloadFields } from './WorkloadFields'
 import { RadioChoices } from '@/components/ux/RadioChoices'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
@@ -15,6 +18,7 @@ import { useSearchParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
+import { usePromptList } from '@/api/hooks/usePrompts'
 import { useAssistants, type GoldenConfig } from '@/api/hooks/useAssistants'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { selectedPhasesView } from '@/features/golden-configs/configView'
@@ -26,7 +30,7 @@ import {
   focusedPromptPhase,
   normalizeGateMatrix,
   normalizePhases,
-  phaseDependencyHints,
+  normalizeAnalysis,
   selectedPhases,
   type EngineId,
   type GatesMode,
@@ -50,7 +54,7 @@ const ENGINE_CAPTIONS: Record<EngineId, { label: string; caption: string }> = {
 
 const GATES_MODES: { id: GatesMode; label: string; caption: string }[] = [
   { id: 'all_gated', label: 'Review every phase', caption: 'Every phase pauses for both reviews' },
-  { id: 'all_auto', label: 'Run automatically', caption: 'No pauses — phases run straight through' },
+  { id: 'all_auto', label: 'Run automatically', caption: 'Agent phases run without review pauses; HITL completion is still required' },
   { id: 'custom', label: 'Custom', caption: 'Pick per phase and per gate' },
 ]
 
@@ -61,17 +65,23 @@ function phaseLabel(phase: PhaseName): string {
 export function ConfigStep({ draft, onChange }: StepProps) {
   const [pendingPreset, setPendingPreset] = useState<GoldenConfig | null>(null)
   const assistants = useAssistants()
+  const promptCatalog = usePromptList({ selection_enabled: true })
   const config = draft.config
   const phases = selectedPhases(config)
   const promptFocus = focusedPromptPhase(config)
-  const hints = phaseDependencyHints(phases)
+  const hints: string[] = []
 
   function patchConfig(patch: Partial<WizardConfig>) {
     onChange((prev) => ({ ...prev, config: { ...prev.config, ...patch } }))
   }
 
   function applyGoldenConfig(golden: GoldenConfig) {
-    if (Object.keys(draft.prompt_overrides).length > 0 || draft.document_ids.length > 0 ||
+    const selected = draft.prompt_selections
+    const requiredSelections = [selected?.system, ...Object.values(selected?.phases ?? {})]
+    const hasPromptChanges = Boolean(selected?.application.length || selected?.environment.length) ||
+      requiredSelections.some(item => item && (item.override_content !== undefined ||
+        !promptCatalog.data?.some(row => row.is_default && row.id === item.prompt_id && row.active_version?.id === item.version_id)))
+    if (hasPromptChanges || Object.keys(draft.prompt_overrides).length > 0 || draft.document_ids.length > 0 ||
       draft.work_items.length > 0 || draft.scope.environment_id || draft.config.golden_config_id ||
       draft.config.engine !== 'sim' || draft.config.unsupported_engine || draft.config.phases !== null ||
       draft.config.gates_mode !== 'all_gated' || draft.config.golden_configurable?.load_test) {
@@ -103,14 +113,21 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         next.gates_mode = 'custom'
         next.gates_custom = normalizeGateMatrix(bundle['gates'])
       }
-      next.phases = normalizePhases(selectedPhasesView(bundle))
+      const ownership = bundle['phase_execution'] as { owners?: Record<string, string> } | undefined
+      next.phases = ownership?.owners ? normalizePhases(PHASE_NAMES.filter(p => ownership.owners?.[p] === 'langgraph')) : normalizePhases(selectedPhasesView(bundle))
+      next.analysis = normalizeAnalysis(bundle['analysis'])
+      next.migrated_phase_ownership = !ownership && next.phases !== null
+      next.schema_version = 2
       const nextPhases = selectedPhases(next)
       if (!next.prompt_focus_phase || !nextPhases.includes(next.prompt_focus_phase)) {
         next.prompt_focus_phase = nextPhases[0] ?? null
       }
-      const project = bundle['project_id']
-      const app = bundle['app_id']
-      const environment = bundle['environment_id']
+      const topology = parseTestScope(bundle['test_scope'])
+      const primary = topology?.participants.find(p => p.id === topology.primary_participant_id)
+      const traffic = topology?.participants.find(p => p.id === topology.traffic_entry_participant_id)
+      const project = primary?.project_id ?? bundle['project_id']
+      const app = primary?.application_id ?? bundle['app_id']
+      const environment = topology ? traffic?.environment_id ?? null : bundle['environment_id']
       const projectId = typeof project === 'string' && project.length > 0 ? project : prev.scope.project_id
       const projectChanged = projectId !== prev.scope.project_id
       const appId =
@@ -120,7 +137,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
             ? null
             : prev.scope.app_id
       const appChanged = appId !== prev.scope.app_id
-      const environmentId =
+      const environmentId = topology ? traffic?.environment_id ?? null :
         typeof environment === 'string' && environment.length > 0
           ? environment
           : projectChanged || appChanged
@@ -129,11 +146,14 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       return {
         ...prev,
         scope: {
+          test_scope: topology ?? (!projectChanged && !appChanged && environmentId === prev.scope.environment_id ? prev.scope.test_scope : undefined),
           project_id: projectId,
           app_id: appId,
           environment_id: environmentId,
         },
         config: next,
+        prompt_selections: parsePromptSelections(bundle['prompt_selections']) ?? emptyPromptSelections(),
+        prompt_selection_issues: ['Validating prompt selections…'],
         prompt_overrides: {},
         prompt_override_removals: [],
         ...(projectChanged || appChanged
@@ -233,7 +253,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
     <section className="wizard-step" aria-label="Config">
       {pendingPreset && <Dialog ariaLabel="Apply test preset" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={() => setPendingPreset(null)}>
         <h2>Apply {pendingPreset.name}?</h2>
-        <p>This replaces the engine, phase selection, review policy, workload and all prompt overrides. If its project or application differs, attached documents are removed; a different project also removes work items and context summaries.</p>
+        <p>This replaces the engine, phase selection, review policy, workload, prompt selections and all prompt overrides. If its project or application differs, attached documents are removed; a different project also removes work items and context summaries.</p>
         <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={() => setPendingPreset(null)}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => { commitGoldenConfig(pendingPreset); setPendingPreset(null) }}>Apply preset</button></div>
       </Dialog>}
       {config.unsupported_engine && <p className="tonal-card danger" role="alert">This preset pins engine “{config.unsupported_engine}”, which this deployment does not support. Choose a supported engine before launch.</p>}
@@ -319,9 +339,9 @@ export function ConfigStep({ draft, onChange }: StepProps) {
 
       <WorkloadFields draft={draft} onChange={onChange} />
       <div className="wizard-field">
-        <span className="wizard-label">Phases</span>
-        <p className="wizard-caption">Choose which phases this test includes. Prompt selection is managed separately in Prompts.</p>
-        <div className="wizard-phase-strip" role="group" aria-label="Phase subset">
+        <span className="wizard-label">Phase execution</span>
+        <p className="wizard-caption">All phases are completed in order. Selected phases are executed by LangGraph. Unselected phases wait for human completion.</p>
+        <div className="wizard-phase-strip" role="group" aria-label="Phase execution">
           {PHASE_NAMES.map((phase) => (
             <button
               key={phase}
@@ -329,17 +349,16 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               className={`wizard-phase-toggle${
                 phases.includes(phase) ? ' wizard-phase-toggle--on' : ''
               }${promptFocus === phase ? ' wizard-phase-toggle--focused' : ''}`}
+              aria-label={`${phaseLabel(phase)} — ${phases.includes(phase) ? 'LangGraph' : 'HITL'}`}
               aria-pressed={phases.includes(phase)}
               aria-current={promptFocus === phase ? 'step' : undefined}
               onClick={() => togglePhase(phase)}
             >
-              {phaseLabel(phase)}
+              {phaseLabel(phase)}<span className="wizard-caption">{phases.includes(phase) ? 'LangGraph' : 'HITL'}</span>
             </button>
           ))}
         </div>
-        {config.phases !== null && config.phases.length === 0 && (
-          <p className="wizard-caption wizard-caption--danger">Select at least one phase</p>
-        )}
+        {config.migrated_phase_ownership && <p className="tonal-card">This saved setup now assigns previously deselected phases to HITL. Each will pause for human completion.</p>}
         {hints.length > 0 && (
           <ul className="wizard-hint-list" data-testid="phase-dependency-hints">
             {hints.map((hint) => (
@@ -351,6 +370,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         )}
       </div>
 
+      <AnalysisFields draft={draft} onChange={onChange} />
       <div className="wizard-field">
         <span className="wizard-label">Review policy</span>
         <RadioChoices label="Review policy" value={config.gates_mode} options={GATES_MODES} onChange={setGatesMode} />
@@ -372,20 +392,20 @@ export function ConfigStep({ draft, onChange }: StepProps) {
                     <tr key={phase}>
                       <td>{phaseLabel(phase)}</td>
                       <td>
-                        <input
+                        {!phases.includes(phase) ? <span>Human completion required</span> : <input
                           type="checkbox"
                           aria-label={`${phaseLabel(phase)} prompt review gated`}
                           checked={entry.prompt_review === 'gated'}
                           onChange={() => toggleGate(phase, 'prompt_review')}
-                        />
+                        />}
                       </td>
                       <td>
-                        <input
+                        {!phases.includes(phase) ? <span>Human completion required</span> : <input
                           type="checkbox"
                           aria-label={`${phaseLabel(phase)} output review gated`}
                           checked={entry.output_review === 'gated'}
                           onChange={() => toggleGate(phase, 'output_review')}
-                        />
+                        />}
                       </td>
                     </tr>
                   )

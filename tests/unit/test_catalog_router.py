@@ -950,3 +950,29 @@ def test_scoped_metadata_edit_preserves_platform_owned_environment_options(
         == 403
     )
     assert repo.environments[env_id].options == {"_apex_trusted_private_host": True}
+
+
+@pytest.mark.parametrize("resource", ["application", "environment"])
+def test_delete_referenced_catalog_resource_returns_safe_conflict(
+    repo: FakeCatalogRepository, monkeypatch: pytest.MonkeyPatch, resource: str
+) -> None:
+    from apex.persistence.repositories.catalog import CatalogInUseError
+
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    resource_id = app_id
+    if resource == "environment":
+        resource_id = client.post(
+            "/catalog/environments", json={"application_id": app_id, "name": "Performance"}
+        ).json()["id"]
+
+    async def referenced(_: object) -> None:
+        raise CatalogInUseError("private referenced prompt identity")
+
+    monkeypatch.setattr(repo, f"delete_{resource}", referenced)
+    response = client.delete(f"/catalog/{resource}s/{resource_id}")
+    assert response.status_code == 409
+    assert "retained records" in response.json()["detail"]
+    assert "private" not in response.text

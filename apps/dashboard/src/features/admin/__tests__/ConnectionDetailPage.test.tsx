@@ -312,7 +312,10 @@ describe('ConnectionDetailPage', () => {
     const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' })
     await user.click(within(breadcrumb).getByRole('link', { name: 'Connections' }))
 
-    const toggle = await screen.findByRole('button', { name: 'Toggle jira-prod' })
+    // The detail and list routes both expose this toggle. Wait for the list
+    // row so a lazy navigation cannot leave us asserting on the old detail DOM.
+    const row = await screen.findByTestId('conn-row-conn-jira')
+    const toggle = within(row).getByRole('button', { name: 'Toggle jira-prod' })
     expect(toggle).toBeDisabled()
     await user.click(toggle)
     expect(events).toEqual(['patch:start'])

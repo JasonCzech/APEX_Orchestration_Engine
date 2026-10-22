@@ -1,275 +1,115 @@
-/**
- * Prompts step: only the focused phase system prompt and the selected
- * application's app-wide prompt are shown. System overrides keep
- * prompt_overrides["phase/<p>"]; application overrides use
- * prompt_overrides["application/<app_id>"].
- */
-import { screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
-import type { Extension } from '@codemirror/state'
-
 import { server } from '@/test/server'
+import { PromptsStep } from '../steps/PromptsStep'
+import { legacyLaunchIntent } from '../legacyLaunchIntent'
+import { emptyDraft, buildConfigurable, parseDraftPayload, type WizardDraft } from '../wizardState'
 
-import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
-
-// CodeMirror needs real DOM measurement; mock it as a controlled textarea
-// (same boundary mock the hitl/artifacts suites use).
 vi.mock('@uiw/react-codemirror', async () => {
   const { createElement } = await import('react')
-  const { EditorState } = await import('@codemirror/state')
-  const { EditorView } = await import('@codemirror/view')
-  return {
-    default: ({
-      value,
-      onChange,
-      editable,
-      readOnly,
-      extensions = [],
-      'aria-label': ariaLabel,
-    }: {
-      value: string
-      onChange?: (value: string) => void
-      editable?: boolean
-      readOnly?: boolean
-      extensions?: Extension[]
-      'aria-label'?: string
-    }) => {
-      const attributes = EditorState.create({ extensions }).facet(EditorView.contentAttributes)
-      const tabIndex = attributes.reduce<string | undefined>(
-        (value, entry) => typeof entry === 'function' ? value : entry.tabindex ?? value,
-        undefined,
-      )
-      return createElement('textarea', {
-        'data-testid': 'codemirror',
-        'aria-label': ariaLabel,
-        value,
-        readOnly: readOnly === true || editable === false,
-        tabIndex: Number(tabIndex ?? -1),
-        onChange: (event: { target: { value: string } }) => onChange?.(event.target.value),
-      })
-    },
-  }
+  return { default: ({ value, onChange, 'aria-label': label }: { value: string; onChange?: (value: string) => void; 'aria-label'?: string }) => createElement('textarea', { value, 'aria-label': label, onChange: (e: { target: { value: string } }) => onChange?.(e.target.value) }) }
 })
-
-const PHASE_PROMPTS = [
-  {
-    id: 'p-story-sys',
-    namespace: 'phase',
-    key: 'story_analysis/system',
-    description: null,
-    active_version: { id: 'v-2', version: 2 },
-  },
-  {
-    id: 'p-exec-sys',
-    namespace: 'phase',
-    key: 'execution/system',
-    description: null,
-    active_version: { id: 'v-3', version: 3 },
-  },
+const row = (id: string, namespace: string, metadata = {}) => ({ id, namespace, key: id, selection_enabled: true, is_shared: false, is_default: false, active_version: { id: `${id}-v1`, version: 1 }, ...metadata })
+const rows = [
+  row('system-default', 'system', { is_default: true }), row('system-alternative', 'system'),
+  row('analysis-default', 'phase', { phase: 'story_analysis', is_default: true }), row('analysis-alternative', 'phase', { phase: 'story_analysis' }),
+  row('planning-default', 'phase', { phase: 'test_planning', is_default: true }),
+  row('app-one', 'application', { application_id: 'app-checkout' }), row('app-shared', 'application', { is_shared: true }), row('app-hidden', 'application', { application_id: 'app-other' }),
+  row('env-one', 'environment', { environment_id: 'env-staging' }), row('env-hidden', 'environment', { environment_id: 'env-other' }),
 ]
-
-const APPLICATION_PROMPTS = [
-  {
-    id: 'p-app-checkout',
-    namespace: 'application',
-    key: 'app-checkout',
-    description: null,
-    active_version: { id: 'v-5', version: 5 },
-  },
-]
-
-const PROMPT_CONTENT: Record<string, string> = {
-  'p-story-sys': 'You are the story analysis phase operator.',
-  'p-exec-sys': 'You are the execution phase operator.',
-  'p-app-checkout': 'Checkout must preserve carts during payment retries.',
+function handlers() {
+  return [http.get('*/v1/prompts', () => HttpResponse.json(rows)), http.get('*/v1/prompts/:id/versions/:version', ({ params }) => HttpResponse.json({ id: params.version, version: 1, content: `Content for ${params.id}`, note: null }))]
+}
+function setup(initial?: WizardDraft) {
+  let latest = initial ?? { ...emptyDraft(), config: { ...emptyDraft().config, phases: ['story_analysis'] as const }, scope: { project_id: 'project-one', app_id: 'app-checkout', environment_id: 'env-staging' } } as WizardDraft
+  function Harness() {
+    const [draft, setDraft] = useState(latest)
+    latest = draft
+    return <><PromptsStep draft={draft} onChange={setDraft} /><button onClick={() => setDraft(current => ({ ...current, scope: { ...current.scope, app_id: 'app-other', environment_id: 'env-other' } }))}>Change scope</button><button onClick={() => setDraft(current => ({ ...current, config: { ...current.config, phases: ['story_analysis', 'test_planning'] } }))}>Include planning</button></>
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const result = render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>)
+  return { ...result, draft: () => latest }
 }
 
-function promptHandlers({ includeApplication = true }: { includeApplication?: boolean } = {}) {
-  const applicationPrompts = includeApplication ? APPLICATION_PROMPTS : []
-  const allPrompts = [...PHASE_PROMPTS, ...applicationPrompts]
-  return [
-    http.get('*/v1/prompts', ({ request }) => {
-      const namespace = new URL(request.url).searchParams.get('namespace')
-      return HttpResponse.json(namespace === 'application' ? applicationPrompts : PHASE_PROMPTS)
-    }),
-    http.get('*/v1/prompts/:id', ({ params }) => {
-      const id = params['id'] as string
-      const summary = allPrompts.find((entry) => entry.id === id)
-      if (!summary) return HttpResponse.json({ detail: 'not found' }, { status: 404 })
-      return HttpResponse.json({ ...summary, content: PROMPT_CONTENT[id] })
-    }),
-  ]
-}
-
-async function selectCheckoutApplication(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('tab', { name: 'Scope' }))
-  if (!(screen.getByLabelText('Project') as HTMLInputElement).value) await user.type(screen.getByLabelText('Project'), 'demo')
-  await screen.findByRole('option', { name: 'Checkout' })
-  await user.selectOptions(screen.getByLabelText('Application'), 'app-checkout')
-}
-
-describe('PromptsStep', () => {
-  it('shows only the focused phase system prompt plus an app-selection placeholder', async () => {
-    installWizardHandlers()
-    server.use(...promptHandlers())
-    const rendered = renderWizard('/runs/new?step=prompts')
-
-    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    await waitFor(() =>
-      expect(within(promptSection).getByTestId('prompt-focused-phase')).toHaveTextContent(
-        'story analysis',
-      ),
-    )
-
-    const systemBlock = within(promptSection).getByTestId('system-prompt-block')
-    await waitFor(() => expect(within(systemBlock).getByText('catalog@v2')).toBeInTheDocument())
-    expect(within(systemBlock).getByTestId('codemirror')).toHaveValue(
-      'You are the story analysis phase operator.',
-    )
-    expect(within(systemBlock).getByTestId('codemirror')).toHaveAttribute('tabindex', '0')
-
-    expect(within(promptSection).queryByText('You are the execution phase operator.')).toBeNull()
-    expect(within(promptSection).getByText('User prompt')).toBeInTheDocument()
-    expect(
-      within(promptSection).getByText('Select an application in Scope to load its requirements prompt.'),
-    ).toBeInTheDocument()
-    await flushAndUnmountWizard(rendered)
+describe('catalog prompt selections', () => {
+  it('preselects one system and one context per included phase; sends pinned IDs', async () => {
+    server.use(...handlers())
+    const view = setup()
+    await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
+    expect(screen.getByLabelText('System Prompt')).toHaveValue('system-default')
+    expect(screen.getByLabelText('Phase context — Story Analysis')).toHaveValue('analysis-default')
+    const payload = buildConfigurable(view.draft())
+    expect(payload.prompt_overrides).toBeUndefined()
+    expect(payload.prompt_selections).toMatchObject({ system: { prompt_id: 'system-default', version_id: 'system-default-v1' }, application: [], environment: [] })
+    expect(parseDraftPayload(view.draft()).prompt_selections).toEqual(view.draft().prompt_selections)
   })
-
-  it('changes the displayed system prompt from Prompts without changing phase inclusion', async () => {
-    installWizardHandlers()
-    server.use(...promptHandlers())
+  it('filters alternatives by phase and scopes contexts; preserves optional ordering', async () => {
+    server.use(...handlers())
+    const view = setup()
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=prompts')
-
-    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    await waitFor(() =>
-      expect(within(promptSection).getByTestId('system-prompt-block')).toHaveTextContent(
-        'System prompt',
-      ),
-    )
-    expect(within(promptSection).getByTestId('prompt-focused-phase')).toHaveTextContent(
-      'story analysis',
-    )
-
-    await user.click(screen.getByRole('tab', { name: 'Config' }))
-    const strip = await screen.findByRole('group', { name: 'Phase subset' })
-    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
-    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute('aria-pressed', 'false')
-    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
-
-    await user.click(screen.getByRole('tab', { name: 'Prompts' }))
-    const focusedSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    expect(within(focusedSection).getByTestId('prompt-focused-phase')).toHaveTextContent('story analysis')
-    const promptPhases = within(focusedSection).getByRole('group', { name: 'Prompt phase' })
-    await user.click(within(promptPhases).getByRole('button', { name: 'Execution' }))
-    await waitFor(() =>
-      expect(within(focusedSection).getByTestId('prompt-focused-phase')).toHaveTextContent(
-        'execution',
-      ),
-    )
-    const systemBlock = within(focusedSection).getByTestId('system-prompt-block')
-    await waitFor(() =>
-      expect(within(systemBlock).getByTestId('codemirror')).toHaveValue(
-        'You are the execution phase operator.',
-      ),
-    )
-    expect(within(focusedSection).queryByText('You are the story analysis phase operator.')).toBeNull()
-    expect(
-      within(focusedSection).getByText('Select an application in Scope to load its requirements prompt.'),
-    ).toBeInTheDocument()
-    await flushAndUnmountWizard(rendered)
+    await screen.findByRole('option', { name: 'system-alternative' })
+    await user.selectOptions(screen.getByLabelText('System Prompt'), 'system-alternative')
+    const phase = screen.getByLabelText('Phase context — Story Analysis')
+    expect(within(phase).queryByRole('option', { name: /planning-default/ })).not.toBeInTheDocument()
+    await user.selectOptions(phase, 'analysis-alternative')
+    const app = screen.getByLabelText('Add Application context')
+    expect(within(app).queryByRole('option', { name: 'app-hidden' })).not.toBeInTheDocument()
+    await user.selectOptions(app, 'app-one')
+    await user.selectOptions(app, 'app-shared')
+    await user.selectOptions(screen.getByLabelText('Add Environment Context'), 'env-one')
+    expect(view.draft().prompt_selections?.application.map(item => item.prompt_id)).toEqual(['app-one', 'app-shared'])
+    await user.click(within(screen.getByRole('region', { name: 'Application context' })).getAllByRole('button', { name: 'Move up' })[1]!)
+    expect(view.draft().prompt_selections?.application.map(item => item.prompt_id)).toEqual(['app-shared', 'app-one'])
+    await user.click(screen.getByRole('button', { name: 'Change scope' }))
+    await waitFor(() => expect(view.draft().prompt_selections?.application.map(item => item.prompt_id)).toEqual(['app-shared']))
+    expect(view.draft().prompt_selections?.environment).toEqual([])
+    expect(screen.getByRole('status')).toHaveTextContent('were removed')
   })
-
-  it('shows the selected application prompt from the application catalog', async () => {
-    installWizardHandlers()
-    server.use(...promptHandlers())
+  it('adds defaults for newly included phases and retains existing alternatives', async () => {
+    server.use(...handlers())
+    const view = setup()
     const user = userEvent.setup()
-    const rendered = renderWizard()
-
-    await selectCheckoutApplication(user)
-    await user.click(screen.getByRole('tab', { name: 'Prompts' }))
-
-    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    await waitFor(() =>
-      expect(within(promptSection).getByTestId('prompt-selected-application')).toHaveTextContent(
-        'app-checkout',
-      ),
-    )
-    const appBlock = within(promptSection).getByTestId('application-prompt-block')
-    await waitFor(() => expect(within(appBlock).getByText('catalog@v5')).toBeInTheDocument())
-    expect(within(appBlock).getByTestId('codemirror')).toHaveValue(
-      'Checkout must preserve carts during payment retries.',
-    )
-    await flushAndUnmountWizard(rendered)
+    await screen.findByRole('option', { name: 'analysis-alternative' })
+    await user.selectOptions(screen.getByLabelText('Phase context — Story Analysis'), 'analysis-alternative')
+    await user.click(screen.getByRole('button', { name: 'Include planning' }))
+    await waitFor(() => expect(view.draft().prompt_selections?.phases.test_planning?.prompt_id).toBe('planning-default'))
+    expect(view.draft().prompt_selections?.phases.story_analysis?.prompt_id).toBe('analysis-alternative')
   })
-
-  it('keeps a missing application prompt as an empty overrideable slot', async () => {
-    installWizardHandlers()
-    server.use(...promptHandlers({ includeApplication: false }))
-    const user = userEvent.setup()
-    const rendered = renderWizard()
-
-    await selectCheckoutApplication(user)
-    await user.click(screen.getByRole('tab', { name: 'Prompts' }))
-
-    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    const appBlock = await within(promptSection).findByTestId('application-prompt-block')
-    expect(within(appBlock).getByText('No application prompt exists for this app yet.')).toBeInTheDocument()
-    expect(within(appBlock).getByText('empty')).toBeInTheDocument()
-
-    await user.click(within(appBlock).getByRole('button', { name: 'Override for this run' }))
-    const editor = within(appBlock).getByLabelText('app-checkout application prompt override')
-    expect(editor).toHaveValue('')
-    await user.type(editor, 'Custom application requirements')
-
-    await user.click(screen.getByRole('tab', { name: 'Review' }))
-    const json = await screen.findByTestId('launch-payload-json')
-    const payload = JSON.parse(json.textContent ?? '{}') as {
-      configurable: { prompt_overrides?: Record<string, { content: string }> }
-    }
-    expect(payload.configurable.prompt_overrides).toEqual({
-      'application/app-checkout': { content: 'Custom application requirements' },
-    })
-    await flushAndUnmountWizard(rendered)
+  it('does not silently replace an unavailable selected prompt', async () => {
+    server.use(...handlers())
+    const initial = emptyDraft()
+    initial.config.phases = ['story_analysis']
+    initial.prompt_selections!.system = { prompt_id: 'archived', version_id: 'old' }
+    const view = setup(initial)
+    await waitFor(() => expect(view.draft().prompt_selection_issues?.some(issue => issue.includes('unavailable'))).toBe(true))
+    expect(view.draft().prompt_selections?.system?.prompt_id).toBe('archived')
   })
-
-  it('includes both system and application overrides in the review launch JSON', async () => {
-    installWizardHandlers()
-    server.use(...promptHandlers())
-    const user = userEvent.setup()
-    const rendered = renderWizard()
-
-    await selectCheckoutApplication(user)
-    await user.click(screen.getByRole('tab', { name: 'Prompts' }))
-
-    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
-    const systemBlock = await within(promptSection).findByTestId('system-prompt-block')
-    await waitFor(() => expect(within(systemBlock).getByText('catalog@v2')).toBeInTheDocument())
-    await user.click(within(systemBlock).getByRole('button', { name: 'Override for this run' }))
-    const systemEditor = within(systemBlock).getByLabelText('Story Analysis system prompt override')
-    expect(systemEditor).toHaveAttribute('tabindex', '0')
-    await user.clear(systemEditor)
-    await user.type(systemEditor, 'Custom story system prompt')
-
-    const appBlock = await within(promptSection).findByTestId('application-prompt-block')
-    await waitFor(() => expect(within(appBlock).getByText('catalog@v5')).toBeInTheDocument())
-    await user.click(within(appBlock).getByRole('button', { name: 'Override for this run' }))
-    const appEditor = within(appBlock).getByLabelText('app-checkout application prompt override')
-    await user.clear(appEditor)
-    await user.type(appEditor, 'Custom checkout requirements')
-
-    await user.click(screen.getByRole('tab', { name: 'Review' }))
-    const json = await screen.findByTestId('launch-payload-json')
-    const payload = JSON.parse(json.textContent ?? '{}') as {
-      configurable: { prompt_overrides?: Record<string, { content: string }> }
-    }
-    expect(payload.configurable.prompt_overrides).toEqual({
-      'phase/story_analysis': { content: 'Custom story system prompt' },
-      'application/app-checkout': { content: 'Custom checkout requirements' },
-    })
-    await flushAndUnmountWizard(rendered)
+  it('keeps legacy user overrides visible and blocks until explicitly resolved', async () => {
+    server.use(...handlers())
+    const initial = emptyDraft()
+    initial.config.phases = ['story_analysis']
+    initial.prompt_overrides = { 'phase/story_analysis': { content: 'Migrated phase instructions' }, 'phase/story_analysis/user': { content: 'Retain this custom request template' } }
+    const priorIntent = legacyLaunchIntent(initial)
+    const view = setup(initial)
+    await waitFor(() => expect(view.draft().prompt_selections?.phases.story_analysis?.override_content).toBe('Migrated phase instructions'))
+    expect(legacyLaunchIntent(view.draft())).toEqual(priorIntent)
+    expect(legacyLaunchIntent(parseDraftPayload(JSON.parse(JSON.stringify(view.draft()))))).toEqual(priorIntent)
+    expect(buildConfigurable(view.draft()).legacy_prompt_overrides).toBeUndefined()
+    expect(screen.getByText('Retain this custom request template')).toBeVisible()
+    expect(view.draft().prompt_selection_issues).toContain('Resolve the retained legacy prompt overrides before launching.')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove legacy override phase/story_analysis/user' }))
+    await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
+  })
+  it('fails closed when the catalog cannot load', async () => {
+    server.use(http.get('*/v1/prompts', () => HttpResponse.json({ detail: 'Unavailable' }, { status: 503 })))
+    const view = setup()
+    await screen.findByRole('alert')
+    expect(view.draft().prompt_selections?.system).toBeNull()
+    await waitFor(() => expect(view.draft().prompt_selection_issues).toContain('Prompt catalog could not be loaded. Retry before launching.'))
   })
 })

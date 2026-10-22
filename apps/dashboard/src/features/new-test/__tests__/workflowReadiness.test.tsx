@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import { PHASE_NAMES } from '@apex/pipeline-events'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -9,7 +9,7 @@ import { workloadIssues } from '../workload'
 import { ENVIRONMENTS, fillScope, flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 describe('new-test workflow readiness', () => {
-  it('requires an application only when the selected connection metadata requires one', async () => {
+  it('verifies the primary application when the selected connection requires one', async () => {
     installWizardHandlers()
     const requests: Record<string, unknown>[] = []
     server.use(http.post('*/v1/pipelines/execution-readiness', async ({ request }) => {
@@ -21,16 +21,10 @@ describe('new-test workflow readiness', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await waitFor(() => expect(screen.getByTestId('review-issues')).toHaveTextContent('Select an application for the configured execution connection'))
-    expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()
-    expect(requests.at(-1)).toEqual({ project_id: 'demo', engine: 'sim', phases: [...PHASE_NAMES] })
-    await user.click(within(screen.getByTestId('review-issues')).getByRole('button', { name: /Select an application/ }))
-    await waitFor(() => expect(screen.getByLabelText('Application')).toHaveFocus())
-    await user.selectOptions(screen.getByLabelText('Application'), 'app-checkout')
+    await user.click(screen.getByRole('button', { name: 'Clear traffic entry' }))
     await user.click(screen.getByRole('tab', { name: 'Review' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled())
-    expect(requests.at(-1)).toEqual({ project_id: 'demo', app_id: 'app-checkout', engine: 'sim', phases: [...PHASE_NAMES] })
+    expect(requests.at(-1)).toEqual({ project_id: 'demo', app_id: 'app-checkout', engine: 'sim', phases: [...PHASE_NAMES], test_scope: JSON.parse(screen.getByTestId('launch-payload-json').textContent!).configurable.test_scope })
     expect(within(screen.getByRole('region', { name: /^Review$/ })).getByText(/Provider connectivity, credentials and workload\/release eligibility are checked later/)).toBeInTheDocument()
     const preview = JSON.parse(screen.getByTestId('launch-payload-json').textContent!)
     expect(preview.configurable.phases).toEqual([...PHASE_NAMES])
@@ -38,16 +32,19 @@ describe('new-test workflow readiness', () => {
     await flushAndUnmountWizard(rendered)
   })
 
-  it('permits application-free simulation only after metadata confirms the fallback is valid', async () => {
+  it('permits simulation without a traffic entry while retaining the primary system', async () => {
     installWizardHandlers()
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
+    await user.click(screen.getByRole('button', { name: 'Clear traffic entry' }))
     await user.click(screen.getByRole('tab', { name: 'Review' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled())
     expect(within(screen.getByRole('region', { name: /^Review$/ })).getByText(/Execution connection metadata is valid/)).toBeInTheDocument()
     const preview = JSON.parse(screen.getByTestId('launch-payload-json').textContent!)
-    expect(preview.configurable.app_id).toBeUndefined()
+    expect(preview.configurable.app_id).toBe('app-checkout')
+    expect(preview.configurable.environment_id).toBeUndefined()
+    expect(preview.configurable.test_scope.traffic_entry_participant_id).toBeNull()
     await flushAndUnmountWizard(rendered)
   })
 
@@ -75,6 +72,39 @@ describe('new-test workflow readiness', () => {
     const draft = emptyDraft()
     draft.config.phases = ['story_analysis']
     expect(assessWizardReadiness(draft, undefined, undefined, undefined, { failed: true }).executionIssues).toEqual([])
+  })
+
+  it('retries failed participant verification without replacing the selected participant', async () => {
+    installWizardHandlers()
+    let fails = false
+    server.use(http.get('*/v1/catalog/environments', () => fails
+      ? HttpResponse.json({ detail: 'Catalog unavailable' }, { status: 503 })
+      : HttpResponse.json(ENVIRONMENTS)))
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    fails = true
+    await act(async () => { await rendered.queryClient.invalidateQueries({ queryKey: ['test-participant-catalog'] }) })
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    await waitFor(() => expect(screen.getByTestId('review-issues')).toHaveTextContent('unavailable or does not match its project'))
+    expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()
+    fails = false
+    await user.click(screen.getByRole('tab', { name: 'Scope' }))
+    await user.click(screen.getByRole('button', { name: 'Retry participant verification' }))
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled())
+    await flushAndUnmountWizard(rendered)
+  })
+
+  it('does not require target approval for execution assigned to HITL', () => {
+    const draft = emptyDraft()
+    draft.scope.app_id = 'app-checkout'
+    draft.scope.environment_id = 'env-staging'
+    draft.config.engine = 'apex_load'
+    draft.config.phases = []
+    expect(assessWizardReadiness(draft, undefined, undefined, {
+      environment: { ...ENVIRONMENTS[0]!, target_approved: false, target_version: 0 },
+    }).executionIssues).toEqual([])
   })
 
   it('authors validated workload inputs and previews the exact fractions sent to execution', async () => {

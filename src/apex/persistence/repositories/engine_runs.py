@@ -79,6 +79,10 @@ def _append_visibility(
     )
     if visibility is not None:
         filters.append(visibility)
+    if allowed_scopes is not None:
+        from apex.services.test_scope import participant_visibility
+
+        filters.append(participant_visibility(EngineRun.thread_id, allowed_scopes))
 
 
 def _mutation_filter(
@@ -128,6 +132,10 @@ def _append_mutation_scope(
     )
     if predicate is not None:
         filters.append(predicate)
+    if allowed_scopes is not None:
+        from apex.services.test_scope import participant_visibility
+
+        filters.append(participant_visibility(EngineRun.thread_id, allowed_scopes))
 
 
 class EngineRunsRepository:

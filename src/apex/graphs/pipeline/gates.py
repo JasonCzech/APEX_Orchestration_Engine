@@ -71,7 +71,7 @@ def _safe_actor(value: Any) -> bool:
 def make_approval(
     phase: Phase,
     attempt: int,
-    gate: Literal["prompt_review", "phase_review"],
+    gate: Literal["prompt_review", "phase_review", "human_completion"],
     action: str,
     config: RunnableConfig | None,
     note: str | None = None,
@@ -104,6 +104,11 @@ def build_prompt_review_payload(
             "system": prompt.get("system"),
             "user": prompt.get("user"),
             "application": prompt.get("application"),
+            **{
+                key: prompt[key]
+                for key in ("system_locked", "contexts", "selections")
+                if key in prompt
+            },
             "source": {
                 "origin": source.get("origin"),
                 "ref": source.get("ref"),
@@ -276,10 +281,25 @@ def parse_gate_decision(decision: Any, allowed: Sequence[str]) -> JsonDict:
     edit = decision.get("prompt")
     if edit is not None:
         if type(edit) is not dict or any(
-            key not in {"system", "user", "application"} for key in edit
+            key not in {"system", "user", "application", "context_edits"} for key in edit
         ):
             return {"action": None, "error": "gate decision prompt is invalid"}
-        if any(value is not None and type(value) is not str for value in edit.values()):
+        if "context_edits" in edit:
+            from apex.domain.prompt_selection import PromptContextEdit
+
+            entries = edit["context_edits"]
+            if type(entries) is not list or len(entries) > 64:
+                return {"action": None, "error": "Invalid context prompt edits"}
+            try:
+                for item in entries:
+                    PromptContextEdit.model_validate(item)
+            except ValueError:
+                return {"action": None, "error": "Invalid context prompt edits"}
+        if any(
+            value is not None and type(value) is not str
+            for key, value in edit.items()
+            if key != "context_edits"
+        ):
             return {"action": None, "error": "gate decision prompt values must be strings"}
     action = decision.get("action")
     if type(action) is not str or action not in allowed:

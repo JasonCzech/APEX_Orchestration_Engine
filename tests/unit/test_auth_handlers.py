@@ -33,6 +33,9 @@ from apex.auth.handlers import (
 )
 from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError
+from apex.domain.test_scope import TestScopeV1
+from apex.persistence.models import RunParticipant, RunScopeBinding
+from apex.persistence.repositories.catalog import CatalogRepository
 from apex.services.langgraph_client import (
     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
     RERUN_CLAIM_METADATA_KEY,
@@ -48,6 +51,164 @@ def _catalog_application(monkeypatch: pytest.MonkeyPatch) -> None:
         return SimpleNamespace(id=app_id, project_id="p1", archived_at=None)
 
     monkeypatch.setattr(auth_handlers, "_load_catalog_application", load)
+
+
+@pytest.fixture(autouse=True)
+def native_launch_defaults(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Keep runtime storage I/O separate from real launch authorization checks."""
+    records: dict[str, Any] = {"assistant": {}, "thread": {}}
+
+    async def load(_ctx, assistant_id, _thread_id):
+        graph = auth_handlers._SYSTEM_ASSISTANT_GRAPHS.get(assistant_id, assistant_id)
+        return graph, records["assistant"], records["thread"]
+
+    monkeypatch.setattr(auth_handlers, "_load_native_launch_defaults", load)
+    return records
+
+
+class PublicPipelineFixture:
+    """Catalog and durable projection I/O for opted-in public launch tests.
+
+    Authorization, topology validation, binding integrity and environment ownership
+    resolution all remain real. Tests can alter the rows to exercise refusal paths.
+    """
+
+    def __init__(self) -> None:
+        self.bindings: dict[str, RunScopeBinding] = {}
+        self.rows: dict[str, list[RunParticipant]] = {}
+        self.applications: dict[str, SimpleNamespace] = {}
+        self.environments: dict[str, SimpleNamespace] = {}
+
+    def attach(
+        self,
+        value: dict[str, Any],
+        *,
+        project_id: str = "p1",
+        app_id: str = "a1",
+        topology: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from apex.services.test_scope import _scope_digest
+
+        scope = TestScopeV1.model_validate(
+            topology
+            or {
+                "schema_version": 1,
+                "participants": [
+                    {
+                        "id": "backend",
+                        "project_id": project_id,
+                        "application_id": app_id,
+                        "environment_id": "env-1",
+                        "layer": "backend",
+                    }
+                ],
+                "primary_participant_id": "backend",
+                "traffic_entry_participant_id": "backend",
+            }
+        )
+        serialized = scope.model_dump(mode="json")
+        run_args = value.get("kwargs", value)
+        run_args.setdefault("config", {}).setdefault("configurable", {})["test_scope"] = serialized
+        thread_id = value.get("thread_id")
+        if thread_id:
+            self.bindings[thread_id] = RunScopeBinding(
+                thread_id=thread_id,
+                scope=scope.model_dump(mode="json"),
+                participant_count=len(scope.participants),
+                scope_digest=_scope_digest(scope),
+            )
+            self.rows[thread_id] = [
+                RunParticipant(
+                    thread_id=thread_id,
+                    participant_id=p.id,
+                    project_id=p.project_id,
+                    application_id=p.application_id,
+                    environment_id=p.environment_id,
+                    layer=p.layer,
+                    is_primary=p.id == scope.primary_participant_id,
+                    is_traffic_entry=p.id == scope.traffic_entry_participant_id,
+                )
+                for p in scope.participants
+            ]
+        for p in scope.participants:
+            application = SimpleNamespace(
+                id=p.application_id,
+                project_id=p.project_id,
+                name=p.application_id,
+                description="Catalog application",
+                archived_at=None,
+            )
+            self.applications[p.application_id] = application
+            self.environments[p.environment_id] = SimpleNamespace(
+                id=p.environment_id,
+                application_id=p.application_id,
+                application=application,
+                name=p.environment_id,
+                kind="test",
+                hosts=[],
+                base_url="https://approved.example.test",
+                target_approved=True,
+                target_version=7,
+                options={},
+            )
+        return serialized
+
+    def snapshot(self, topology: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **topology,
+            "participants": [
+                {
+                    **p,
+                    "application_name": p["application_id"],
+                    "application_description": "Catalog application",
+                    "environment_name": p["environment_id"],
+                    "environment_kind": "test",
+                    "hosts": [],
+                }
+                for p in sorted(topology["participants"], key=lambda p: (p["layer"], p["id"]))
+            ],
+        }
+
+
+@pytest.fixture
+def public_pipeline(monkeypatch: pytest.MonkeyPatch) -> PublicPipelineFixture:
+    store = PublicPipelineFixture()
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, model, thread_id):
+            assert model is RunScopeBinding
+            return store.bindings.get(thread_id)
+
+        async def scalars(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            assert entity in {RunParticipant, RunScopeBinding}
+            params = statement.compile().params
+            assert set(params) == {"thread_id_1"}
+            identifiers = params["thread_id_1"]
+            if isinstance(identifiers, str):
+                identifiers = [identifiers]
+            if entity is RunScopeBinding:
+                rows = [store.bindings[key] for key in identifiers if key in store.bindings]
+            else:
+                rows = [row for key in identifiers for row in store.rows.get(key, [])]
+            return SimpleNamespace(all=lambda: rows)
+
+    async def load_application(app_id: str):
+        return store.applications.get(app_id)
+
+    async def load_environment(_repository, environment_id: str):
+        return store.environments.get(environment_id)
+
+    monkeypatch.setattr("apex.persistence.db.get_sessionmaker", lambda: Session)
+    monkeypatch.setattr(auth_handlers, "_load_catalog_application", load_application)
+    monkeypatch.setattr(CatalogRepository, "get_environment", load_environment)
+    return store
 
 
 def make_identity(role: Role, scopes: list[ScopeRef] | None = None) -> ConsumerIdentity:
@@ -857,14 +1018,19 @@ async def test_threads_create_run_stamps_single_scope_stateless_context() -> Non
     assert value["metadata"]["project_id"] == "p1"
 
 
-async def test_threads_create_run_stamps_single_scope_on_existing_thread() -> None:
+async def test_threads_create_run_stamps_single_scope_on_existing_thread(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+
+    public_pipeline.attach(value)
 
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
     assert result == {
         "project_id": {"$eq": "p1"},
+        "app_id": {"$eq": "a1"},
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
     assert value["input"]["project_id"] == "p1"
@@ -872,9 +1038,13 @@ async def test_threads_create_run_stamps_single_scope_on_existing_thread() -> No
     assert value["metadata"]["project_id"] == "p1"
 
 
-async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -> None:
+async def test_threads_create_run_stamps_single_app_scope_on_existing_thread(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
     value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+
+    topology = public_pipeline.attach(value)
 
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
@@ -884,13 +1054,18 @@ async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
     assert value["config"]["configurable"] == {
+        **auth_handlers.PipelineConfigurable().snapshot(),
         "project_id": "p1",
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
         RUNTIME_ACTOR_ID_KEY: "c1",
         "model_by_phase": {},
+        "test_scope": topology,
+        "test_scope_snapshot": public_pipeline.snapshot(topology),
+        "environment_id": "env-1",
     }
     assert value["metadata"] == {
+        "test_scope": topology,
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
         "created_by": "c1",
         "project_id": "p1",
@@ -909,7 +1084,9 @@ async def test_threads_create_run_rejects_ambiguous_existing_thread_scope() -> N
     assert "project_id is required for scoped runs" in str(excinfo.value.detail)
 
 
-async def test_threads_create_run_returns_exact_selected_thread_filter() -> None:
+async def test_threads_create_run_returns_exact_selected_thread_filter(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
     value: Any = {
         "assistant_id": "pipeline",
@@ -917,10 +1094,13 @@ async def test_threads_create_run_returns_exact_selected_thread_filter() -> None
         "config": {"configurable": {"project_id": "p2"}},
     }
 
+    public_pipeline.attach(value, project_id="p2", app_id="a2")
+
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
     assert result == {
         "project_id": {"$eq": "p2"},
+        "app_id": {"$eq": "a2"},
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
     assert value["input"]["project_id"] == "p2"
@@ -946,6 +1126,8 @@ async def test_threads_create_run_stamps_single_app_scope_stateless() -> None:
         "app_id": "a1",
     }
     assert value["config"]["configurable"] == {
+        **auth_handlers.PipelineConfigurable().snapshot(),
+        "assistant_id": "context",
         "project_id": "p1",
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
@@ -1113,16 +1295,25 @@ async def test_threads_create_run_rejects_deep_playground_sample() -> None:
     assert "nesting exceeds" in str(excinfo.value.detail)
 
 
-async def test_threads_create_run_stamps_single_scope_stateless_uuid_assistant() -> None:
+async def test_threads_create_run_rejects_stateless_uuid_assistant_without_scope() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {"assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620", "thread_id": None}
-    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
-    assert result == {
-        "project_id": {"$eq": "p1"},
-        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
-    }
-    assert value["config"]["configurable"]["project_id"] == "p1"
-    assert value["metadata"]["project_id"] == "p1"
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "test_scope is required for new pipeline launches"
+
+
+async def test_threads_create_run_rejects_stateless_uuid_assistant_with_scope(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {"assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620", "thread_id": None}
+    public_pipeline.attach(value)
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "Create a thread with test_scope before launching"
 
 
 async def test_threads_create_run_rejects_conflicting_project_ids() -> None:
@@ -1139,6 +1330,7 @@ async def test_threads_create_run_rejects_conflicting_project_ids() -> None:
 
 
 async def test_unscoped_threads_create_run_validates_catalog_app_project_pair(
+    public_pipeline: PublicPipelineFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def mismatched_app(_app_id: str) -> SimpleNamespace:
@@ -1151,6 +1343,8 @@ async def test_unscoped_threads_create_run_validates_catalog_app_project_pair(
         "input": {"project_id": "p1", "app_id": "a1"},
     }
 
+    public_pipeline.attach(value)
+
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
         await on_threads_create_run(
             ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
@@ -1161,7 +1355,9 @@ async def test_unscoped_threads_create_run_validates_catalog_app_project_pair(
     assert excinfo.value.detail == "app_id is not authorized for project_id"
 
 
-async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> None:
+async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
     runtime_user = DictUser(user_payload(identity))
     config: dict[str, Any] = {
@@ -1185,6 +1381,8 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
         "kwargs": {"input": {}, "config": config},
     }
 
+    topology = public_pipeline.attach(value)
+
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
     assert result == {
@@ -1194,6 +1392,7 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
     }
     assert value["kwargs"]["input"] == {"project_id": "p1", "app_id": "a1"}
     assert value["metadata"] == {
+        "test_scope": topology,
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
         "created_by": "c1",
         "project_id": "p1",
@@ -1201,6 +1400,10 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
     }
     assert config["metadata"] == {"project_id": "p1", "app_id": "a1"}
     assert config["configurable"] == {
+        **auth_handlers.PipelineConfigurable().snapshot(),
+        "test_scope": topology,
+        "test_scope_snapshot": public_pipeline.snapshot(topology),
+        "environment_id": "env-1",
         "model_by_phase": {},
         "connections": {"execution_engine": "engine-a"},
         "__after_seconds__": 0,
@@ -1280,7 +1483,9 @@ async def test_threads_create_run_rejects_invalid_runtime_configurable(
     assert excinfo.value.__cause__ is None
 
 
-async def test_threads_create_run_accepts_bounded_runtime_trace_metadata() -> None:
+async def test_threads_create_run_accepts_bounded_runtime_trace_metadata(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     value = cast(
         Any,
         {
@@ -1302,6 +1507,8 @@ async def test_threads_create_run_accepts_bounded_runtime_trace_metadata() -> No
             },
         },
     )
+
+    public_pipeline.attach(value)
 
     await on_threads_create_run(
         ctx=make_ctx(
@@ -1542,7 +1749,9 @@ async def test_threads_create_run_pydantic_error_does_not_reflect_nested_unknown
     assert len(detail) <= 1_048
 
 
-async def test_threads_create_run_enforces_write_ahead_lifecycle_controls() -> None:
+async def test_threads_create_run_enforces_write_ahead_lifecycle_controls(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value = cast(
         Any,
@@ -1556,6 +1765,8 @@ async def test_threads_create_run_enforces_write_ahead_lifecycle_controls() -> N
             },
         },
     )
+
+    public_pipeline.attach(value)
 
     await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
@@ -1617,12 +1828,16 @@ async def test_threads_create_run_rejects_unsafe_lifecycle_controls(field: str, 
     assert excinfo.value.status_code == 422
 
 
-async def test_threads_create_run_overwrites_forged_creator() -> None:
+async def test_threads_create_run_overwrites_forged_creator(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     value: Any = {
         "assistant_id": "pipeline",
-        "thread_id": None,
+        "thread_id": "thread-1",
         "metadata": {"created_by": "forged"},
     }
+
+    public_pipeline.attach(value)
 
     await on_threads_create_run(
         ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
@@ -1714,7 +1929,9 @@ async def test_threads_create_run_allows_trusted_launch_root_fingerprint() -> No
     }
 
 
-async def test_public_direct_run_filter_excludes_facade_launch_threads() -> None:
+async def test_public_direct_run_filter_excludes_facade_launch_threads(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     launch_thread: Auth.types.ThreadsCreate = {
         "metadata": {
             "launch_idempotency_key": "key",
@@ -1728,6 +1945,7 @@ async def test_public_direct_run_filter_excludes_facade_launch_threads() -> None
     )
 
     public_run: Any = {"assistant_id": "pipeline", "thread_id": "launch-thread"}
+    public_pipeline.attach(public_run)
     public_filter = await on_threads_create_run(
         ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
         value=public_run,
@@ -1752,6 +1970,8 @@ async def test_public_direct_run_filter_excludes_facade_launch_threads() -> None
 
     assert launch_thread["metadata"][_DIRECT_RUNS_ALLOWED_METADATA_KEY] is False
     assert public_filter == {
+        "project_id": {"$eq": "p1"},
+        "app_id": {"$eq": "a1"},
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
     assert public_run["metadata"][_DIRECT_RUNS_ALLOWED_METADATA_KEY] is True
@@ -1782,7 +2002,7 @@ async def test_threads_create_run_rejects_nested_forged_scope() -> None:
     assert excinfo.value.status_code == 403
 
 
-async def test_threads_create_run_resolves_nested_environment_target(
+async def test_legacy_threads_create_run_resolves_nested_environment_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[tuple[str, str | None, str | None]] = []
@@ -1802,7 +2022,9 @@ async def test_threads_create_run_resolves_nested_environment_target(
         },
     }
 
-    await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    await on_threads_create_run(
+        ctx=make_ctx(identity, action="create_run", trusted_loopback=True), value=value
+    )
 
     assert seen == [("env-1", "p1", "a1")]
     assert value["kwargs"]["config"]["configurable"]["environment_target"] == (
@@ -1845,7 +2067,7 @@ async def test_environment_target_stamps_authoritative_app_for_project_wide_call
     assert value["metadata"]["app_id"] == "app-a"
 
 
-async def test_unscoped_environment_run_filters_existing_thread_to_authoritative_app(
+async def test_legacy_unscoped_environment_run_filters_existing_thread_to_authoritative_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def resolve(
@@ -1870,20 +2092,19 @@ async def test_unscoped_environment_run_filters_existing_thread_to_authoritative
     }
 
     scope = await on_threads_create_run(
-        ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
+        ctx=make_ctx(make_identity(Role.ADMIN), action="create_run", trusted_loopback=True),
         value=value,
     )
 
     assert scope == {
         "project_id": {"$eq": "p1"},
         "app_id": {"$eq": "app-a"},
-        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
     assert value["kwargs"]["input"]["app_id"] == "app-a"
     assert value["metadata"]["app_id"] == "app-a"
 
 
-async def test_environment_target_rejects_injected_conflicting_app_ownership(
+async def test_legacy_environment_target_rejects_injected_conflicting_app_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def resolve(
@@ -1899,12 +2120,14 @@ async def test_environment_target_rejects_injected_conflicting_app_ownership(
     }
 
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
-        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+        await on_threads_create_run(
+            ctx=make_ctx(identity, action="create_run", trusted_loopback=True), value=value
+        )
 
     assert excinfo.value.status_code == 404
 
 
-async def test_environment_target_not_found_detaches_lookup_context(
+async def test_legacy_environment_target_not_found_detaches_lookup_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     secret = "environment-lookup-secret-canary"
@@ -1922,7 +2145,9 @@ async def test_environment_target_not_found_detaches_lookup_context(
     }
 
     with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
-        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+        await on_threads_create_run(
+            ctx=make_ctx(identity, action="create_run", trusted_loopback=True), value=value
+        )
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.__context__ is None
@@ -1930,10 +2155,13 @@ async def test_environment_target_not_found_detaches_lookup_context(
     assert secret not in repr(exc_info.value)
 
 
-async def test_threads_create_run_rejects_nested_direct_environment_url() -> None:
+async def test_threads_create_run_rejects_nested_direct_environment_url(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {
         "assistant_id": "pipeline",
+        "thread_id": "thread-1",
         "kwargs": {
             "config": {
                 "configurable": {
@@ -1943,10 +2171,209 @@ async def test_threads_create_run_rejects_nested_direct_environment_url() -> Non
         },
     }
 
+    public_pipeline.attach(value)
+
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
         await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
     assert excinfo.value.status_code == 403
+
+
+async def test_public_pipeline_requires_scope_on_existing_thread() -> None:
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+        )
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "test_scope is required for new pipeline launches"
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_public_pipeline_authorizes_every_participant_and_resolves_independent_traffic(
+    public_pipeline: PublicPipelineFixture, authorized: bool
+) -> None:
+    scopes = [ScopeRef(project_id="p1", app_id="a1")]
+    if authorized:
+        scopes.append(ScopeRef(project_id="p2", app_id="a2"))
+    identity = make_identity(Role.OPERATOR, scopes)
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "config": {
+            "configurable": {
+                "project_id": "p1",
+                "app_id": "a1",
+                "engine": "apex_load",
+                "phases": ["execution"],
+            }
+        },
+    }
+    topology = public_pipeline.attach(
+        value,
+        topology={
+            "schema_version": 1,
+            "participants": [
+                {
+                    "id": "backend",
+                    "project_id": "p1",
+                    "application_id": "a1",
+                    "environment_id": "env-1",
+                    "layer": "backend",
+                },
+                {
+                    "id": "frontend",
+                    "project_id": "p2",
+                    "application_id": "a2",
+                    "environment_id": "env-2",
+                    "layer": "frontend",
+                },
+            ],
+            "primary_participant_id": "backend",
+            "traffic_entry_participant_id": "frontend",
+        },
+    )
+    public_pipeline.environments["env-1"].target_approved = False
+    public_pipeline.environments["env-2"].base_url = "https://traffic.example.test"
+    public_pipeline.environments["env-2"].target_version = 9
+    if not authorized:
+        with pytest.raises(HTTPException) as exc_info:
+            await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "Access to every test participant is required"
+        return
+
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    configurable = value["config"]["configurable"]
+    assert configurable["environment_id"] == "env-2"
+    assert configurable["environment_target"] == "https://traffic.example.test"
+    assert configurable["environment_target_version"] == 9
+    assert configurable["test_scope_snapshot"] == {
+        **public_pipeline.snapshot(topology),
+        "execution_target": {"base_url": "https://traffic.example.test", "version": 9},
+    }
+    assert value["input"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["metadata"]["test_scope"] == topology
+    assert result == {
+        "project_id": {"$eq": "p1"},
+        "app_id": {"$eq": "a1"},
+        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
+    }
+
+
+@pytest.mark.parametrize("binding_error", ["missing", "incomplete", "digest", "changed_scope"])
+async def test_public_pipeline_rejects_invalid_durable_scope_even_for_admin(
+    public_pipeline: PublicPipelineFixture, binding_error: str
+) -> None:
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+    topology = public_pipeline.attach(value)
+    if binding_error == "missing":
+        public_pipeline.bindings.clear()
+    elif binding_error == "incomplete":
+        public_pipeline.rows["thread-1"].clear()
+    elif binding_error == "digest":
+        public_pipeline.bindings["thread-1"].scope_digest = "corrupt"
+    else:
+        topology["participants"][0]["environment_id"] = "different-env"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == (
+        "Run scope differs from the immutable thread scope; create a new test"
+    )
+
+
+@pytest.mark.parametrize("environment_error", ["missing", "wrong_application", "archived"])
+@pytest.mark.parametrize("endpoint", ["thread", "run"])
+async def test_public_pipeline_hides_unavailable_participant_environments(
+    public_pipeline: PublicPipelineFixture, environment_error: str, endpoint: str
+) -> None:
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+    topology = public_pipeline.attach(value)
+    if environment_error == "missing":
+        public_pipeline.environments.clear()
+    elif environment_error == "wrong_application":
+        public_pipeline.environments["env-1"].application_id = "private-other-app"
+    else:
+        public_pipeline.environments["env-1"].application.archived_at = "archived"
+
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        if endpoint == "thread":
+            await on_threads_create(
+                ctx=make_ctx(make_identity(Role.ADMIN)),
+                value={"metadata": {"test_scope": topology}},
+            )
+        else:
+            await on_threads_create_run(
+                ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+            )
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Environment target not found"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.parametrize("endpoint", ["thread", "run"])
+async def test_public_pipeline_environment_failure_detaches_lookup_context(
+    public_pipeline: PublicPipelineFixture, monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    secret = "structured-environment-lookup-secret-canary"
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+    topology = public_pipeline.attach(value)
+
+    async def unavailable_environment(_repository, _environment_id):
+        raise LookupError(secret)
+
+    monkeypatch.setattr(CatalogRepository, "get_environment", unavailable_environment)
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        if endpoint == "thread":
+            await on_threads_create(
+                ctx=make_ctx(make_identity(Role.ADMIN)),
+                value={"metadata": {"test_scope": topology}},
+            )
+        else:
+            await on_threads_create_run(
+                ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+            )
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Environment target not found"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert secret not in repr(exc_info.value)
+
+
+@pytest.mark.parametrize("engine", ["sim", "apex_load"])
+async def test_public_pipeline_requires_target_approval_only_for_live_execution(
+    public_pipeline: PublicPipelineFixture, engine: str
+) -> None:
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "config": {"configurable": {"engine": engine, "phases": ["execution"]}},
+    }
+    public_pipeline.attach(value)
+    public_pipeline.environments["env-1"].target_approved = False
+    if engine != "sim":
+        with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+            await on_threads_create_run(
+                ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+            )
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == "Selected environment has no approved execution target"
+        assert exc_info.value.__context__ is None
+        assert exc_info.value.__cause__ is None
+        return
+
+    await on_threads_create_run(
+        ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+    )
+    configurable = value["config"]["configurable"]
+    assert configurable["app_id"] == "a1"
+    assert configurable["environment_target"] is None
+    assert "execution_target" not in configurable["test_scope_snapshot"]
 
 
 async def test_threads_create_run_rejects_disallowed_model_at_auth_boundary() -> None:
@@ -2138,6 +2565,7 @@ async def test_direct_run_create_rejects_delayed_and_feedback_controls(
     ],
 )
 async def test_direct_run_create_allows_inert_scheduling_controls(
+    public_pipeline: PublicPipelineFixture,
     container: str,
     control: dict[str, Any],
 ) -> None:
@@ -2154,10 +2582,16 @@ async def test_direct_run_create_allows_inert_scheduling_controls(
     else:
         value.update(control)
 
+    public_pipeline.attach(value)
+
     assert await on_threads_create_run(
         ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
         value=value,
-    ) == {_DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True}}
+    ) == {
+        "project_id": {"$eq": "p1"},
+        "app_id": {"$eq": "a1"},
+        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
+    }
 
 
 @pytest.mark.parametrize("selector", ["script_refs", "test_id", "test_instance_id"])
@@ -2965,14 +3399,19 @@ async def test_langgraph_scope_denial_is_audited(monkeypatch: pytest.MonkeyPatch
     assert event.status_code == 403
 
 
-async def test_run_attribution_is_stamped_from_authenticated_consumer() -> None:
+async def test_run_attribution_is_stamped_from_authenticated_consumer(
+    public_pipeline: PublicPipelineFixture,
+) -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {
         "assistant_id": "pipeline",
+        "thread_id": "thread-1",
         "kwargs": {"config": {"configurable": {"project_id": "p1"}}, "context": {}},
     }
     captured_context = value["kwargs"]["context"]
     captured = value["kwargs"]["config"]["configurable"]
+    public_pipeline.attach(value)
+
     await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert captured["langgraph_auth_user_id"] == identity.consumer_id
     assert captured[RUNTIME_ACTOR_ID_KEY] == identity.consumer_id
@@ -3113,6 +3552,221 @@ async def test_simulated_environment_retains_authoritative_scope_without_target_
 @pytest.fixture(autouse=True)
 def model_admission_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """Authorization tests isolate the pricing store; admission has DB coverage."""
+
     async def admit(configurable, **kwargs):
         return configurable.get("model_by_phase", {})
+
     monkeypatch.setattr("apex.services.model_pricing.admit_models", admit)
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+async def test_native_and_facade_launch_share_manifest_preparation(
+    monkeypatch, trusted, public_pipeline
+):
+    prepared = []
+
+    async def prepare(configurable, identity, run_input):
+        prepared.append((identity.consumer_id, run_input))
+        configurable["prompt_manifest"] = {"frozen": True}
+
+    monkeypatch.setattr("apex.services.prompt_selections.prepare_prompt_manifest", prepare)
+    reference = {"prompt_id": "p", "version_id": "v"}
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {"title": "Selected test"},
+            "context": {},
+            "config": {
+                "configurable": {
+                    "phases": ["story_analysis"],
+                    "prompt_selections": {
+                        "schema_version": 1,
+                        "system": dict(reference),
+                        "phases": {"story_analysis": dict(reference)},
+                        "application": [],
+                        "environment": [],
+                    },
+                }
+            },
+        },
+    }
+    public_pipeline.attach(value)
+
+    await on_threads_create_run(
+        ctx=make_ctx(make_identity(Role.ADMIN), action="create_run", trusted_loopback=trusted),
+        value=cast(Any, value),
+    )
+    assert prepared == [("c1", {"title": "Selected test", "project_id": "p1", "app_id": "a1"})]
+    assert value["kwargs"]["config"]["configurable"]["prompt_manifest"] == {"frozen": True}
+    assert value["kwargs"]["context"]["prompt_manifest"] == {"frozen": True}
+
+
+@pytest.mark.parametrize("source", ["assistant", "thread"])
+async def test_native_inherited_live_execution_resolves_target_before_launch(
+    public_pipeline, native_launch_defaults, source
+):
+    native_launch_defaults[source] = {"engine": "apex_load", "phases": ["execution"]}
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {"input": {"title": "Native inherited execution"}, "context": {}},
+    }
+    public_pipeline.attach(value)
+    configurable = value["kwargs"]["config"]["configurable"]
+    context = value["kwargs"]["context"]
+
+    await on_threads_create_run(
+        ctx=make_ctx(make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])), value=value
+    )
+
+    assert value["kwargs"]["config"]["configurable"] is configurable
+    assert value["kwargs"]["context"] is context
+    for effective in (configurable, context):
+        assert effective["engine"] == "apex_load"
+        assert effective["phases"] == ["execution"]
+        assert effective["environment_target"] == "https://approved.example.test"
+        assert effective["environment_target_version"] == 7
+        assert effective["test_scope_snapshot"]["execution_target"]["version"] == 7
+
+
+async def test_native_inherited_live_execution_rejects_unapproved_target(
+    public_pipeline, native_launch_defaults
+):
+    native_launch_defaults["assistant"] = {"engine": "apex_load", "phases": ["execution"]}
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1", "kwargs": {}}
+    public_pipeline.attach(value)
+    public_pipeline.environments["env-1"].target_approved = False
+    with pytest.raises(Auth.exceptions.HTTPException) as error:
+        await on_threads_create_run(ctx=make_ctx(make_identity(Role.ADMIN)), value=value)
+    assert error.value.status_code == 422
+    assert "approved" in str(error.value.detail)
+
+
+@pytest.mark.parametrize("override_source", ["thread", "caller"])
+async def test_native_defaults_follow_shallow_runtime_precedence(
+    public_pipeline, native_launch_defaults, override_source
+):
+    native_launch_defaults["assistant"] = {
+        "engine": "apex_load",
+        "phases": ["execution"],
+        "connections": {"apex_load": "old"},
+    }
+    overrides = {"engine": "sim", "phases": ["story_analysis"], "connections": {}}
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1", "kwargs": {"context": {}}}
+    public_pipeline.attach(value)
+    if override_source == "thread":
+        native_launch_defaults["thread"] = overrides
+    else:
+        value["kwargs"]["config"]["configurable"].update(overrides)
+        value["kwargs"]["context"].update(overrides)
+
+    await on_threads_create_run(ctx=make_ctx(make_identity(Role.ADMIN)), value=value)
+    for effective in (value["kwargs"]["config"]["configurable"], value["kwargs"]["context"]):
+        assert all(effective[key] == expected for key, expected in overrides.items())
+        assert effective.get("environment_target") is None
+        assert effective["test_scope_snapshot"].get("execution_target") is None
+
+
+@pytest.mark.parametrize("selection_source", ["assistant", "caller"])
+async def test_native_inherited_phase_plan_prepares_selected_prompt_versions(
+    monkeypatch, public_pipeline, native_launch_defaults, selection_source
+):
+    from copy import deepcopy
+
+    reference = {"prompt_id": "p", "version_id": "version-2"}
+    selections = {
+        "schema_version": 1,
+        "system": dict(reference),
+        "phases": {"story_analysis": dict(reference)},
+        "application": [],
+        "environment": [],
+    }
+    native_launch_defaults["assistant"] = {"phases": ["story_analysis"]}
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1", "kwargs": {"context": {}}}
+    public_pipeline.attach(value)
+    target = (
+        native_launch_defaults["assistant"]
+        if selection_source == "assistant"
+        else value["kwargs"]["config"]["configurable"]
+    )
+    target["prompt_selections"] = deepcopy(selections)
+    seen = []
+
+    async def prepare(configurable, _identity, _run_input):
+        seen.append(deepcopy(configurable["prompt_selections"]))
+        assert configurable["phases"] == ["story_analysis"]
+        configurable["prompt_manifest"] = {"server_prepared": True}
+
+    monkeypatch.setattr("apex.services.prompt_selections.prepare_prompt_manifest", prepare)
+    await on_threads_create_run(ctx=make_ctx(make_identity(Role.ADMIN)), value=value)
+    from apex.domain.prompt_selection import PromptSelectionsV1
+
+    selections = PromptSelectionsV1.model_validate(selections).model_dump(mode="json")
+    assert seen == [selections]
+    for effective in (value["kwargs"]["config"]["configurable"], value["kwargs"]["context"]):
+        assert effective["prompt_selections"] == selections
+        assert effective["prompt_manifest"] == {"server_prepared": True}
+    assert "prompt_manifest" not in native_launch_defaults["assistant"]
+
+
+@pytest.mark.parametrize("field", sorted(auth_handlers._ASSISTANT_SERVER_OWNED_CONFIG))
+async def test_native_saved_assistant_cannot_supply_server_owned_fields(
+    native_launch_defaults, field
+):
+    native_launch_defaults["assistant"] = {field: "forged"}
+    with pytest.raises(Auth.exceptions.HTTPException) as error:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.ADMIN)),
+            value=cast(Any, {"assistant_id": "pipeline", "thread_id": "thread-1"}),
+        )
+    assert error.value.status_code == 422
+    assert error.value.detail == "Assistant contains server-owned configuration"
+
+
+async def test_native_serialized_null_internal_defaults_are_normalized(
+    public_pipeline, native_launch_defaults
+):
+    native_launch_defaults["assistant"] = {
+        field: None for field in auth_handlers._ASSISTANT_SERVER_OWNED_CONFIG
+    }
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1", "kwargs": {"context": {}}}
+    public_pipeline.attach(value)
+    await on_threads_create_run(ctx=make_ctx(make_identity(Role.ADMIN)), value=value)
+    assert value["kwargs"]["config"]["configurable"]["prompt_manifest"] is None
+    assert value["kwargs"]["context"]["engine"] == "sim"
+
+
+async def test_native_inaccessible_assistant_stops_before_scope_or_prompt_resolution(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    load = AsyncMock(side_effect=Auth.exceptions.HTTPException(404, "Assistant unavailable"))
+    catalog = AsyncMock()
+    prepare = AsyncMock()
+    monkeypatch.setattr(auth_handlers, "_load_native_launch_defaults", load)
+    monkeypatch.setattr(auth_handlers, "_ensure_catalog_app_scope", catalog)
+    monkeypatch.setattr("apex.services.prompt_selections.prepare_prompt_manifest", prepare)
+    with pytest.raises(Auth.exceptions.HTTPException) as error:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])),
+            value=cast(Any, {"assistant_id": "inaccessible", "thread_id": "thread-1"}),
+        )
+    assert error.value.status_code == 404
+    catalog.assert_not_awaited()
+    prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("graph", ["pipeline", "context", "playground"])
+async def test_known_system_assistants_have_global_read_authority(graph):
+    system_id = next(
+        key for key, value in auth_handlers._SYSTEM_ASSISTANT_GRAPHS.items() if value == graph
+    )
+    ctx = make_ctx(
+        make_identity(Role.VIEWER, [ScopeRef(project_id="p1")]),
+        resource="assistants",
+        action="read",
+    )
+    assert await on_assistants_read(ctx, {"assistant_id": system_id}) is None
+    assert await on_assistants_read(ctx, {"assistant_id": "custom", "graph_id": graph}) == {
+        "project_id": {"$eq": "p1"}
+    }

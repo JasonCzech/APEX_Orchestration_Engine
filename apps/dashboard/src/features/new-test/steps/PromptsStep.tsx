@@ -1,483 +1,188 @@
-/**
- * Step 5 — Prompts: the focused phase's system prompt plus the selected
- * application's app-wide prompt. System overrides keep the historical
- * prompt_overrides["phase/<p>"] key; application overrides use
- * prompt_overrides["application/<app_id>"].
- */
-import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
-import { CopyableId } from '@/components/ux/CopyableId'
-import { useQuery } from '@tanstack/react-query'
-import CodeMirror from '@uiw/react-codemirror'
-import { EditorView } from '@codemirror/view'
-
-import type { components } from '@apex/api-client'
-import type { PhaseName } from '@apex/pipeline-events'
-
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueries } from '@tanstack/react-query'
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
-import { fetchAllOffsetPages } from '@/api/fetchAllPages'
-import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
-import { useOptionalConsumer } from '@/auth/AuthProvider'
-
-import type { StepProps } from '../NewRunWizard'
-import { focusedPromptPhase, isRecord, selectedPhases } from '../wizardState'
+import { usePromptList, type PromptSummary } from '@/api/hooks/usePrompts'
+import { PROMPT_LABELS, emptyPromptSelections, parsePromptSelections, type PromptSelection, type DraftPromptSelections } from '@/features/prompts/promptCategories'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
-import '@/components/viewers/viewers.css'
+import { PromptEditor } from '@/features/prompts/PromptEditor'
+import type { StepProps } from '../NewRunWizard'
+import { isRecord, selectedPhases } from '../wizardState'
 
-type PromptSummary = components['schemas']['PromptSummary']
-type PromptDetail = components['schemas']['PromptDetail']
+function refFor(row: PromptSummary): PromptSelection {
+  return { prompt_id: row.id, version_id: row.active_version!.id }
+}
 
-const PHASE_NAMESPACE = 'phase'
-const APPLICATION_NAMESPACE = 'application'
-
-const PROMPT_PAGE_SIZE = 200
-
-async function fetchPromptList(namespace: string, signal?: AbortSignal): Promise<PromptSummary[]> {
-  return fetchAllOffsetPages({
-    label: 'Wizard prompt list',
-    pageSize: PROMPT_PAGE_SIZE,
-    fetchPage: async (limit, offset) => {
-      const { data, error, response } = await getApexClient().GET('/v1/prompts', {
-        params: {
-          query: { namespace, limit, offset },
-        },
-        signal,
+export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepProps) {
+  const catalog = usePromptList({ selection_enabled: true })
+  const appIds = new Set<string | null | undefined>(draft.scope.test_scope?.participants.map(p => p.application_id) ?? [draft.scope.app_id])
+  const envIds = new Set<string | null | undefined>(draft.scope.test_scope?.participants.map(p => p.environment_id) ?? [draft.scope.environment_id])
+  const rows = catalog.data ?? []
+  const phases = selectedPhases(draft.config)
+  const selections = draft.prompt_selections ?? emptyPromptSelections()
+  const [notice, setNotice] = useState('')
+  const previousScope = useRef(draft.scope)
+  const legacy = useMemo(() => {
+    const inherited = draft.config.golden_configurable?.['prompt_overrides']
+    return { ...(isRecord(inherited) ? inherited : {}), ...draft.prompt_overrides }
+  }, [draft.config.golden_configurable, draft.prompt_overrides])
+  const allSelections = (phases.length ? [selections.system, ...phases.map(phase => selections.phases[phase]), ...selections.application, ...selections.environment] : []).filter((item): item is PromptSelection => Boolean(item))
+  const versions = useQueries({ queries: allSelections.map(item => ({
+    queryKey: ['prompts', 'selected-version', item.prompt_id, item.version_id],
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}/versions/{version_id}', {
+        params: { path: { prompt_id: item.prompt_id, version_id: item.version_id } }, signal,
       })
-      if (!response.ok || !data) {
-        throw new ApiError(
-          response.status,
-          errorMessageOf(error, `Prompt list failed (${response.status})`),
-          error,
-        )
-      }
+      if (!response.ok || !data) throw new ApiError(response.status, errorMessageOf(error, 'Selected version is unavailable'), error)
       return data
     },
-  })
-}
+    staleTime: 60_000,
+  })) })
+  const contentFor = (item: PromptSelection) => versions[allSelections.findIndex(row => row.prompt_id === item.prompt_id && row.version_id === item.version_id)]
 
-async function fetchPromptDetail(promptId: string, signal?: AbortSignal): Promise<PromptDetail> {
-  const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}', {
-    params: { path: { prompt_id: promptId } },
-    signal,
-  })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Prompt load failed (${response.status})`),
-      error,
-    )
-  }
-  return data
-}
-
-interface CatalogPrompt {
-  content: string
-  version: number | null
-}
-
-/** Catalog (content, active version) for one phase prompt key, or null when absent. */
-function useCatalogPrompt(
-  summaries: PromptSummary[] | undefined,
-  key: string | null,
-  enabled = true,
-): { prompt: CatalogPrompt | null; loading: boolean; error: Error | null } {
-  const summary = enabled && key ? summaries?.find((entry) => entry.key === key) : undefined
-  const detail = useQuery({
-    queryKey: queryKeys.prompts.byId(summary?.id ?? 'missing'),
-    queryFn: ({ signal }) => fetchPromptDetail(summary?.id ?? '', signal),
-    enabled: enabled && Boolean(summary),
-    staleTime: STALE_TIMES.prompts,
-  })
-  if (!enabled || !key) return { prompt: null, loading: false, error: null }
-  if (!summary) return { prompt: null, loading: summaries === undefined, error: null }
-  if (!detail.data) {
-    return {
-      prompt: null,
-      loading: detail.isLoading,
-      error: detail.isError ? detail.error : null,
+  useEffect(() => {
+    if (!phases.length || !catalog.data || catalog.isError || catalog.isPlaceholderData) return
+    const next: DraftPromptSelections = structuredClone(draft.prompt_selections ?? parsePromptSelections(draft.config.golden_configurable?.['prompt_selections']) ?? emptyPromptSelections())
+    const overrides = { ...legacy }
+    const removed = new Set(draft.prompt_override_removals)
+    for (const key of removed) delete overrides[key]
+    if (!next.system) {
+      const row = rows.find(row => row.namespace === 'system' && row.is_default && row.active_version)
+      if (row) next.system = refFor(row)
     }
+    for (const phase of phases) {
+      if (!next.phases[phase]) {
+        const row = rows.find(row => row.namespace === 'phase' && row.phase === phase && row.is_default && row.active_version)
+        if (row) next.phases[phase] = refFor(row)
+      }
+      const key = `phase/${phase}`
+      if (next.phases[phase] && isRecord(overrides[key]) && typeof overrides[key]['content'] === 'string') {
+        next.phases[phase] = { ...next.phases[phase]!, override_content: overrides[key]['content'] }
+        removed.add(key)
+        delete overrides[key]
+      }
+    }
+    // Preserve phase context when ownership moves to HITL; launch filters agent contexts.
+    const appKey = `application/${draft.scope.app_id}`
+    const app = rows.find(row => row.namespace === 'application' && row.key === draft.scope.app_id && appIds.has(row.application_id) && row.active_version)
+    if (app && isRecord(overrides[appKey]) && typeof overrides[appKey]['content'] === 'string') {
+      if (!next.application.some(item => item.prompt_id === app.id)) next.application.push({ ...refFor(app), override_content: overrides[appKey]['content'] })
+      removed.add(appKey)
+      delete overrides[appKey]
+    }
+    let cleared = false
+    if (JSON.stringify(previousScope.current) !== JSON.stringify(draft.scope)) {
+      const filter = (items: PromptSelection[], category: 'application' | 'environment') => items.filter(item => {
+        const row = rows.find(row => row.id === item.prompt_id)
+        const keep = category === 'application' ? row?.is_shared || (row?.application_id && appIds.has(row.application_id)) : row?.environment_id && envIds.has(row.environment_id)
+        if (!keep) cleared = true
+        return keep
+      })
+      next.application = filter(next.application, 'application')
+      next.environment = filter(next.environment, 'environment')
+    }
+    previousScope.current = draft.scope
+    if (cleared) setNotice('Context selections that no longer match the application or environment were removed.')
+    if (JSON.stringify(next) !== JSON.stringify(draft.prompt_selections) || JSON.stringify([...removed]) !== JSON.stringify(draft.prompt_override_removals)) {
+      onNormalize(current => ({
+        ...current,
+        // Keep the old intent reconstructable until any ambiguous pre-upgrade
+        // launch has been reconciled. Automatic prompt migration is not a new
+        // user request and must not bypass the durable retry quarantine.
+        ...(removed.size > current.prompt_override_removals.length && current.legacy_prompt_overrides === undefined
+          ? { legacy_prompt_overrides: { ...current.prompt_overrides }, legacy_prompt_override_removals: [...current.prompt_override_removals] }
+          : {}),
+        prompt_selections: next,
+        prompt_overrides: Object.fromEntries(Object.entries(current.prompt_overrides).filter(([key]) => !removed.has(key))),
+        prompt_override_removals: [...removed],
+      }))
+    }
+  }, [catalog.data, catalog.isError, catalog.isPlaceholderData, draft.prompt_selections, draft.scope, draft.config, draft.prompt_override_removals, legacy, onNormalize]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const issues: string[] = []
+  if (phases.length && catalog.isError) issues.push('Prompt catalog could not be loaded. Retry before launching.')
+  else if (phases.length && (catalog.isPending || catalog.isPlaceholderData)) issues.push('Loading prompt catalog…')
+  for (const [index, item] of allSelections.entries()) {
+    const row = rows.find(row => row.id === item.prompt_id)
+    if (catalog.isSuccess && (!row || row.archived_at || !row.selection_enabled)) issues.push('A selected prompt is unavailable. Choose a replacement.')
+    if (versions[index]?.isPending) issues.push('Loading selected prompt versions…')
+    if (versions[index]?.isError) issues.push('A selected version could not be loaded. Retry or choose a replacement.')
+    if ((item.override_content ?? versions[index]?.data?.content)?.trim() === '') issues.push('Prompt content must not be blank.')
+    if (row?.namespace === 'application' && !row.is_shared && !appIds.has(row.application_id)) issues.push('An application context does not match this test.')
+    if (row?.namespace === 'environment' && !envIds.has(row.environment_id)) issues.push('An environment context does not match this test.')
   }
-  return {
-    prompt: {
-      content: detail.data.content ?? '',
-      version: detail.data.active_version?.version ?? null,
-    },
-    loading: false,
-    error: detail.isError ? detail.error : null,
+  const unresolved = Object.entries(legacy).filter(([key]) => phases.length > 0 && !draft.prompt_override_removals.includes(key) && (!key.startsWith('phase/') || phases.some(phase => key.startsWith(`phase/${phase}`))))
+  if (unresolved.length) issues.push('Resolve the retained legacy prompt overrides before launching.')
+  const serializedIssues = JSON.stringify([...new Set(issues)])
+  useEffect(() => {
+    if (serializedIssues !== JSON.stringify(draft.prompt_selection_issues ?? [])) onNormalize(current => ({ ...current, prompt_selection_issues: JSON.parse(serializedIssues) as string[] }))
+  }, [serializedIssues, draft.prompt_selection_issues, onNormalize])
+
+  function change(update: (value: DraftPromptSelections) => void) {
+    onChange(current => {
+      const next = structuredClone(current.prompt_selections ?? emptyPromptSelections())
+      update(next)
+      return { ...current, prompt_selections: next }
+    })
   }
-}
-
-function PromptBlock({
-  label,
-  prompt,
-  loading,
-  error,
-  override,
-  overrideLabel,
-  editorLabel,
-  emptyText,
-  emptyChipLabel = 'built-in default',
-  testId,
-  onOverride,
-  onRevert,
-  onEdit,
-}: {
-  label: string
-  prompt: CatalogPrompt | null
-  loading: boolean
-  error?: Error | null
-  override: { content: string } | undefined
-  overrideLabel: string
-  editorLabel: string
-  emptyText: string
-  emptyChipLabel?: string
-  testId?: string
-  onOverride: (seed: string) => void
-  onRevert: () => void
-  onEdit: (content: string) => void
-}) {
-  return (
-    <div className="glass-panel wizard-prompt-block" data-testid={testId}>
-      <div className="wizard-row">
-        <span className="wizard-label">{label}</span>
-        {override ? (
-          <span className="topbar-meta-chip warning" data-testid={`override-chip-${overrideLabel}`}>
-            run override
-          </span>
-        ) : prompt && prompt.version !== null ? (
-          <span className="topbar-meta-chip accent">catalog@v{prompt.version}</span>
-        ) : (
-          !loading && <span className="topbar-meta-chip">{emptyChipLabel}</span>
-        )}
-        {override && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onRevert}>
-            Revert to catalog
-          </button>
-        )}
-      </div>
-
-      {!override && error && prompt && (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Showing the cached catalog prompt because its latest refresh failed.
-        </p>
-      )}
-
-      {override ? (
-        <div className="code-viewer editable">
-          <CodeMirror
-            value={override.content}
-            editable
-            aria-label={editorLabel}
-            extensions={[EditorView.contentAttributes.of({ 'aria-label': editorLabel, tabindex: '0' })]}
-            indentWithTab={false}
-            basicSetup={{
-              lineNumbers: true,
-              foldGutter: false,
-              highlightActiveLine: true,
-              highlightActiveLineGutter: false,
-            }}
-            onChange={(next: string) => onEdit(next)}
-          />
-        </div>
-      ) : loading ? (
-        <p className="wizard-caption">Loading…</p>
-      ) : prompt ? (
-        <div className="code-viewer">
-          <CodeMirror
-            value={prompt.content}
-            aria-label={`${label} catalog content`}
-            extensions={[EditorView.contentAttributes.of({ 'aria-label': `${label} catalog content`, tabindex: '0' })]}
-            indentWithTab={false}
-            readOnly
-            editable={false}
-            basicSetup={{
-              lineNumbers: false,
-              foldGutter: false,
-              highlightActiveLine: false,
-              highlightActiveLineGutter: false,
-            }}
-          />
-        </div>
-      ) : error ? (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Catalog prompt could not be loaded. Retry or use an explicit override.
-        </p>
-      ) : (
-        <p className="wizard-caption">{emptyText}</p>
-      )}
-
-      {!override && !loading && (
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm wizard-prompt-override"
-          onClick={() => onOverride(prompt?.content ?? '')}
-        >
-          Override for this run
-        </button>
-      )}
+  function preview(item: PromptSelection, update: (value: PromptSelection) => void) {
+    const row = rows.find(row => row.id === item.prompt_id)
+    const version = contentFor(item)
+    return <div className="wizard-prompt-block" key={item.prompt_id}>
+      <p><strong>{row?.key ?? 'Unavailable prompt'}</strong> · v{version?.data?.version ?? item.version_id}{item.override_content !== undefined ? ' · test override' : ''}</p>
+      {row?.description && <p>{row.description}</p>}
+      {row?.active_version && row.active_version.id !== item.version_id && <button type="button" className="btn btn-secondary btn-sm" onClick={() => update({ ...item, version_id: row.active_version!.id })}>New version available — use v{row.active_version.version}</button>}
+      {version?.isPending ? <p role="status">Loading selected version…</p> : version?.isError ? <p role="alert">Selected version unavailable. <button type="button" onClick={() => void version.refetch()}>Retry</button></p> : item.override_content !== undefined ? <>
+        <PromptEditor value={item.override_content} onChange={value => update({ ...item, override_content: value })} ariaLabel={`Override ${row?.key ?? 'prompt'}`} />
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => update({ prompt_id: item.prompt_id, version_id: item.version_id })}>Revert to selected version</button>
+      </> : <>
+        <details><summary>Preview selected content</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{version?.data?.content}</pre></details>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!version?.data} onClick={() => update({ ...item, override_content: version?.data?.content ?? '' })}>Override for this test</button>
+      </>}
     </div>
-  )
-}
-
-export function PromptsStep({ draft, onChange }: StepProps) {
-  const consumer = useOptionalConsumer()
-  const phase = focusedPromptPhase(draft.config)
-  const phases = selectedPhases(draft.config)
-  const appId = draft.scope.app_id
-  const phaseList = useQuery({
-    queryKey: queryKeys.prompts.listNamespace(PHASE_NAMESPACE),
-    queryFn: ({ signal }) => fetchPromptList(PHASE_NAMESPACE, signal),
-    staleTime: STALE_TIMES.prompts,
-  })
-  const applicationList = useQuery({
-    queryKey: queryKeys.prompts.listNamespace(APPLICATION_NAMESPACE),
-    queryFn: ({ signal }) => fetchPromptList(APPLICATION_NAMESPACE, signal),
-    // Application namespace is intentionally unavailable to scoped
-    // identities; avoid a guaranteed 403 and explain that limitation below.
-    enabled: Boolean(appId) && (consumer === undefined || (consumer != null && consumer.scopes.length === 0)),
-    staleTime: STALE_TIMES.prompts,
-  })
-
-  const system = useCatalogPrompt(phaseList.data, phase ? `${phase}/system` : null)
-  const userPrompt = useCatalogPrompt(phaseList.data, phase ? `${phase}/user` : null)
-  const application = useCatalogPrompt(
-    applicationList.data,
-    appId,
-    Boolean(appId) && (consumer === undefined || (consumer !== null && consumer.scopes.length === 0)),
-  )
-
-  function systemOverrideKey(phaseName: PhaseName): string {
-    return `${PHASE_NAMESPACE}/${phaseName}`
   }
-
-  function userOverrideKey(phaseName: PhaseName): string {
-    return `${PHASE_NAMESPACE}/${phaseName}/user`
+  function single(label: string, options: PromptSummary[], item: PromptSelection | null | undefined, update: (item: PromptSelection) => void) {
+    return <div className="glass-panel wizard-prompt-block" key={label}>
+      <label className="wizard-label">{label} (required)<select className="field-input" aria-label={label} value={item?.prompt_id ?? ''} onChange={event => { const row = options.find(row => row.id === event.target.value); if (row?.active_version) update(refFor(row)) }}>
+        <option value="">Select a prompt</option>
+        {item && !options.some(row => row.id === item.prompt_id) && <option value={item.prompt_id}>Unavailable selection</option>}
+        {options.map(row => <option key={row.id} value={row.id}>{row.key}{row.is_default ? ' (default)' : ''}</option>)}
+      </select></label>
+      {!item && catalog.isSuccess && <p role="alert">{options.length ? 'No catalog default is available. Choose a prompt.' : 'No eligible prompt is available. Ask an administrator to create one.'}</p>}
+      {item && preview(item, update)}
+    </div>
   }
-
-  function applicationOverrideKey(applicationId: string): string {
-    return `${APPLICATION_NAMESPACE}/${applicationId}`
-  }
-
-  const inheritedOverrides =
-    draft.config.golden_configurable && isRecord(draft.config.golden_configurable['prompt_overrides'])
-      ? draft.config.golden_configurable['prompt_overrides']
-      : {}
-  const removedOverrides = new Set(draft.prompt_override_removals)
-  function effectiveOverride(key: string): { content: string } | undefined {
-    if (draft.prompt_overrides[key]) return draft.prompt_overrides[key]
-    if (removedOverrides.has(key)) return undefined
-    const inherited = inheritedOverrides[key]
-    return isRecord(inherited)
-      ? { content: typeof inherited['content'] === 'string' ? inherited['content'] : '' }
-      : undefined
-  }
-  const systemOverride = phase ? effectiveOverride(systemOverrideKey(phase)) : undefined
-  const userOverride = phase ? effectiveOverride(userOverrideKey(phase)) : undefined
-  const applicationOverride = appId ? effectiveOverride(applicationOverrideKey(appId)) : undefined
-
-  return (
-    <section className="wizard-step" aria-label="Prompts">
-      <p className="wizard-step-hint">
-        Preview the focused phase system and user prompts, and the selected application's requirements prompt.
-      </p>
-      {phaseList.isError && (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Phase prompt catalog failed to load — built-in defaults still apply at run time.
-        </p>
-      )}
-      {applicationList.isError && (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Application prompt catalog failed to load.
-        </p>
-      )}
-      {appId && consumer != null && consumer.scopes.length > 0 && (
-        <p className="wizard-caption">Application prompt catalog is available only to unscoped operators.</p>
-      )}
-
-      {phase === null ? (
-        <p className="wizard-caption wizard-caption--danger">Select at least one phase first.</p>
-      ) : (
-        <div className="wizard-prompt-panel">
-          <div className="wizard-field">
-            <span className="wizard-label">Phase prompt</span>
-            <div className="wizard-phase-strip" role="group" aria-label="Prompt phase">
-              {phases.map((candidate) => (
-                <button
-                  key={candidate}
-                  type="button"
-                  className={`wizard-phase-toggle${candidate === phase ? ' wizard-phase-toggle--focused' : ''}`}
-                  aria-pressed={candidate === phase}
-                  onClick={() => onChange((prev) => ({
-                    ...prev,
-                    config: { ...prev.config, prompt_focus_phase: candidate },
-                  }))}
-                >
-                  {PHASE_LABELS[candidate]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="wizard-row">
-            <span className="topbar-meta-chip accent" data-testid="prompt-focused-phase">
-              {phase.replaceAll('_', ' ')}
-            </span>
-            {appId && (
-              <span className="topbar-meta-chip" data-testid="prompt-selected-application">
-                <ApplicationLabel project={draft.scope.project_id} application={appId} /> <CopyableId value={appId} label="Application ID" />
-              </span>
-            )}
-          </div>
-
-          <PromptBlock
-            label="System prompt"
-            prompt={system.prompt}
-            loading={system.loading}
-            error={system.error}
-            override={systemOverride}
-            overrideLabel={phase}
-            editorLabel={`${PHASE_LABELS[phase]} system prompt override`}
-            emptyText="Not in the catalog — the built-in phase template runs."
-            testId="system-prompt-block"
-            onOverride={(seed) =>
-              onChange((prev) => ({
-                ...prev,
-                prompt_overrides: {
-                  ...prev.prompt_overrides,
-                  [systemOverrideKey(phase)]: { content: seed },
-                },
-                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase)),
-              }))
-            }
-            onRevert={() =>
-              onChange((prev) => {
-                const next = { ...prev.prompt_overrides }
-                delete next[systemOverrideKey(phase)]
-                const inherited =
-                  prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
-                    ? prev.config.golden_configurable['prompt_overrides']
-                    : {}
-                const removals = Object.prototype.hasOwnProperty.call(inherited, systemOverrideKey(phase))
-                  ? [...new Set([...prev.prompt_override_removals, systemOverrideKey(phase)])]
-                  : prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase))
-                return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
-              })
-            }
-            onEdit={(content) =>
-              onChange((prev) => ({
-                ...prev,
-                prompt_overrides: {
-                  ...prev.prompt_overrides,
-                  [systemOverrideKey(phase)]: { content },
-                },
-                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase)),
-              }))
-            }
-          />
-
-          <PromptBlock
-            label="User prompt"
-            prompt={userPrompt.prompt}
-            loading={userPrompt.loading}
-            error={userPrompt.error}
-            override={userOverride}
-            overrideLabel={`${phase}-user`}
-            editorLabel={`${PHASE_LABELS[phase]} user prompt override`}
-            emptyText="Not in the catalog — the built-in phase template runs."
-            testId="user-prompt-block"
-            onOverride={(seed) =>
-              onChange((prev) => ({
-                ...prev,
-                prompt_overrides: {
-                  ...prev.prompt_overrides,
-                  [userOverrideKey(phase)]: { content: seed },
-                },
-                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase)),
-              }))
-            }
-            onRevert={() =>
-              onChange((prev) => {
-                const next = { ...prev.prompt_overrides }
-                delete next[userOverrideKey(phase)]
-                const inherited =
-                  prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
-                    ? prev.config.golden_configurable['prompt_overrides']
-                    : {}
-                const removals = Object.prototype.hasOwnProperty.call(inherited, userOverrideKey(phase))
-                  ? [...new Set([...prev.prompt_override_removals, userOverrideKey(phase)])]
-                  : prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase))
-                return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
-              })
-            }
-            onEdit={(content) =>
-              onChange((prev) => ({
-                ...prev,
-                prompt_overrides: {
-                  ...prev.prompt_overrides,
-                  [userOverrideKey(phase)]: { content },
-                },
-                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase)),
-              }))
-            }
-          />
-
-          {appId ? (
-            <PromptBlock
-              label="Application prompt"
-              prompt={application.prompt}
-              loading={application.loading}
-              error={application.error}
-              override={applicationOverride}
-              overrideLabel={appId}
-              editorLabel={`${appId} application prompt override`}
-              emptyText="No application prompt exists for this app yet."
-              emptyChipLabel="empty"
-              testId="application-prompt-block"
-              onOverride={(seed) =>
-                onChange((prev) => ({
-                  ...prev,
-                  prompt_overrides: {
-                    ...prev.prompt_overrides,
-                    [applicationOverrideKey(appId)]: { content: seed },
-                  },
-                  prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== applicationOverrideKey(appId)),
-                }))
-              }
-              onRevert={() =>
-                onChange((prev) => {
-                  const next = { ...prev.prompt_overrides }
-                  delete next[applicationOverrideKey(appId)]
-                  const inherited =
-                    prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
-                      ? prev.config.golden_configurable['prompt_overrides']
-                      : {}
-                  const key = applicationOverrideKey(appId)
-                  const removals = Object.prototype.hasOwnProperty.call(inherited, key)
-                    ? [...new Set([...prev.prompt_override_removals, key])]
-                    : prev.prompt_override_removals.filter((entry) => entry !== key)
-                  return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
-                })
-              }
-              onEdit={(content) =>
-                onChange((prev) => ({
-                  ...prev,
-                  prompt_overrides: {
-                    ...prev.prompt_overrides,
-                    [applicationOverrideKey(appId)]: { content },
-                  },
-                  prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== applicationOverrideKey(appId)),
-                }))
-              }
-            />
-          ) : (
-            <div className="glass-panel wizard-prompt-block">
-              <div className="wizard-row">
-                <span className="wizard-label">Application prompt</span>
-              </div>
-              <p className="wizard-caption">Select an application in Scope to load its requirements prompt.</p>
-            </div>
-          )}
+  function multiple(category: 'application' | 'environment', options: PromptSummary[]) {
+    const items = selections[category]
+    return <section className="glass-panel wizard-prompt-block" aria-label={PROMPT_LABELS[category]}>
+      <h3>{PROMPT_LABELS[category]} <small>(optional)</small></h3>
+      <label>Add context<select className="field-input" aria-label={`Add ${PROMPT_LABELS[category]}`} value="" disabled={(category === 'environment' && ![...envIds].some(Boolean)) || items.length >= 32} onChange={event => { const row = options.find(row => row.id === event.target.value); if (row?.active_version) change(next => { next[category].push(refFor(row)) }) }}>
+        <option value="">Select a prompt to add</option>
+        {options.filter(row => !items.some(item => item.prompt_id === row.id)).map(row => <option key={row.id} value={row.id}>{row.key}{row.is_shared ? ' (shared)' : ''}</option>)}
+      </select></label>
+      {category === 'environment' && ![...envIds].some(Boolean) && <p>Select an environment to see its context prompts.</p>}
+      {!items.length && <p>No context selected.</p>}
+      {items.map((item, index) => <div key={item.prompt_id}>
+        {preview(item, value => change(next => { next[category][index] = value }))}
+        <div className="wizard-row">
+          <button type="button" className="btn btn-ghost btn-sm" disabled={index === 0} onClick={() => change(next => { [next[category][index - 1], next[category][index]] = [next[category][index]!, next[category][index - 1]!] })}>Move up</button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={index === items.length - 1} onClick={() => change(next => { [next[category][index], next[category][index + 1]] = [next[category][index + 1]!, next[category][index]!] })}>Move down</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => change(next => { next[category].splice(index, 1) })}>Remove context</button>
         </div>
-      )}
+      </div>)}
     </section>
-  )
+  }
+  const activeRows = rows.filter(row => !row.archived_at && row.active_version && row.selection_enabled)
+  if (!phases.length) return <section className="wizard-step" aria-label="Prompts"><p>All phases are assigned to HITL. No agent prompts are required. Saved prompt edits will be restored when a phase is assigned to LangGraph.</p></section>
+  return <section className="wizard-step" aria-label="Prompts">
+    <p>Choose one system prompt for the pipeline and one context prompt for each LangGraph phase. Selected versions are pinned when this test launches.</p>
+    {notice && <p role="status">{notice}</p>}
+    {catalog.isError && <p role="alert">Prompt catalog could not be loaded. <button type="button" onClick={() => void catalog.refetch()}>Retry</button></p>}
+    {single('System Prompt', activeRows.filter(row => row.namespace === 'system'), selections.system, item => change(next => { next.system = item }))}
+    <h3>Phase context</h3>
+    {phases.map(phase => single(`Phase context — ${PHASE_LABELS[phase]}`, activeRows.filter(row => row.namespace === 'phase' && row.phase === phase), selections.phases[phase], item => change(next => { next.phases[phase] = item })))}
+    {multiple('application', activeRows.filter(row => row.namespace === 'application' && (row.is_shared || appIds.has(row.application_id))))}
+    {multiple('environment', activeRows.filter(row => row.namespace === 'environment' && envIds.has(row.environment_id)))}
+    {unresolved.length > 0 && <section aria-label="Legacy prompt compatibility"><h3>Legacy prompts need review</h3><p>These overrides cannot be mapped automatically. Copy any required instructions into the appropriate selected prompt override before removing the legacy entry.</p>{unresolved.map(([key, value]) => <div key={key}><strong>{key}</strong><pre style={{ whiteSpace: 'pre-wrap' }}>{isRecord(value) ? String(value['content'] ?? '') : String(value)}</pre><button type="button" onClick={() => onChange(current => ({ ...current, prompt_overrides: Object.fromEntries(Object.entries(current.prompt_overrides).filter(([name]) => name !== key)), prompt_override_removals: [...current.prompt_override_removals, key] }))}>Remove legacy override {key}</button></div>)}</section>}
+  </section>
 }

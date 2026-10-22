@@ -8,3 +8,18 @@
   font-weight: 600;
   color: var(--text-muted);
 }
+
+.prompt-tabs-editor { min-width: 0; }
+.prompt-tabs-editor .cm-editor { max-width: 100%; }
+
+@media (max-width: 600px) {
+  .prompt-tabs-editor .workspace-tabs {
+    flex-wrap: wrap;
+    overflow: visible;
+    height: auto;
+  }
+  .prompt-tabs-editor .workspace-tab {
+    flex: 0 1 auto;
+    white-space: normal;
+  }
+}

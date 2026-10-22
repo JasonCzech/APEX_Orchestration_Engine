@@ -13,6 +13,7 @@ const readinessSchema = z.object({
 
 export type ExecutionConfigurationReadiness = z.infer<typeof readinessSchema>
 export interface ExecutionReadinessRequest {
+  test_scope?: import('@/features/new-test/testScope').TestScopeV1
   project_id: string
   app_id?: string
   engine: string

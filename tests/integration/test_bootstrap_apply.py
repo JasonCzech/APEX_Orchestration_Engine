@@ -236,7 +236,9 @@ async def test_prompt_seeding_rolls_back_when_later_bootstrap_step_fails(
 ) -> None:
     from apex.services import prompts as prompt_service
 
-    key = f"atomic-{uuid4().hex}/system"
+    # A unique legacy request template exercises the same transactional writes
+    # without inventing an invalid phase for a selectable context prompt.
+    key = f"reporting/atomic-{uuid4().hex}/user"
     monkeypatch.setattr(prompt_service, "DEFAULT_PHASE_PROMPTS", {key: "transaction probe"})
     doc = BootstrapDocument.model_validate(
         {

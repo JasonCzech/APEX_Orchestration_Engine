@@ -344,7 +344,7 @@ describe('ApprovalsInboxPage', () => {
     expect(await findRow('run-new-2')).toHaveAttribute('aria-posinset', '2')
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
     const updates = await screen.findByRole('status', { name: 'Run updates' })
-    await waitFor(() => expect(updates).toHaveTextContent('Newest gated run. Review phase results open on Reporting. Queue item 2 of 2.'))
+    await waitFor(() => expect(updates).toHaveTextContent('Newest gated run. Review phase results open on Reporting & Analysis. Queue item 2 of 2.'))
     expect(updates).not.toHaveTextContent('Snapshot refresh active')
     expect(updates).not.toHaveTextContent('Story Analysis:')
     await user.keyboard('j') // clamped at the end

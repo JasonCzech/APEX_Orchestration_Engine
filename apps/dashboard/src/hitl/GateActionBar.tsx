@@ -134,7 +134,9 @@ export function GateActionBar({
         </div>
       </Dialog>}
       <div className="gate-actions-row">
-        {kind.startsWith('engine_') && has('retry') && (
+        {kind === 'human_completion' && has('complete') && <button type="button" className="btn btn-primary" disabled={disabled || !draft.output} onClick={() => onSubmit('complete')}>Complete phase</button>}
+        {kind === 'analysis_recovery' && has('assign_hitl') && <button type="button" className="btn btn-secondary" disabled={disabled} onClick={() => onSubmit('assign_hitl')}>Assign remaining work to HITL</button>}
+        {(kind.startsWith('engine_') || kind === 'analysis_recovery') && has('retry') && (
           <button
             type="button"
             className="btn btn-primary btn-sm"

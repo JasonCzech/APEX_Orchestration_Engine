@@ -59,6 +59,24 @@ def test_operation_ids_are_unique() -> None:
     assert not duplicates, f"duplicate operation_ids: {duplicates}"
 
 
+@pytest.mark.parametrize("model", ["StartPipelineRequest", "PipelineSetupConfiguration"])
+def test_setup_contract_publishes_versioned_configuration(model: str) -> None:
+    configurable = app.openapi()["components"]["schemas"][model]["properties"]["configurable"]
+    schema = next(
+        item for item in configurable.get("anyOf", [configurable]) if item.get("type") == "object"
+    )
+    properties = schema["properties"]
+    assert {"prompt_selections", "phase_execution", "analysis", "test_scope"} <= properties.keys()
+    assert "prompt_manifest" not in properties
+    assert "test_scope_snapshot" not in properties
+    assert "rerun_phases" not in properties
+    assert "system" in properties["prompt_selections"]["required"]
+    assert properties["phase_execution"]["properties"]["schema_version"]["const"] == 1
+    assert "selections" in properties["analysis"]["properties"]
+    assert "primary_participant_id" in properties["test_scope"]["required"]
+    assert properties["test_scope"]["properties"]["participants"]["maxItems"] == 32
+
+
 def _string_schemas(schema: dict[str, Any], components: dict[str, Any]) -> list[dict[str, Any]]:
     ref = schema.get("$ref")
     if isinstance(ref, str) and ref.startswith("#/components/schemas/"):

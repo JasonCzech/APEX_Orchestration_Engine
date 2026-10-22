@@ -24,6 +24,7 @@ class PortKind(StrEnum):
     CLUSTER_INVENTORY = "cluster_inventory"
     SOURCE_CONTROL = "source_control"
     EXECUTION_ENGINE = "execution_engine"
+    ANALYSIS = "analysis"
     ARTIFACT_STORE = "artifact_store"
     SECRETS = "secrets"
 

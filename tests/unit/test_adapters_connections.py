@@ -14,7 +14,8 @@ from apex.services.connections import (
 
 
 def test_dev_connections_cover_every_port_kind() -> None:
-    assert set(DEV_CONNECTIONS) == set(PortKind)
+    # Analysis always requires an explicitly configured service; never fall back to a stub.
+    assert set(DEV_CONNECTIONS) == set(PortKind) - {PortKind.ANALYSIS}
     for kind, conn in DEV_CONNECTIONS.items():
         assert conn.kind is kind
 

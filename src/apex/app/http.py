@@ -17,6 +17,7 @@ from apex.app.security import (
     RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from apex.app.test_scope_security import TestScopeAccessMiddleware
 from apex.routers.analytics import router as analytics_router
 from apex.routers.apex_load import index_router as apex_load_index_router
 from apex.routers.apex_load import router as apex_load_router
@@ -95,6 +96,10 @@ limit_backend = (
     else None
 )
 app.state.distributed_limit_backend = limit_backend
+
+# Place quota/audit wrappers outside the scope barrier. Its bounded internal
+# metadata/search pages are one public request, not independent admissions.
+app.add_middleware(TestScopeAccessMiddleware)
 app.add_middleware(
     RateLimitMiddleware,
     settings=settings.rate_limit,

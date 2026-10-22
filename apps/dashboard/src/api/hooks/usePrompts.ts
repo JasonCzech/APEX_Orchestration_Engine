@@ -74,6 +74,12 @@ export function promptTestMutationScopeId(promptId: string | undefined): string 
 
 /** Server-side filters for GET /v1/prompts (namespace stays client-side: the tree needs all). */
 export interface PromptListFilters {
+  namespace?: string
+  phase?: components['schemas']['Phase']
+  application_id?: string
+  include_shared?: boolean
+  environment_id?: string
+  selection_enabled?: boolean
   includeArchived?: boolean
   q?: string
 }
@@ -93,6 +99,12 @@ async function fetchPromptList(
       const { data, error, response } = await getApexClient().GET('/v1/prompts', {
         params: {
           query: {
+            namespace: filters.namespace,
+            phase: filters.phase,
+            application_id: filters.application_id,
+            include_shared: filters.include_shared,
+            environment_id: filters.environment_id,
+            selection_enabled: filters.selection_enabled,
             ...(filters.includeArchived ? { include_archived: true } : {}),
             ...(filters.q ? { q: filters.q } : {}),
             limit,
@@ -220,6 +232,7 @@ export function usePromptList(
   filters: PromptListFilters = {},
 ): UseQueryResult<PromptSummary[], Error> {
   const normalized: PromptListFilters = {
+    ...filters,
     ...(filters.includeArchived ? { includeArchived: true } : {}),
     ...(filters.q ? { q: filters.q } : {}),
   }
@@ -527,5 +540,17 @@ export function useTestPrompt(
         ],
       )
     },
+  })
+}
+
+export function useMakeDefaultPrompt() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async (promptId: string) => {
+      const { data, error, response } = await getApexClient().POST('/v1/prompts/{prompt_id}/default', { params: { path: { prompt_id: promptId } } })
+      if (!response.ok || !data) throw new ApiError(response.status, errorMessageOf(error, 'Could not change default'), error)
+      return data
+    },
+    onSuccess: () => { void client.invalidateQueries({ queryKey: ['prompts'] }) },
   })
 }

@@ -8,7 +8,7 @@ import { formatBytes } from '@/features/context/contextLogic'
  */
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 
-import { useDocumentsList, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
+import { useTestScopeDocuments, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 
@@ -36,11 +36,7 @@ export function ContextStep({
   onPendingStart,
 }: StepProps) {
   const upload = useUploadDocument()
-  const documents = useDocumentsList(
-    draft.scope.project_id.trim() || undefined,
-    undefined,
-    draft.scope.app_id,
-  )
+  const documents = useTestScopeDocuments(draft.scope)
   const inputRef = useRef<HTMLInputElement | null>(null)
   // Documents uploaded in this session (the list query may lag behind).
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])

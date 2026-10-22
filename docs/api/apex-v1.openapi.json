@@ -1249,6 +1249,34 @@
         "title": "AgentUsageHistoryResponse",
         "type": "object"
       },
+      "AnalysisConnectionChoice": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "kind"
+        ],
+        "title": "AnalysisConnectionChoice",
+        "type": "object"
+      },
       "ApplicationCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2728,6 +2756,20 @@
       "CreatePromptRequest": {
         "additionalProperties": false,
         "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
           "content": {
             "maxLength": 100000,
             "minLength": 1,
@@ -2747,6 +2789,30 @@
               }
             ],
             "title": "Description"
+          },
+          "environment_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Id"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "is_shared": {
+            "default": false,
+            "title": "Is Shared",
+            "type": "boolean"
           },
           "key": {
             "maxLength": 255,
@@ -2774,6 +2840,21 @@
               }
             ],
             "title": "Note"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_enabled": {
+            "default": true,
+            "title": "Selection Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -5485,7 +5566,6 @@
       },
       "ExecutionReadinessRequest": {
         "additionalProperties": false,
-        "description": "The caller's selected contract, with preset values already resolved.",
         "properties": {
           "app_id": {
             "anyOf": [
@@ -5560,6 +5640,16 @@
               }
             ],
             "title": "Project Id"
+          },
+          "test_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TestScopeV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -6141,6 +6231,21 @@
               }
             ],
             "title": "Application"
+          },
+          "context_edits": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PromptContextEdit"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Edits"
           },
           "system": {
             "anyOf": [
@@ -7395,6 +7500,19 @@
         "title": "PendingGate",
         "type": "object"
       },
+      "Phase": {
+        "enum": [
+          "story_analysis",
+          "test_planning",
+          "env_triage",
+          "script_scenario",
+          "execution",
+          "reporting",
+          "postmortem"
+        ],
+        "title": "Phase",
+        "type": "string"
+      },
       "PhasePromptReview": {
         "properties": {
           "additional_context": {
@@ -7413,9 +7531,39 @@
             ],
             "title": "Application"
           },
+          "contexts": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contexts"
+          },
           "phase_prompt": {
             "title": "Phase Prompt",
             "type": "string"
+          },
+          "selections": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selections"
           },
           "source": {
             "additionalProperties": true,
@@ -7425,6 +7573,17 @@
           "system": {
             "title": "System",
             "type": "string"
+          },
+          "system_locked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Locked"
           },
           "updated_at": {
             "title": "Updated At",
@@ -7466,6 +7625,21 @@
               }
             ],
             "title": "Application"
+          },
+          "context_edits": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PromptContextEdit"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Edits"
           },
           "phase_prompt": {
             "maxLength": 100000,
@@ -7647,6 +7821,18 @@
             ],
             "title": "Rerun Blocked Reason"
           },
+          "test_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Test Scope"
+          },
           "thread_id": {
             "title": "Thread Id",
             "type": "string"
@@ -7767,6 +7953,454 @@
         "title": "PipelineListResponse",
         "type": "object"
       },
+      "PipelineSetupConfiguration": {
+        "properties": {
+          "app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "configurable": {
+            "additionalProperties": true,
+            "description": "Per-run configuration. prompt_manifest, test_scope_snapshot, and rerun_phases are server-owned and cannot be submitted.",
+            "properties": {
+              "analysis": {
+                "additionalProperties": false,
+                "properties": {
+                  "schema_version": {
+                    "const": 1,
+                    "default": 1,
+                    "title": "Schema Version",
+                    "type": "integer"
+                  },
+                  "selections": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection_id": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Connection Id",
+                          "type": "string"
+                        },
+                        "tool": {
+                          "enum": [
+                            "lra_engine",
+                            "internal_rca",
+                            "perfreportforge",
+                            "other"
+                          ],
+                          "title": "Tool",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "tool",
+                        "connection_id"
+                      ],
+                      "title": "AnalysisSelection",
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "title": "Selections",
+                    "type": "array"
+                  },
+                  "timeout_s": {
+                    "default": 1800,
+                    "maximum": 86400.0,
+                    "minimum": 1.0,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  }
+                },
+                "title": "AnalysisConfiguration",
+                "type": "object"
+              },
+              "phase_execution": {
+                "additionalProperties": false,
+                "properties": {
+                  "owners": {
+                    "additionalProperties": {
+                      "enum": [
+                        "langgraph",
+                        "hitl"
+                      ],
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "enum": [
+                        "story_analysis",
+                        "test_planning",
+                        "env_triage",
+                        "script_scenario",
+                        "execution",
+                        "reporting",
+                        "postmortem"
+                      ],
+                      "title": "Phase",
+                      "type": "string"
+                    },
+                    "title": "Owners",
+                    "type": "object"
+                  },
+                  "schema_version": {
+                    "const": 1,
+                    "default": 1,
+                    "title": "Schema Version",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "owners"
+                ],
+                "title": "PhaseExecution",
+                "type": "object"
+              },
+              "prompt_selections": {
+                "additionalProperties": false,
+                "properties": {
+                  "application": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "override_content": {
+                          "anyOf": [
+                            {
+                              "maxLength": 100000,
+                              "pattern": "^[^\\x00]*$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "title": "Override Content"
+                        },
+                        "prompt_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Prompt Id",
+                          "type": "string"
+                        },
+                        "version_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Version Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "prompt_id",
+                        "version_id"
+                      ],
+                      "title": "PromptSelection",
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Application",
+                    "type": "array"
+                  },
+                  "environment": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "override_content": {
+                          "anyOf": [
+                            {
+                              "maxLength": 100000,
+                              "pattern": "^[^\\x00]*$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "title": "Override Content"
+                        },
+                        "prompt_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Prompt Id",
+                          "type": "string"
+                        },
+                        "version_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Version Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "prompt_id",
+                        "version_id"
+                      ],
+                      "title": "PromptSelection",
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Environment",
+                    "type": "array"
+                  },
+                  "phases": {
+                    "additionalProperties": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "override_content": {
+                          "anyOf": [
+                            {
+                              "maxLength": 100000,
+                              "pattern": "^[^\\x00]*$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "title": "Override Content"
+                        },
+                        "prompt_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Prompt Id",
+                          "type": "string"
+                        },
+                        "version_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Version Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "prompt_id",
+                        "version_id"
+                      ],
+                      "title": "PromptSelection",
+                      "type": "object"
+                    },
+                    "maxProperties": 7,
+                    "propertyNames": {
+                      "enum": [
+                        "story_analysis",
+                        "test_planning",
+                        "env_triage",
+                        "script_scenario",
+                        "execution",
+                        "reporting",
+                        "postmortem"
+                      ],
+                      "title": "Phase",
+                      "type": "string"
+                    },
+                    "title": "Phases",
+                    "type": "object"
+                  },
+                  "schema_version": {
+                    "const": 1,
+                    "default": 1,
+                    "title": "Schema Version",
+                    "type": "integer"
+                  },
+                  "system": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "override_content": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100000,
+                            "pattern": "^[^\\x00]*$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Override Content"
+                      },
+                      "prompt_id": {
+                        "maxLength": 32,
+                        "minLength": 1,
+                        "pattern": "^[^\\x00]*$",
+                        "title": "Prompt Id",
+                        "type": "string"
+                      },
+                      "version_id": {
+                        "maxLength": 32,
+                        "minLength": 1,
+                        "pattern": "^[^\\x00]*$",
+                        "title": "Version Id",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "prompt_id",
+                      "version_id"
+                    ],
+                    "title": "PromptSelection",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "system",
+                  "phases"
+                ],
+                "title": "PromptSelectionsV1",
+                "type": "object"
+              },
+              "test_scope": {
+                "additionalProperties": false,
+                "properties": {
+                  "participants": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "application_id": {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Application Id",
+                          "type": "string"
+                        },
+                        "environment_id": {
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Environment Id",
+                          "type": "string"
+                        },
+                        "id": {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Id",
+                          "type": "string"
+                        },
+                        "layer": {
+                          "enum": [
+                            "frontend",
+                            "middle",
+                            "backend"
+                          ],
+                          "title": "Layer",
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "pattern": "^[^\\x00]*$",
+                          "title": "Project Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "project_id",
+                        "application_id",
+                        "environment_id",
+                        "layer"
+                      ],
+                      "title": "TestParticipant",
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "title": "Participants",
+                    "type": "array"
+                  },
+                  "primary_participant_id": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "pattern": "^[^\\x00]*$",
+                    "title": "Primary Participant Id",
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "const": 1,
+                    "default": 1,
+                    "title": "Schema Version",
+                    "type": "integer"
+                  },
+                  "traffic_entry_participant_id": {
+                    "anyOf": [
+                      {
+                        "maxLength": 255,
+                        "minLength": 1,
+                        "pattern": "^[^\\x00]*$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Traffic Entry Participant Id"
+                  }
+                },
+                "required": [
+                  "participants",
+                  "primary_participant_id"
+                ],
+                "title": "TestScopeV1",
+                "type": "object"
+              }
+            },
+            "title": "Configurable",
+            "type": "object"
+          },
+          "environment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "request": {
+            "title": "Request",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "request",
+          "project_id",
+          "app_id",
+          "environment_id",
+          "configurable"
+        ],
+        "title": "PipelineSetupConfiguration",
+        "type": "object"
+      },
       "PipelineSummary": {
         "properties": {
           "app_id": {
@@ -7870,6 +8504,18 @@
             ],
             "title": "Rerun Blocked Reason"
           },
+          "test_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Test Scope"
+          },
           "thread_id": {
             "title": "Thread Id",
             "type": "string"
@@ -7924,6 +8570,7 @@
           "cluster_inventory",
           "source_control",
           "execution_engine",
+          "analysis",
           "artifact_store",
           "secrets"
         ],
@@ -8422,6 +9069,31 @@
         "title": "ProjectLabelWrite",
         "type": "object"
       },
+      "PromptContextEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Content",
+            "type": "string"
+          },
+          "prompt_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Prompt Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "content"
+        ],
+        "title": "PromptContextEdit",
+        "type": "object"
+      },
       "PromptDetail": {
         "properties": {
           "active_version": {
@@ -8433,6 +9105,17 @@
                 "type": "null"
               }
             ]
+          },
+          "application_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
           },
           "archived_at": {
             "anyOf": [
@@ -8470,9 +9153,30 @@
             ],
             "title": "Description"
           },
+          "environment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Id"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "is_shared": {
+            "default": false,
+            "title": "Is Shared",
+            "type": "boolean"
           },
           "key": {
             "maxLength": 255,
@@ -8495,6 +9199,21 @@
               }
             ],
             "title": "Note"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_enabled": {
+            "default": false,
+            "title": "Selection Enabled",
+            "type": "boolean"
           },
           "updated_at": {
             "anyOf": [
@@ -8529,6 +9248,17 @@
               }
             ]
           },
+          "application_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
           "archived_at": {
             "anyOf": [
               {
@@ -8553,9 +9283,30 @@
             ],
             "title": "Description"
           },
+          "environment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Id"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "is_shared": {
+            "default": false,
+            "title": "Is Shared",
+            "type": "boolean"
           },
           "key": {
             "maxLength": 255,
@@ -8566,6 +9317,21 @@
             "maxLength": 255,
             "title": "Namespace",
             "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_enabled": {
+            "default": false,
+            "title": "Selection Enabled",
+            "type": "boolean"
           },
           "updated_at": {
             "anyOf": [
@@ -9359,6 +10125,18 @@
             "title": "Action",
             "type": "string"
           },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
           "instructions": {
             "anyOf": [
               {
@@ -9398,6 +10176,18 @@
             ],
             "title": "Note"
           },
+          "output": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
           "prompt": {
             "anyOf": [
               {
@@ -9407,6 +10197,19 @@
                 "type": "null"
               }
             ]
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -10294,14 +11097,401 @@
             "anyOf": [
               {
                 "additionalProperties": true,
-                "maxProperties": 64,
+                "description": "Per-run configuration. prompt_manifest, test_scope_snapshot, and rerun_phases are server-owned and cannot be submitted.",
+                "properties": {
+                  "analysis": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "schema_version": {
+                        "const": 1,
+                        "default": 1,
+                        "title": "Schema Version",
+                        "type": "integer"
+                      },
+                      "selections": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "connection_id": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Connection Id",
+                              "type": "string"
+                            },
+                            "tool": {
+                              "enum": [
+                                "lra_engine",
+                                "internal_rca",
+                                "perfreportforge",
+                                "other"
+                              ],
+                              "title": "Tool",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "tool",
+                            "connection_id"
+                          ],
+                          "title": "AnalysisSelection",
+                          "type": "object"
+                        },
+                        "maxItems": 16,
+                        "title": "Selections",
+                        "type": "array"
+                      },
+                      "timeout_s": {
+                        "default": 1800,
+                        "maximum": 86400.0,
+                        "minimum": 1.0,
+                        "title": "Timeout S",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "AnalysisConfiguration",
+                    "type": "object"
+                  },
+                  "phase_execution": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "owners": {
+                        "additionalProperties": {
+                          "enum": [
+                            "langgraph",
+                            "hitl"
+                          ],
+                          "type": "string"
+                        },
+                        "propertyNames": {
+                          "enum": [
+                            "story_analysis",
+                            "test_planning",
+                            "env_triage",
+                            "script_scenario",
+                            "execution",
+                            "reporting",
+                            "postmortem"
+                          ],
+                          "title": "Phase",
+                          "type": "string"
+                        },
+                        "title": "Owners",
+                        "type": "object"
+                      },
+                      "schema_version": {
+                        "const": 1,
+                        "default": 1,
+                        "title": "Schema Version",
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "owners"
+                    ],
+                    "title": "PhaseExecution",
+                    "type": "object"
+                  },
+                  "prompt_selections": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "application": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "override_content": {
+                              "anyOf": [
+                                {
+                                  "maxLength": 100000,
+                                  "pattern": "^[^\\x00]*$",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "title": "Override Content"
+                            },
+                            "prompt_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Prompt Id",
+                              "type": "string"
+                            },
+                            "version_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Version Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "prompt_id",
+                            "version_id"
+                          ],
+                          "title": "PromptSelection",
+                          "type": "object"
+                        },
+                        "maxItems": 32,
+                        "title": "Application",
+                        "type": "array"
+                      },
+                      "environment": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "override_content": {
+                              "anyOf": [
+                                {
+                                  "maxLength": 100000,
+                                  "pattern": "^[^\\x00]*$",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "title": "Override Content"
+                            },
+                            "prompt_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Prompt Id",
+                              "type": "string"
+                            },
+                            "version_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Version Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "prompt_id",
+                            "version_id"
+                          ],
+                          "title": "PromptSelection",
+                          "type": "object"
+                        },
+                        "maxItems": 32,
+                        "title": "Environment",
+                        "type": "array"
+                      },
+                      "phases": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "override_content": {
+                              "anyOf": [
+                                {
+                                  "maxLength": 100000,
+                                  "pattern": "^[^\\x00]*$",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "title": "Override Content"
+                            },
+                            "prompt_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Prompt Id",
+                              "type": "string"
+                            },
+                            "version_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Version Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "prompt_id",
+                            "version_id"
+                          ],
+                          "title": "PromptSelection",
+                          "type": "object"
+                        },
+                        "maxProperties": 7,
+                        "propertyNames": {
+                          "enum": [
+                            "story_analysis",
+                            "test_planning",
+                            "env_triage",
+                            "script_scenario",
+                            "execution",
+                            "reporting",
+                            "postmortem"
+                          ],
+                          "title": "Phase",
+                          "type": "string"
+                        },
+                        "title": "Phases",
+                        "type": "object"
+                      },
+                      "schema_version": {
+                        "const": 1,
+                        "default": 1,
+                        "title": "Schema Version",
+                        "type": "integer"
+                      },
+                      "system": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "override_content": {
+                            "anyOf": [
+                              {
+                                "maxLength": 100000,
+                                "pattern": "^[^\\x00]*$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Override Content"
+                          },
+                          "prompt_id": {
+                            "maxLength": 32,
+                            "minLength": 1,
+                            "pattern": "^[^\\x00]*$",
+                            "title": "Prompt Id",
+                            "type": "string"
+                          },
+                          "version_id": {
+                            "maxLength": 32,
+                            "minLength": 1,
+                            "pattern": "^[^\\x00]*$",
+                            "title": "Version Id",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "prompt_id",
+                          "version_id"
+                        ],
+                        "title": "PromptSelection",
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "system",
+                      "phases"
+                    ],
+                    "title": "PromptSelectionsV1",
+                    "type": "object"
+                  },
+                  "test_scope": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "participants": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "application_id": {
+                              "maxLength": 255,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Application Id",
+                              "type": "string"
+                            },
+                            "environment_id": {
+                              "maxLength": 32,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Environment Id",
+                              "type": "string"
+                            },
+                            "id": {
+                              "maxLength": 255,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Id",
+                              "type": "string"
+                            },
+                            "layer": {
+                              "enum": [
+                                "frontend",
+                                "middle",
+                                "backend"
+                              ],
+                              "title": "Layer",
+                              "type": "string"
+                            },
+                            "project_id": {
+                              "maxLength": 255,
+                              "minLength": 1,
+                              "pattern": "^[^\\x00]*$",
+                              "title": "Project Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "project_id",
+                            "application_id",
+                            "environment_id",
+                            "layer"
+                          ],
+                          "title": "TestParticipant",
+                          "type": "object"
+                        },
+                        "maxItems": 32,
+                        "minItems": 1,
+                        "title": "Participants",
+                        "type": "array"
+                      },
+                      "primary_participant_id": {
+                        "maxLength": 255,
+                        "minLength": 1,
+                        "pattern": "^[^\\x00]*$",
+                        "title": "Primary Participant Id",
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "const": 1,
+                        "default": 1,
+                        "title": "Schema Version",
+                        "type": "integer"
+                      },
+                      "traffic_entry_participant_id": {
+                        "anyOf": [
+                          {
+                            "maxLength": 255,
+                            "minLength": 1,
+                            "pattern": "^[^\\x00]*$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Traffic Entry Participant Id"
+                      }
+                    },
+                    "required": [
+                      "participants",
+                      "primary_participant_id"
+                    ],
+                    "title": "TestScopeV1",
+                    "type": "object"
+                  }
+                },
                 "type": "object"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Full per-run PipelineConfigurable layer retained by the selected assistant.",
+            "description": "Full per-run configuration retained by the selected assistant.",
             "title": "Configurable"
           },
           "context_packets": {
@@ -10431,6 +11621,16 @@
             "title": "Request",
             "type": "string"
           },
+          "test_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TestScopeV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "title": {
             "maxLength": 500,
             "minLength": 1,
@@ -10536,12 +11736,68 @@
           "max_context_packets": {
             "title": "Max Context Packets",
             "type": "integer"
+          },
+          "max_test_participants": {
+            "default": 32,
+            "title": "Max Test Participants",
+            "type": "integer"
           }
         },
         "required": [
           "max_context_packets"
         ],
         "title": "SystemLimits",
+        "type": "object"
+      },
+      "TestParticipant": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "layer": {
+            "enum": [
+              "frontend",
+              "middle",
+              "backend"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "application_id",
+          "environment_id",
+          "layer"
+        ],
+        "title": "TestParticipant",
         "type": "object"
       },
       "TestPromptRequest": {
@@ -10642,6 +11898,53 @@
           "run_id"
         ],
         "title": "TestPromptResponse",
+        "type": "object"
+      },
+      "TestScopeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/TestParticipant"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Participants",
+            "type": "array"
+          },
+          "primary_participant_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Primary Participant Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "traffic_entry_participant_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traffic Entry Participant Id"
+          }
+        },
+        "required": [
+          "participants",
+          "primary_participant_id"
+        ],
+        "title": "TestScopeV1",
         "type": "object"
       },
       "TranslateQueryRequest": {
@@ -19541,6 +20844,55 @@
         ]
       }
     },
+    "/v1/pipelines/analysis/connections": {
+      "get": {
+        "operationId": "listAnalysisConnections",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AnalysisConnectionChoice"
+                  },
+                  "title": "Response Listanalysisconnections",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Analysis Connections",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/v1/pipelines/execution-readiness": {
       "post": {
         "description": "Check scoped connection metadata, without testing provider connectivity.",
@@ -19981,6 +21333,53 @@
         ]
       }
     },
+    "/v1/pipelines/{thread_id}/setup": {
+      "get": {
+        "operationId": "getPipelineSetup",
+        "parameters": [
+          {
+            "description": "Pipeline thread id",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineSetupConfiguration"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Setup",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/v1/prompts": {
       "get": {
         "operationId": "listPrompts",
@@ -20011,6 +21410,86 @@
               "default": false,
               "title": "Include Archived",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Phase"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Phase"
+            }
+          },
+          {
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Application Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_shared",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Shared",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Environment Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "selection_enabled",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Selection Enabled"
             }
           },
           {
@@ -20216,6 +21695,53 @@
           }
         },
         "summary": "Archive Prompt",
+        "tags": [
+          "prompts"
+        ]
+      }
+    },
+    "/v1/prompts/{prompt_id}/default": {
+      "post": {
+        "operationId": "setDefaultPrompt",
+        "parameters": [
+          {
+            "description": "Prompt id",
+            "in": "path",
+            "name": "prompt_id",
+            "required": true,
+            "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Prompt Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Default Prompt",
         "tags": [
           "prompts"
         ]

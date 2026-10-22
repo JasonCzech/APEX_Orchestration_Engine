@@ -45,7 +45,7 @@ class FakeDocsRepo:
 
 class FakeCatalogRepo:
     def __init__(self, environments: dict[str, Any] | None = None) -> None:
-        self.environments = environments or {}
+        self.environments = {"env-1": _environment()} if environments is None else environments
         self.environment_get_calls: list[str] = []
 
     async def get_environment(self, environment_id: str) -> Any:
@@ -63,12 +63,52 @@ def _environment(
     return SimpleNamespace(
         id=environment_id,
         application_id=app_id,
-        application=SimpleNamespace(id=app_id, project_id=project_id),
+        application=SimpleNamespace(
+            id=app_id, project_id=project_id, name=app_id, description=None, archived_at=None
+        ),
+        name=environment_id,
+        kind="service",
+        hosts=[],
         base_url=base_url,
         target_approved=True,
         target_version=3,
         options={},
     )
+
+
+def _scope_request(**kwargs):
+    """Explicit topology for the hermetic route fixtures (not production inference)."""
+    from apex.domain.test_scope import TestScopeV1
+
+    configurable = kwargs.get("configurable") or {}
+    scope = TestScopeV1.model_validate(
+        {
+            "schema_version": 1,
+            "participants": [
+                {
+                    "id": "backend",
+                    "layer": "backend",
+                    "project_id": kwargs.get("project_id")
+                    or configurable.get("project_id")
+                    or "proj-1",
+                    "application_id": kwargs.get("app_id") or configurable.get("app_id") or "app-a",
+                    "environment_id": configurable.get("environment_id") or "env-1",
+                }
+            ],
+            "primary_participant_id": "backend",
+            "traffic_entry_participant_id": "backend",
+        }
+    )
+    return pipelines.StartPipelineRequest(test_scope=scope, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _fake_projection_writer(monkeypatch):
+    # FakeClient does not run native authorization or own a database. Real atomic
+    # scope persistence/revocation is covered separately in test_test_scope.
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("apex.services.test_scope.persist_test_scope", AsyncMock())
 
 
 def _doc(doc_id: str, project_id: str | None, app_id: str | None = None) -> Any:
@@ -214,8 +254,14 @@ class FakeRuns:
         return {"run_id": "run-1"}
 
 
+class FakeAssistants:
+    async def get(self, assistant_id):
+        return {"graph_id": "pipeline", "config": {"configurable": {}}}
+
+
 class FakeClient:
     def __init__(self) -> None:
+        self.assistants = FakeAssistants()
         self.threads = FakeThreads()
         self.runs = FakeRuns()
 
@@ -241,6 +287,7 @@ class AcceptedThenLostRuns(FakeRuns):
 
 class AmbiguousClient:
     def __init__(self) -> None:
+        self.assistants = FakeAssistants()
         self.threads = AmbiguousThreads()
         self.runs = AcceptedThenLostRuns()
 
@@ -257,6 +304,7 @@ class DefinitivelyRejectedRuns(FakeRuns):
 
 class DefinitivelyRejectedClient:
     def __init__(self) -> None:
+        self.assistants = FakeAssistants()
         self.threads = AmbiguousThreads()
         self.runs = DefinitivelyRejectedRuns()
 
@@ -340,6 +388,7 @@ class AtomicRuns:
 
 class AtomicClient:
     def __init__(self) -> None:
+        self.assistants = FakeAssistants()
         self.threads = AtomicThreads()
         self.runs = AtomicRuns()
 
@@ -380,6 +429,7 @@ class DuplicateFriendlyRuns:
 
 class DuplicateFriendlyClient:
     def __init__(self) -> None:
+        self.assistants = FakeAssistants()
         self.threads = AtomicThreads()
         self.runs = DuplicateFriendlyRuns()
 
@@ -395,6 +445,7 @@ class PreseededThreadClient:
                     "metadata": {"project_id": "proj-1"},
                 }
 
+        self.assistants = FakeAssistants()
         self.threads = Threads()
 
 
@@ -974,6 +1025,9 @@ async def test_create_pipeline_detaches_raw_service_validation_error() -> None:
     canary = "bare-pipeline-validation-canary"
 
     class FailingService:
+        async def assistant_launch_defaults(self, assistant_id):
+            return {}
+
         async def start_run(self, **_kwargs: Any) -> dict[str, Any]:
             raise ValueError(canary)
 
@@ -986,7 +1040,7 @@ async def test_create_pipeline_detaches_raw_service_validation_error() -> None:
 
     with pytest.raises(HTTPException, match="invalid pipeline configuration") as excinfo:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(title="Invalid run"),
+            _scope_request(title="Invalid run"),
             identity,
             cast(DocumentsRepository, FakeDocsRepo({})),
             cast(Any, FakeCatalogRepo()),
@@ -1002,6 +1056,9 @@ async def test_create_pipeline_maps_detached_provider_failure_to_502() -> None:
     canary = "pipeline-provider-boundary-secret-canary"
 
     class FailingService:
+        async def assistant_launch_defaults(self, assistant_id):
+            return {}
+
         async def start_run(self, **_kwargs: Any) -> dict[str, Any]:
             error = LaunchProviderError("pipeline runtime run creation failed")
             error.__context__ = RuntimeError(canary)
@@ -1016,7 +1073,7 @@ async def test_create_pipeline_maps_detached_provider_failure_to_502() -> None:
 
     with pytest.raises(HTTPException, match="pipeline runtime unavailable") as excinfo:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(title="Provider failure"),
+            _scope_request(title="Provider failure"),
             identity,
             cast(DocumentsRepository, FakeDocsRepo({})),
             cast(Any, FakeCatalogRepo()),
@@ -1053,7 +1110,7 @@ async def test_create_pipeline_infers_single_scope_into_thread_and_run_config() 
     )
 
     response = await pipelines.create_pipeline_run(
-        pipelines.StartPipelineRequest(title="Scoped run"),
+        _scope_request(title="Scoped run"),
         identity,
         cast(DocumentsRepository, FakeDocsRepo({})),
         cast(Any, FakeCatalogRepo()),
@@ -1082,7 +1139,7 @@ async def test_create_pipeline_infers_single_app_scope_into_config() -> None:
     )
 
     await pipelines.create_pipeline_run(
-        pipelines.StartPipelineRequest(title="App-scoped run"),
+        _scope_request(title="App-scoped run"),
         identity,
         cast(DocumentsRepository, FakeDocsRepo({})),
         cast(Any, FakeCatalogRepo()),
@@ -1093,6 +1150,7 @@ async def test_create_pipeline_infers_single_app_scope_into_config() -> None:
         "title": "App-scoped run",
         "project_id": "proj-1",
         "app_id": "app-a",
+        "test_scope": cast(Any, _scope_request(title="fixture").test_scope).model_dump(mode="json"),
     }
     configurable = client.runs.args[3]["configurable"]
     assert configurable["project_id"] == "proj-1"
@@ -1118,8 +1176,8 @@ async def test_create_pipeline_rejects_ambiguous_scope_before_thread_create() ->
             cast(Any, request),
         )
 
-    assert exc.value.status_code == 403
-    assert exc.value.detail == "pipeline scope is not authorized"
+    assert exc.value.status_code == 422
+    assert "test_scope is required" in exc.value.detail
     assert client.threads.metadata is None
 
 
@@ -1134,9 +1192,9 @@ async def test_create_pipeline_rejects_oversized_environment_id_before_catalog_i
     )
     catalog = FakeCatalogRepo()
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(ValueError):
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(
+            _scope_request(
                 title="Oversized environment",
                 configurable={"environment_id": "e" * 33},
             ),
@@ -1146,10 +1204,6 @@ async def test_create_pipeline_rejects_oversized_environment_id_before_catalog_i
             cast(Any, request),
         )
 
-    assert exc.value.status_code == 422
-    assert exc.value.detail == (
-        "configurable.environment_id must be a non-empty catalog identifier"
-    )
     assert catalog.environment_get_calls == []
     assert client.threads.metadata is None
 
@@ -1168,7 +1222,7 @@ async def test_create_pipeline_requires_project_when_app_is_explicit() -> None:
         )
 
     assert exc.value.status_code == 422
-    assert "project_id is required" in str(exc.value.detail)
+    assert "test_scope is required" in str(exc.value.detail)
 
 
 async def test_create_pipeline_resolves_only_environment_owned_by_selected_app() -> None:
@@ -1190,7 +1244,7 @@ async def test_create_pipeline_resolves_only_environment_owned_by_selected_app()
 
     with pytest.raises(HTTPException) as exc:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(
+            _scope_request(
                 title="Cross-app target",
                 configurable={"environment_id": "env-b", "engine": "apex_load"},
             ),
@@ -1204,7 +1258,7 @@ async def test_create_pipeline_resolves_only_environment_owned_by_selected_app()
     assert client.threads.metadata is None
 
 
-async def test_create_pipeline_stamps_approved_target_and_version() -> None:
+async def test_create_pipeline_planning_only_does_not_authorize_traffic() -> None:
     identity = ConsumerIdentity(
         consumer_id="c1",
         name="c1",
@@ -1222,7 +1276,7 @@ async def test_create_pipeline_stamps_approved_target_and_version() -> None:
     environment = _environment(base_url="https://8.8.8.8/load")
 
     await pipelines.create_pipeline_run(
-        pipelines.StartPipelineRequest(
+        _scope_request(
             title="Approved target",
             phases=["story_analysis"],
             configurable={"environment_id": environment.id, "engine": "apex_load"},
@@ -1234,8 +1288,8 @@ async def test_create_pipeline_stamps_approved_target_and_version() -> None:
     )
 
     configurable = client.runs.args[3]["configurable"]
-    assert configurable["environment_target"] == "https://8.8.8.8/load"
-    assert configurable["environment_target_version"] == 3
+    assert configurable.get("environment_target") is None
+    assert configurable.get("environment_target_version") is None
 
 
 async def test_create_pipeline_environment_derives_authoritative_app_scope() -> None:
@@ -1250,7 +1304,7 @@ async def test_create_pipeline_environment_derives_authoritative_app_scope() -> 
     environment = _environment(app_id="app-a", base_url="https://8.8.8.8/load")
 
     await pipelines.create_pipeline_run(
-        pipelines.StartPipelineRequest(
+        _scope_request(
             title="Environment-owned run",
             phases=["story_analysis"],
             project_id="proj-1",
@@ -1281,7 +1335,7 @@ async def test_create_pipeline_rejects_direct_target_url_before_thread_create() 
 
     with pytest.raises(HTTPException) as exc:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(
+            _scope_request(
                 title="Forged target",
                 configurable={
                     "engine": "apex_load",
@@ -1295,7 +1349,7 @@ async def test_create_pipeline_rejects_direct_target_url_before_thread_create() 
         )
 
     assert exc.value.status_code == 422
-    assert "cannot be supplied directly" in str(exc.value.detail)
+    assert "target_environment cannot be supplied directly" in str(exc.value.detail)
     assert client.threads.metadata is None
 
 
@@ -1385,7 +1439,7 @@ async def test_unapproved_environment_is_context_only_for_simulation(
     env = _environment()
     env.target_approved = False
     env.base_url = None
-    body = pipelines.StartPipelineRequest(
+    body = _scope_request(
         title="Selected environment",
         project_id="proj-1",
         configurable={
@@ -1416,8 +1470,8 @@ async def test_unapproved_environment_is_context_only_for_simulation(
         config = client.runs.args[3]["configurable"]
         assert config["environment_id"] == env.id
         assert config["app_id"] == env.application_id
-        assert "environment_target" not in config
-        assert "environment_target_version" not in config
+        assert config.get("environment_target") is None
+        assert config.get("environment_target_version") is None
 
 
 @pytest.mark.parametrize("status_code", [400, 422])
@@ -1435,6 +1489,9 @@ async def test_definitively_invalid_launch_preserves_422_class_and_detaches_prov
 
 async def test_create_pipeline_maps_native_validation_to_422_without_provider_input() -> None:
     class FailingService:
+        async def assistant_launch_defaults(self, assistant_id):
+            return {}
+
         async def start_run(self, **_kwargs: Any) -> Any:
             raise pipeline_read.LaunchValidationError("unsafe-provider-detail")
 
@@ -1445,7 +1502,7 @@ async def test_create_pipeline_maps_native_validation_to_422_without_provider_in
     )
     with pytest.raises(HTTPException) as caught:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(title="Invalid configuration"),
+            _scope_request(title="Invalid configuration"),
             _identity(["proj-1"]),
             cast(DocumentsRepository, FakeDocsRepo({})),
             cast(Any, FakeCatalogRepo()),
@@ -1532,7 +1589,7 @@ async def test_readiness_uses_effective_launch_overrides_not_replaced_inherited_
         )
     )
     await pipelines.create_pipeline_run(
-        pipelines.StartPipelineRequest(
+        _scope_request(
             title="Cleared inherited values",
             phases=[],
             gates={},
@@ -1569,9 +1626,7 @@ async def test_explicit_launch_invalid_configuration_remains_safe_422(load_test)
     )
     with pytest.raises(HTTPException) as caught:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(
-                title="Invalid", configurable={"engine": "sim", "load_test": load_test}
-            ),
+            _scope_request(title="Invalid", configurable={"engine": "sim", "load_test": load_test}),
             _identity(["proj-1"]),
             cast(Any, FakeDocsRepo({})),
             cast(Any, FakeCatalogRepo()),
@@ -1604,7 +1659,7 @@ async def test_explicit_launch_maps_readiness_rejection_to_actionable_422(monkey
     monkeypatch.setattr(pipelines, "require_execution_readiness", missing_app)
     with pytest.raises(HTTPException) as caught:
         await pipelines.create_pipeline_run(
-            pipelines.StartPipelineRequest(title="Missing app", configurable={"engine": "sim"}),
+            _scope_request(title="Missing app", configurable={"engine": "sim"}),
             _identity(["proj-1"]),
             cast(Any, FakeDocsRepo({})),
             cast(Any, FakeCatalogRepo()),
@@ -1614,3 +1669,415 @@ async def test_explicit_launch_maps_readiness_rejection_to_actionable_422(monkey
     assert "Select a project and application" in caught.value.detail
     assert caught.value.__context__ is None
     assert client.runs.args == ()
+
+
+@pytest.mark.parametrize("primary", ["front", "middle-a", "back"])
+async def test_combined_scope_launch_keeps_owner_independent_of_traffic(primary, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from apex.domain.test_scope import TestScopeV1
+
+    participants = [
+        {
+            "id": name,
+            "project_id": f"project-{name}",
+            "application_id": f"app-{name}",
+            "environment_id": f"env-{name}",
+            "layer": layer,
+        }
+        for name, layer in [
+            ("front", "frontend"),
+            ("middle-a", "middle"),
+            ("middle-b", "middle"),
+            ("back", "backend"),
+        ]
+    ]
+    scope = TestScopeV1(
+        participants=cast(Any, participants),
+        primary_participant_id=primary,
+        traffic_entry_participant_id="front",
+    )
+    catalog = FakeCatalogRepo(
+        {
+            p["environment_id"]: _environment(
+                p["environment_id"],
+                project_id=p["project_id"],
+                app_id=p["application_id"],
+                base_url="https://8.8.8.8/load",
+            )
+            for p in participants
+        }
+    )
+    # Only the traffic destination needs load-target approval.
+    for name, environment in catalog.environments.items():
+        environment.target_approved = name == "env-front"
+    client = FakeClient()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    monkeypatch.setattr(pipelines, "require_execution_readiness", AsyncMock())
+    monkeypatch.setattr("apex.services.analysis_readiness.require_analysis_readiness", AsyncMock())
+    await pipelines.create_pipeline_run(
+        pipelines.StartPipelineRequest(
+            title="Combined end-to-end system",
+            test_scope=scope,
+            phases=["execution"],
+            configurable={"engine": "apex_load"},
+        ),
+        _identity([p["project_id"] for p in participants]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, catalog),
+        cast(Any, request),
+    )
+    config = client.runs.args[3]["configurable"]
+    assert client.threads.metadata["project_id"] == f"project-{primary}"
+    assert config["app_id"] == f"app-{primary}"
+    assert config["environment_id"] == "env-front"
+    assert config["environment_target"] == "https://8.8.8.8/load"
+    assert config["environment_target_version"] == 3
+    assert config["test_scope"] == scope.model_dump(mode="json")
+    assert len(config["test_scope_snapshot"]["participants"]) == 4
+
+
+async def test_combined_scope_rejects_partial_access_before_catalog_or_thread_io():
+    from apex.domain.test_scope import TestScopeV1
+
+    scope = TestScopeV1(
+        participants=cast(
+            Any,
+            [
+                {
+                    "id": "front",
+                    "project_id": "proj-1",
+                    "application_id": "app-a",
+                    "environment_id": "env-1",
+                    "layer": "frontend",
+                },
+                {
+                    "id": "back",
+                    "project_id": "proj-2",
+                    "application_id": "app-b",
+                    "environment_id": "env-2",
+                    "layer": "backend",
+                },
+            ],
+        ),
+        primary_participant_id="front",
+        traffic_entry_participant_id="front",
+    )
+    catalog = FakeCatalogRepo()
+    with pytest.raises(HTTPException) as exc:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(title="Forbidden combined scope", test_scope=scope),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, catalog),
+            cast(Any, SimpleNamespace(app=SimpleNamespace(dependency_overrides={}))),
+        )
+    assert exc.value.status_code == 403
+    assert catalog.environment_get_calls == []
+
+
+async def test_legacy_retry_recovers_without_creating_or_revalidating_catalog():
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    old_config = {"engine": "sim", "environment_id": "env-1"}
+    original = await service.start_run(
+        title="Legacy retry",
+        idempotency_key="old-intent",
+        project_id="proj-1",
+        app_id="app-a",
+        configurable=old_config,
+        principal_id="c1",
+        phases=["story_analysis"],
+    )
+
+    async def old_state(_thread_id):
+        return {"values": {"run_config": {**old_config, "project_id": "proj-1", "app_id": "app-a"}}}
+
+    cast(Any, client.threads).get_state = old_state
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    catalog = FakeCatalogRepo({})  # Even a removed catalog row cannot create a duplicate.
+    body = pipelines.StartPipelineRequest(
+        title="Legacy retry",
+        idempotency_key="old-intent",
+        project_id="proj-1",
+        app_id="app-a",
+        configurable=old_config,
+        phases=["story_analysis"],
+    )
+    recovered = await pipelines.create_pipeline_run(
+        body,
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, catalog),
+        cast(Any, request),
+    )
+    assert recovered == original
+    assert client.runs.successful_creates == 1
+    assert catalog.environment_get_calls == []
+    with pytest.raises(HTTPException) as conflict:
+        await pipelines.create_pipeline_run(
+            body.model_copy(update={"title": "Changed intent"}),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, catalog),
+            cast(Any, request),
+        )
+    assert conflict.value.status_code == 409
+    assert client.runs.successful_creates == 1
+
+
+async def test_legacy_retry_with_missing_claim_never_creates_thread_or_run():
+    client = AtomicClient()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    with pytest.raises(HTTPException) as exc:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(
+                title="No old run", idempotency_key="unknown", project_id="proj-1", app_id="app-a"
+            ),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+    assert exc.value.status_code == 422
+    assert client.threads.rows == {}
+    assert client.runs.successful_creates == 0
+
+
+@pytest.mark.parametrize("assistant_id", [None, "pipeline", "custom"])
+async def test_assistant_inherited_live_execution_requires_approved_entry(
+    monkeypatch, assistant_id
+):
+    from unittest.mock import AsyncMock
+
+    client = FakeClient()
+    cast(Any, client).assistants = SimpleNamespace(
+        get=AsyncMock(
+            return_value={
+                "graph_id": "pipeline",
+                "config": {"configurable": {"engine": "apex_load", "phases": ["execution"]}},
+            }
+        )
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    environment = _environment()
+    environment.target_approved = False
+    with pytest.raises(HTTPException) as exc:
+        await pipelines.create_pipeline_run(
+            _scope_request(title="Inherited live", assistant_id=assistant_id),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo({"env-1": environment})),
+            cast(Any, request),
+        )
+    assert exc.value.status_code == 422
+    assert "approved target" in str(exc.value.detail)
+    assert client.threads.metadata is None
+
+
+async def test_assistant_inherited_human_execution_does_not_require_load_approval(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from apex.domain.pipeline import PHASE_ORDER
+
+    ownership = {"schema_version": 1, "owners": {phase.value: "hitl" for phase in PHASE_ORDER}}
+    monkeypatch.setattr("apex.services.analysis_readiness.require_analysis_readiness", AsyncMock())
+    client = FakeClient()
+    cast(Any, client).assistants = SimpleNamespace(
+        get=AsyncMock(
+            return_value={
+                "graph_id": "pipeline",
+                "config": {
+                    "configurable": {
+                        "engine": "apex_load",
+                        "phases": [phase.value for phase in PHASE_ORDER],
+                        "phase_execution": ownership,
+                        "analysis": {
+                            "selections": [{"tool": "internal_rca", "connection_id": "rca"}]
+                        },
+                    }
+                },
+            }
+        )
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    environment = _environment()
+    environment.target_approved = False
+    await pipelines.create_pipeline_run(
+        _scope_request(title="Inherited human", assistant_id="custom"),
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo({"env-1": environment})),
+        cast(Any, request),
+    )
+    config = client.runs.args[3]["configurable"]
+    assert config["engine"] == "apex_load"
+    assert config["phase_execution"] == ownership
+    assert config.get("environment_target") is None
+
+
+async def test_scope_retry_recovers_original_intent_before_mutable_catalog(monkeypatch):
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    environment = _environment()
+    body = _scope_request(
+        title="Stable scope retry",
+        idempotency_key="scope-intent",
+        phases=["story_analysis"],
+        configurable={"engine": "sim"},
+    )
+    catalog = FakeCatalogRepo({"env-1": environment})
+    first = await pipelines.create_pipeline_run(
+        body,
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, catalog),
+        cast(Any, request),
+    )
+    environment.application.description = "changed after launch"
+    environment.name = "renamed"
+    catalog.environment_get_calls.clear()
+    repeated = await pipelines.create_pipeline_run(
+        body,
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, catalog),
+        cast(Any, request),
+    )
+    assert repeated == first
+    assert catalog.environment_get_calls == []
+    assert client.runs.successful_creates == 1
+    with pytest.raises(HTTPException) as exc:
+        await pipelines.create_pipeline_run(
+            body.model_copy(update={"title": "Changed intent"}),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, catalog),
+            cast(Any, request),
+        )
+    assert exc.value.status_code == 409
+    assert client.runs.successful_creates == 1
+
+
+async def test_legacy_live_queued_retry_uses_original_run_target_before_checkpoint():
+    from unittest.mock import AsyncMock
+
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    config = {
+        "engine": "apex_load",
+        "environment_id": "env-1",
+        "environment_target": "https://8.8.8.8/load",
+        "environment_target_version": 3,
+    }
+    original = await service.start_run(
+        title="Queued legacy",
+        idempotency_key="queued",
+        project_id="proj-1",
+        app_id="app-a",
+        configurable=config,
+        principal_id="c1",
+        phases=["execution"],
+    )
+    cast(Any, client.threads).get_state = AsyncMock(return_value={"values": {}})
+    cast(Any, client.runs).get = AsyncMock(
+        return_value={
+            "thread_id": original["thread_id"],
+            "run_id": original["run_id"],
+            "kwargs": {
+                "config": {"configurable": {**config, "project_id": "proj-1", "app_id": "app-a"}}
+            },
+        }
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    body = pipelines.StartPipelineRequest(
+        title="Queued legacy",
+        idempotency_key="queued",
+        project_id="proj-1",
+        app_id="app-a",
+        configurable={"engine": "apex_load", "environment_id": "env-1"},
+        phases=["execution"],
+    )
+    recovered = await pipelines.create_pipeline_run(
+        body,
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo({})),
+        cast(Any, request),
+    )
+    assert recovered == original
+    assert client.runs.successful_creates == 1
+    with pytest.raises(HTTPException) as conflict:
+        await pipelines.create_pipeline_run(
+            body.model_copy(update={"request": "Different load"}),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo({})),
+            cast(Any, request),
+        )
+    assert conflict.value.status_code == 409
+    assert client.runs.successful_creates == 1
+
+
+async def test_scope_launch_pins_defaults_against_later_assistant_edits():
+    from apex.graphs.pipeline.configurable import PipelineConfigurable
+
+    client = FakeClient()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    await pipelines.create_pipeline_run(
+        _scope_request(title="Pinned default engine", phases=["execution"]),
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo()),
+        cast(Any, request),
+    )
+    outgoing = client.runs.args[3]["configurable"]
+    assert outgoing["engine"] == "sim"
+    assert set(outgoing) == set(PipelineConfigurable.model_fields)
+    # Runtime overlays request fields over newly edited assistant defaults.
+    effective = {"engine": "apex_load", "phase_execution": {"changed": True}, **outgoing}
+    assert effective["engine"] == "sim"
+    assert effective["phase_execution"] is None

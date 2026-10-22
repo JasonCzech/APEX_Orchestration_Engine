@@ -48,6 +48,7 @@ export const PhaseStatusSchema = z.enum([
   "running",
   "awaiting_prompt_review",
   "awaiting_output_review",
+  "awaiting_human_completion",
   "succeeded",
   "failed",
   "skipped",

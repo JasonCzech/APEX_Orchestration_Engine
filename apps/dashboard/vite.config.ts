@@ -87,6 +87,9 @@ export default defineConfig(() => {
       coverage: {
         provider: 'v8',
         reporter: ['text', 'lcov'],
+        // Keep uncovered source files in the denominator on Vitest 4.
+        include: ['src/**/*.{ts,tsx}'],
+        exclude: ['src/**/*.d.ts', 'src/**/__tests__/**', 'src/test/**'],
         thresholds: {
           branches: 70,
           functions: 70,

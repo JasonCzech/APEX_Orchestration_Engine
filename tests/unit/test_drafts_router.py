@@ -475,3 +475,52 @@ def test_mutations_require_operator_role() -> None:
         put = client.put("/v1/drafts/d-proj-a", json={"title": "x", "payload": {}})
         assert put.status_code == 403
         assert client.delete("/v1/drafts/d-proj-a").status_code == 403
+
+
+def test_combined_draft_visibility_is_applied_before_pagination() -> None:
+    repo = FakeDraftsRepository()
+    for draft_id, participant_project in [
+        ("hidden", "proj-b"),
+        ("first", "proj-a"),
+        ("second", "proj-a"),
+    ]:
+        repo.seed(
+            draft_id=draft_id,
+            title=draft_id,
+            project_id="proj-a",
+            created_by="alice",
+            payload={
+                "scope": {
+                    "test_scope": {
+                        "participants": [
+                            {"project_id": participant_project, "application_id": "app"}
+                        ]
+                    }
+                }
+            },
+        )
+    with make_client(repo, ALICE) as client:
+        response = client.get("/v1/drafts", params={"limit": 1, "offset": 1})
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == ["second"]
+
+
+def test_partial_draft_cannot_drop_project_for_an_associated_application() -> None:
+    repo = FakeDraftsRepository()
+    with make_client(repo, ALICE) as client:
+        response = client.post(
+            "/v1/drafts",
+            json={
+                "title": "Invalid partial scope",
+                "project_id": "proj-a",
+                "payload": {
+                    "scope": {
+                        "test_scope": {
+                            "participants": [{"project_id": "", "application_id": "other-app"}]
+                        }
+                    }
+                },
+            },
+        )
+    assert response.status_code == 403
+    assert repo.rows == {}

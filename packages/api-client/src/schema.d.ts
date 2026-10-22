@@ -1635,6 +1635,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pipelines/analysis/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Analysis Connections */
+        get: operations["listAnalysisConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/pipelines/execution-readiness": {
         parameters: {
             query?: never;
@@ -1771,6 +1788,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pipelines/{thread_id}/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pipeline Setup */
+        get: operations["getPipelineSetup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/prompts": {
         parameters: {
             query?: never;
@@ -1817,6 +1851,23 @@ export interface paths {
         put?: never;
         /** Archive Prompt */
         post: operations["archivePrompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/prompts/{prompt_id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Default Prompt */
+        post: operations["setDefaultPrompt"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2481,6 +2532,17 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** AnalysisConnectionChoice */
+        AnalysisConnectionChoice: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Provider */
+            provider: string;
+        };
         /** ApplicationCreate */
         ApplicationCreate: {
             /** Description */
@@ -2943,16 +3005,36 @@ export interface components {
         };
         /** CreatePromptRequest */
         CreatePromptRequest: {
+            /** Application Id */
+            application_id?: string | null;
             /** Content */
             content: string;
             /** Description */
             description?: string | null;
+            /** Environment Id */
+            environment_id?: string | null;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /**
+             * Is Shared
+             * @default false
+             */
+            is_shared: boolean;
             /** Key */
             key: string;
             /** Namespace */
             namespace: string;
             /** Note */
             note?: string | null;
+            phase?: components["schemas"]["Phase"] | null;
+            /**
+             * Selection Enabled
+             * @default true
+             */
+            selection_enabled: boolean;
         };
         /** CurrentPrincipalResponse */
         CurrentPrincipalResponse: {
@@ -4142,10 +4224,7 @@ export interface components {
             /** Requires Application */
             requires_application: boolean;
         };
-        /**
-         * ExecutionReadinessRequest
-         * @description The caller's selected contract, with preset values already resolved.
-         */
+        /** ExecutionReadinessRequest */
         ExecutionReadinessRequest: {
             /** App Id */
             app_id?: string | null;
@@ -4159,6 +4238,7 @@ export interface components {
             phases: string[];
             /** Project Id */
             project_id?: string | null;
+            test_scope?: components["schemas"]["TestScopeV1"] | null;
         };
         /** ExecutionScope */
         ExecutionScope: {
@@ -4328,6 +4408,8 @@ export interface components {
         GatePromptEdit: {
             /** Application */
             application?: string | null;
+            /** Context Edits */
+            context_edits?: components["schemas"]["PromptContextEdit"][] | null;
             /** System */
             system?: string | null;
             /** User */
@@ -4749,6 +4831,11 @@ export interface components {
             /** Phase */
             phase?: string | null;
         };
+        /**
+         * Phase
+         * @enum {string}
+         */
+        Phase: "story_analysis" | "test_planning" | "env_triage" | "script_scenario" | "execution" | "reporting" | "postmortem";
         /** PhasePromptReview */
         PhasePromptReview: {
             /**
@@ -4758,14 +4845,24 @@ export interface components {
             additional_context: string;
             /** Application */
             application?: string | null;
+            /** Contexts */
+            contexts?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Phase Prompt */
             phase_prompt: string;
+            /** Selections */
+            selections?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Source */
             source?: {
                 [key: string]: unknown;
             };
             /** System */
             system: string;
+            /** System Locked */
+            system_locked?: boolean | null;
             /** Updated At */
             updated_at: string;
             /** Updated By */
@@ -4780,6 +4877,8 @@ export interface components {
             additional_context: string;
             /** Application */
             application?: string | null;
+            /** Context Edits */
+            context_edits?: components["schemas"]["PromptContextEdit"][] | null;
             /** Phase Prompt */
             phase_prompt: string;
             /** System */
@@ -4826,6 +4925,10 @@ export interface components {
             project_id?: string | null;
             /** Rerun Blocked Reason */
             rerun_blocked_reason?: "cycle_preparation_required" | null;
+            /** Test Scope */
+            test_scope?: {
+                [key: string]: unknown;
+            } | null;
             /** Thread Id */
             thread_id: string;
             /** Thread Status */
@@ -4862,6 +4965,140 @@ export interface components {
              */
             partial: boolean;
         };
+        /** PipelineSetupConfiguration */
+        PipelineSetupConfiguration: {
+            /** App Id */
+            app_id: string | null;
+            /**
+             * Configurable
+             * @description Per-run configuration. prompt_manifest, test_scope_snapshot, and rerun_phases are server-owned and cannot be submitted.
+             */
+            configurable: {
+                /** AnalysisConfiguration */
+                analysis?: {
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** Selections */
+                    selections?: {
+                        /** Connection Id */
+                        connection_id: string;
+                        /**
+                         * Tool
+                         * @enum {string}
+                         */
+                        tool: "lra_engine" | "internal_rca" | "perfreportforge" | "other";
+                    }[];
+                    /**
+                     * Timeout S
+                     * @default 1800
+                     */
+                    timeout_s: number;
+                };
+                /** PhaseExecution */
+                phase_execution?: {
+                    /** Owners */
+                    owners: {
+                        [key: string]: "langgraph" | "hitl";
+                    };
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                };
+                /** PromptSelectionsV1 */
+                prompt_selections?: {
+                    /** Application */
+                    application?: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    }[];
+                    /** Environment */
+                    environment?: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    }[];
+                    /** Phases */
+                    phases: {
+                        [key: string]: {
+                            /** Override Content */
+                            override_content?: string | null;
+                            /** Prompt Id */
+                            prompt_id: string;
+                            /** Version Id */
+                            version_id: string;
+                        };
+                    };
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** PromptSelection */
+                    system: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    };
+                };
+                /** TestScopeV1 */
+                test_scope?: {
+                    /** Participants */
+                    participants: {
+                        /** Application Id */
+                        application_id: string;
+                        /** Environment Id */
+                        environment_id: string;
+                        /** Id */
+                        id: string;
+                        /**
+                         * Layer
+                         * @enum {string}
+                         */
+                        layer: "frontend" | "middle" | "backend";
+                        /** Project Id */
+                        project_id: string;
+                    }[];
+                    /** Primary Participant Id */
+                    primary_participant_id: string;
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** Traffic Entry Participant Id */
+                    traffic_entry_participant_id?: string | null;
+                };
+            } & {
+                [key: string]: unknown;
+            };
+            /** Environment Id */
+            environment_id: string | null;
+            /** Project Id */
+            project_id: string | null;
+            /** Request */
+            request: string;
+            /** Title */
+            title: string;
+        };
         /** PipelineSummary */
         PipelineSummary: {
             /** App Id */
@@ -4880,6 +5117,10 @@ export interface components {
             project_id?: string | null;
             /** Rerun Blocked Reason */
             rerun_blocked_reason?: "cycle_preparation_required" | null;
+            /** Test Scope */
+            test_scope?: {
+                [key: string]: unknown;
+            } | null;
             /** Thread Id */
             thread_id: string;
             /** Thread Status */
@@ -4893,7 +5134,7 @@ export interface components {
          * PortKind
          * @enum {string}
          */
-        PortKind: "work_tracking" | "log_search" | "observability" | "documents" | "cluster_inventory" | "source_control" | "execution_engine" | "artifact_store" | "secrets";
+        PortKind: "work_tracking" | "log_search" | "observability" | "documents" | "cluster_inventory" | "source_control" | "execution_engine" | "analysis" | "artifact_store" | "secrets";
         /** PreflightCheck */
         PreflightCheck: {
             /** Detail */
@@ -5062,39 +5303,86 @@ export interface components {
             /** Project Id */
             project_id: string;
         };
+        /** PromptContextEdit */
+        PromptContextEdit: {
+            /** Content */
+            content: string;
+            /** Prompt Id */
+            prompt_id: string;
+        };
         /** PromptDetail */
         PromptDetail: {
             active_version?: components["schemas"]["ActiveVersionRef"] | null;
+            /** Application Id */
+            application_id?: string | null;
             /** Archived At */
             archived_at?: string | null;
             /** Content */
             content?: string | null;
             /** Description */
             description?: string | null;
+            /** Environment Id */
+            environment_id?: string | null;
             /** Id */
             id: string;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /**
+             * Is Shared
+             * @default false
+             */
+            is_shared: boolean;
             /** Key */
             key: string;
             /** Namespace */
             namespace: string;
             /** Note */
             note?: string | null;
+            phase?: components["schemas"]["Phase"] | null;
+            /**
+             * Selection Enabled
+             * @default false
+             */
+            selection_enabled: boolean;
             /** Updated At */
             updated_at?: string | null;
         };
         /** PromptSummary */
         PromptSummary: {
             active_version?: components["schemas"]["ActiveVersionRef"] | null;
+            /** Application Id */
+            application_id?: string | null;
             /** Archived At */
             archived_at?: string | null;
             /** Description */
             description?: string | null;
+            /** Environment Id */
+            environment_id?: string | null;
             /** Id */
             id: string;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /**
+             * Is Shared
+             * @default false
+             */
+            is_shared: boolean;
             /** Key */
             key: string;
             /** Namespace */
             namespace: string;
+            phase?: components["schemas"]["Phase"] | null;
+            /**
+             * Selection Enabled
+             * @default false
+             */
+            selection_enabled: boolean;
             /** Updated At */
             updated_at?: string | null;
         };
@@ -5340,13 +5628,21 @@ export interface components {
         ResumeGateRequest: {
             /** Action */
             action: string;
+            /** Expected Revision */
+            expected_revision?: number | null;
             /** Instructions */
             instructions?: string | null;
             /** Message */
             message?: string | null;
             /** Note */
             note?: string | null;
+            /** Output */
+            output?: {
+                [key: string]: unknown;
+            } | null;
             prompt?: components["schemas"]["GatePromptEdit"] | null;
+            /** Task Id */
+            task_id?: string | null;
         };
         /** ResumeGateResponse */
         ResumeGateResponse: {
@@ -5640,11 +5936,125 @@ export interface components {
             assistant_id?: string | null;
             /**
              * Configurable
-             * @description Full per-run PipelineConfigurable layer retained by the selected assistant.
+             * @description Full per-run configuration retained by the selected assistant.
              */
-            configurable?: {
+            configurable?: ({
+                /** AnalysisConfiguration */
+                analysis?: {
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** Selections */
+                    selections?: {
+                        /** Connection Id */
+                        connection_id: string;
+                        /**
+                         * Tool
+                         * @enum {string}
+                         */
+                        tool: "lra_engine" | "internal_rca" | "perfreportforge" | "other";
+                    }[];
+                    /**
+                     * Timeout S
+                     * @default 1800
+                     */
+                    timeout_s: number;
+                };
+                /** PhaseExecution */
+                phase_execution?: {
+                    /** Owners */
+                    owners: {
+                        [key: string]: "langgraph" | "hitl";
+                    };
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                };
+                /** PromptSelectionsV1 */
+                prompt_selections?: {
+                    /** Application */
+                    application?: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    }[];
+                    /** Environment */
+                    environment?: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    }[];
+                    /** Phases */
+                    phases: {
+                        [key: string]: {
+                            /** Override Content */
+                            override_content?: string | null;
+                            /** Prompt Id */
+                            prompt_id: string;
+                            /** Version Id */
+                            version_id: string;
+                        };
+                    };
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** PromptSelection */
+                    system: {
+                        /** Override Content */
+                        override_content?: string | null;
+                        /** Prompt Id */
+                        prompt_id: string;
+                        /** Version Id */
+                        version_id: string;
+                    };
+                };
+                /** TestScopeV1 */
+                test_scope?: {
+                    /** Participants */
+                    participants: {
+                        /** Application Id */
+                        application_id: string;
+                        /** Environment Id */
+                        environment_id: string;
+                        /** Id */
+                        id: string;
+                        /**
+                         * Layer
+                         * @enum {string}
+                         */
+                        layer: "frontend" | "middle" | "backend";
+                        /** Project Id */
+                        project_id: string;
+                    }[];
+                    /** Primary Participant Id */
+                    primary_participant_id: string;
+                    /**
+                     * Schema Version
+                     * @default 1
+                     * @constant
+                     */
+                    schema_version: 1;
+                    /** Traffic Entry Participant Id */
+                    traffic_entry_participant_id?: string | null;
+                };
+            } & {
                 [key: string]: unknown;
-            } | null;
+            }) | null;
             /** Context Packets */
             context_packets?: components["schemas"]["ContextPacket"][] | null;
             /** Document Ids */
@@ -5669,6 +6079,7 @@ export interface components {
              * @default
              */
             request: string;
+            test_scope?: components["schemas"]["TestScopeV1"] | null;
             /** Title */
             title: string;
         };
@@ -5710,6 +6121,27 @@ export interface components {
         SystemLimits: {
             /** Max Context Packets */
             max_context_packets: number;
+            /**
+             * Max Test Participants
+             * @default 32
+             */
+            max_test_participants: number;
+        };
+        /** TestParticipant */
+        TestParticipant: {
+            /** Application Id */
+            application_id: string;
+            /** Environment Id */
+            environment_id: string;
+            /** Id */
+            id: string;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "frontend" | "middle" | "backend";
+            /** Project Id */
+            project_id: string;
         };
         /** TestPromptRequest */
         TestPromptRequest: {
@@ -5732,6 +6164,21 @@ export interface components {
             run_id: string;
             /** Thread Id */
             thread_id?: string | null;
+        };
+        /** TestScopeV1 */
+        TestScopeV1: {
+            /** Participants */
+            participants: components["schemas"]["TestParticipant"][];
+            /** Primary Participant Id */
+            primary_participant_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Traffic Entry Participant Id */
+            traffic_entry_participant_id?: string | null;
         };
         /** TranslateQueryRequest */
         TranslateQueryRequest: {
@@ -10115,6 +10562,37 @@ export interface operations {
             };
         };
     };
+    listAnalysisConnections: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisConnectionChoice"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getPipelineExecutionReadiness: {
         parameters: {
             query?: never;
@@ -10388,11 +10866,48 @@ export interface operations {
             };
         };
     };
+    getPipelineSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineSetupConfiguration"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listPrompts: {
         parameters: {
             query?: {
                 namespace?: string | null;
                 include_archived?: boolean;
+                phase?: components["schemas"]["Phase"] | null;
+                application_id?: string | null;
+                include_shared?: boolean;
+                environment_id?: string | null;
+                selection_enabled?: boolean | null;
                 q?: string | null;
                 limit?: number;
                 offset?: number;
@@ -10507,6 +11022,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PromptSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setDefaultPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Prompt id */
+                prompt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptDetail"];
                 };
             };
             /** @description Validation Error */

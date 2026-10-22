@@ -157,6 +157,7 @@ const STUB: ProviderSpec = {
 }
 
 export const PROVIDER_CATALOG: Partial<Record<PortKind, readonly ProviderSpec[]>> = {
+  analysis: ['lra_engine', 'perfreportforge', 'other'].map(id => ({ id, label: ({ lra_engine: 'LRA Engine', perfreportforge: 'PerfReportForge', other: 'Other analysis service' } as Record<string, string>)[id]!, optionFields: [{ key: 'base_url', label: 'Analysis service URL', required: true, input: 'text' as const, mirrorsBaseUrl: true, help: 'Service must implement the APEX analysis v1 contract.' }], secretRef: { placeholder: 'env://ANALYSIS_API_TOKEN', help: 'Managed bearer token for the analysis service.' } })),
   work_tracking: [JIRA, JIRA_ALIGN, STUB],
 }
 

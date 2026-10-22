@@ -8,21 +8,22 @@ function record(value: unknown): Record<string, unknown> {
 
 /** Catalog choices are scoped by the facade; launch revalidates their ownership. */
 export function ReleaseMappingPicker({ draft, onChange, disabled }: StepProps) {
+  const project = draft.scope.test_scope?.participants.find(p => p.id === draft.scope.test_scope?.traffic_entry_participant_id)?.project_id ?? draft.scope.project_id
   const inherited = draft.config.golden_configurable ?? {}
   const connections = record(inherited.connections)
   const connectionId = typeof connections.execution_engine === 'string' ? connections.execution_engine : ''
   const loadTest = record(inherited.load_test)
   const catalog = useQuery({
-    queryKey: ['release-mapping-connections', draft.scope.project_id],
+    queryKey: ['release-mapping-connections', project],
     queryFn: async () => {
       const result = await getApexClient().GET('/v1/apex-load/connections')
       if (!result.response.ok || !result.data) throw new Error('Load connections could not be loaded.')
-      return result.data.items.filter(item => item.project_id === draft.scope.project_id)
+      return result.data.items.filter(item => item.project_id === project)
     },
   })
   const eligible = catalog.data?.some(item => item.id === connectionId) ?? false
   const mapping = useQuery({
-    queryKey: ['release-mapping', draft.scope.project_id, connectionId],
+    queryKey: ['release-mapping', project, connectionId],
     enabled: eligible,
     queryFn: async () => {
       const result = await getApexClient().GET('/v1/apex-load/connections/{connection_id}/capabilities', {

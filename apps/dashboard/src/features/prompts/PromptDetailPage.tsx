@@ -1,3 +1,4 @@
+import { PROMPT_LABELS } from './promptCategories'
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { TabList, TabPanels } from '@/components/ux/TabList'
@@ -18,6 +19,7 @@ import { Link, useSearchParams } from 'react-router'
 import {
   promptWriteMutationKey,
   usePrompt,
+  useMakeDefaultPrompt,
   usePromptVersions,
   useRollbackPrompt,
   useSaveVersion,
@@ -260,6 +262,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   const [versionContent, setVersionContent] = useState('')
   const [versionNote, setVersionNote] = useState('')
 
+  const makeDefault = useMakeDefaultPrompt()
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
   const activePromptIdRef = useRef<string | null>(detail?.id ?? null)
@@ -309,7 +312,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
       <header className="prompt-detail-header glass-panel">
         <div className="prompt-detail-title">
           <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
-            <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{ns}</Link>
+            <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{PROMPT_LABELS[ns] ?? ns}</Link>
             <span aria-hidden="true"> / </span>
             <span className="strong">{detail.key}</span>
           </nav>
@@ -320,6 +323,12 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
                 active v{detail.active_version.version}
               </span>
             )}
+            {detail.is_default && <span className="dash-context-chip">Default</span>}
+            {!detail.selection_enabled && <span className="dash-context-chip">Compatibility only</span>}
+            {detail.phase && <span>{detail.phase.replaceAll('_', ' ')}</span>}
+            {detail.is_shared && <span>Shared application context</span>}
+            {detail.application_id && <span>Application: {detail.application_id}</span>}
+            {detail.environment_id && <span>Environment: {detail.environment_id}</span>}
             {archived && <span className="topbar-meta-chip prompts-archived-chip">archived</span>}
           </div>
         </div>
@@ -328,6 +337,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
             Preview template
           </Link>
           <RequireGlobalAdmin>
+            {detail.selection_enabled && !archived && !detail.is_default && ['system', 'phase'].includes(detail.namespace) && <button type="button" className="btn btn-secondary" disabled={makeDefault.isPending || writePending} onClick={() => makeDefault.mutate(detail.id)}>Make default</button>}
             <button
               type="button"
               className="btn btn-primary"
@@ -346,13 +356,15 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
               label={`Prompt actions: ${detail.key}`}
               items={[{
                 label: archived ? 'Unarchive' : 'Archive…',
-                disabled: writePending,
+                disabled: writePending || detail.is_default,
                 onSelect: () => archived ? setArchived.mutate(false) : setArchiveConfirm(true),
               }]}
             />
           </RequireGlobalAdmin>
         </div>
       </header>
+      {makeDefault.isError && <p role="alert">{makeDefault.error.message}</p>}
+      {detail.is_default && <p>Designate a replacement default before archiving this entry.</p>}
       {setArchived.isError && (
         <div className="tonal-card danger" role="alert">
           {errorMessage(setArchived.error, 'Archive toggle failed.')}

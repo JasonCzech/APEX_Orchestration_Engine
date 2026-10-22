@@ -13,6 +13,7 @@ def register_builtin_adapters() -> None:
     global _registered
     if _registered:
         return
+    import apex.adapters.analysis  # noqa: F401
     import apex.adapters.apex_load  # noqa: F401  (registers the "apex_load" execution-engine provider)
     import apex.adapters.confluence  # noqa: F401
     import apex.adapters.elk  # noqa: F401  (registers the "elasticsearch" log-search provider)

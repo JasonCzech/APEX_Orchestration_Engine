@@ -248,19 +248,41 @@ async def _seed_default_prompts(
     # that transaction instead of committing the prompt subset independently.
     repo = PromptRepository(session, commit_on_write=False)
     catalog = PromptCatalogService(repo)
+    from apex.domain.prompt_catalog import SHARED_SYSTEM_PROMPT
+
+    if await repo.get_by_key("system", "default") is None:
+        prompt, _ = await catalog.create_prompt(
+            namespace="system",
+            key="default",
+            content=SHARED_SYSTEM_PROMPT,
+            description="Shared pipeline system prompt",
+            created_by="apex.bootstrap",
+            applicability={"selection_enabled": True},
+        )
+        if await repo.get_default("system") is None:
+            await catalog.set_default(prompt.id)
+        report.prompts_created.append("system/default")
+        log("prompt system/default: created")
     for key in sorted(DEFAULT_PHASE_PROMPTS):
         if await repo.get_by_key(PHASE_NAMESPACE, key) is not None:
             log(f"prompt {PHASE_NAMESPACE}/{key}: exists; unchanged")
             continue
         phase, _, part = key.partition("/")
-        await catalog.create_prompt(
+        prompt, _ = await catalog.create_prompt(
             namespace=PHASE_NAMESPACE,
             key=key,
             content=DEFAULT_PHASE_PROMPTS[key],
             description=f"Built-in {part} prompt for the {phase} phase",
             note="seeded by apex.bootstrap",
             created_by="apex.bootstrap",
+            applicability={
+                "phase": phase if part == "system" else None,
+                "selection_enabled": part == "system",
+            },
         )
+        if part == "system":
+            if await repo.get_default("phase", phase=phase) is None:
+                await catalog.set_default(prompt.id)
         report.prompts_created.append(f"{PHASE_NAMESPACE}/{key}")
         log(f"prompt {PHASE_NAMESPACE}/{key}: created")
 

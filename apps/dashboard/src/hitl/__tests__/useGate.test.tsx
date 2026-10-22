@@ -17,6 +17,7 @@ import { queryKeys } from '@/api/queryKeys'
 
 import {
   gatedDetail,
+  humanInterrupt,
   engineRetryInterrupt,
   mutableDetailHandler,
   phaseInterrupt,
@@ -173,6 +174,55 @@ describe('useGate discovery', () => {
 })
 
 describe('useGate resume wiring', () => {
+  it.each([undefined, 'Native evidence is not ready'])('keeps human work when validation reopens the same task (previous error: %s)', async (previousError) => {
+    const threadId = 'th-human-rejected'
+    const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [humanInterrupt(previousError)]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { queryClient, wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    const output = { deliverable: { summary: 'Authored completion', sections: [{ title: 'Execution results', body: 'Collected measurements' }] }, native_run_id: 'native-1' }
+    act(() => result.current.edit({ output }))
+    act(() => result.current.submit('complete'))
+    await waitFor(() => expect(result.current.state.tag).toBe('awaiting_agent'))
+
+    // Native evidence is verified by the graph after the facade returns 202.
+    // A repeated rejection may have the identical interrupt ID and payload.
+    ref.current = { ...gatedDetail(threadId, [humanInterrupt('Native evidence is not ready')]), updated_at: '2026-06-12T10:00:01+00:00' }
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(result.current.state).toMatchObject({ tag: 'open', draft: { output } }))
+    expect(resume.captured.last()?.body).toMatchObject({ action: 'complete', task_id: 'execution-a1-human', expected_revision: 1, output })
+
+    // Only a confirmed completion retires the retained task draft.
+    ref.current = { ...gatedDetail(threadId, []), updated_at: '2026-06-12T10:00:02+00:00' }
+    act(() => result.current.submit('complete'))
+    await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
+    expect(queryClient.getQueryData(['gate-draft', threadId, 'int-human'])).toBeUndefined()
+  })
+
+  it.each([
+    { task_id: 'execution-a2-human', revision: 2 },
+    { artifact_ids: ['new-upstream-artifact'] },
+    { analysis_selections: [{ tool: 'internal_rca', connection_id: 'replacement-connection' }] },
+  ])('does not restore human output after the task requirements change: %j', async (changedRequirements) => {
+    const threadId = 'th-human-changed'
+    const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [humanInterrupt()]))
+    server.use(handler, resumeHandler(202).handler)
+    const { queryClient, wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    act(() => result.current.edit({ output: { deliverable: { summary: 'Output for the old task' } } }))
+    act(() => result.current.submit('complete'))
+    await waitFor(() => expect(result.current.state.tag).toBe('awaiting_agent'))
+    const changed = humanInterrupt('Review the updated task requirements')
+    changed.payload = { ...changed.payload as Record<string, unknown>, ...changedRequirements }
+    ref.current = { ...gatedDetail(threadId, [changed]), updated_at: '2026-06-12T10:00:01+00:00' }
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(result.current.state).toMatchObject({ tag: 'open', draft: {} }))
+    expect(queryClient.getQueryData(['gate-draft', threadId, 'int-human'])).toBeUndefined()
+  })
+
   it('fails closed when the payload kind does not match the interrupt envelope', async () => {
     const threadId = 'th-envelope-drift'
     const mismatched = promptInterrupt('int-envelope-drift')

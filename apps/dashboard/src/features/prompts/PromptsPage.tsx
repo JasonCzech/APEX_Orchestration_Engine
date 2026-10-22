@@ -1,3 +1,7 @@
+import { PHASE_NAMES } from '@apex/pipeline-events'
+import type { PhaseName } from '@apex/pipeline-events'
+import { useApplicationsIndex, useEnvironmentsIndex } from '@/api/hooks/useEnvironments'
+import { PROMPT_CATEGORIES, PROMPT_LABELS } from './promptCategories'
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
@@ -13,6 +17,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
   useCreatePrompt,
+  useMakeDefaultPrompt,
   usePromptList,
   usePromptById,
   type PromptSummary,
@@ -29,7 +34,6 @@ import { promptPath } from './promptPaths'
 import './prompts.css'
 
 const SEARCH_DEBOUNCE_MS = 300
-const PINNED_NAMESPACE = 'phase'
 const EM_DASH = '—'
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -40,20 +44,12 @@ function errorMessage(error: unknown, fallback: string): string {
 
 /** Distinct namespaces with counts; 'phase' first, the rest alphabetical. */
 function namespaceIndex(rows: PromptSummary[]): Array<{ ns: string; count: number }> {
-  const counts = new Map<string, number>()
-  for (const row of rows) counts.set(row.namespace, (counts.get(row.namespace) ?? 0) + 1)
-  return [...counts.entries()]
-    .map(([ns, count]) => ({ ns, count }))
-    .sort((a, b) => {
-      if (a.ns === PINNED_NAMESPACE) return -1
-      if (b.ns === PINNED_NAMESPACE) return 1
-      return a.ns.localeCompare(b.ns)
-    })
+  return PROMPT_CATEGORIES.map(ns => ({ ns, count: rows.filter(row => row.namespace === ns && row.selection_enabled).length }))
 }
 
 interface PromptGroup {
   id: string
-  label: 'Pipeline prompt' | 'Application requirements'
+  label: string
   title: string
   rows: PromptSummary[]
 }
@@ -64,27 +60,21 @@ function readableName(value: string): string {
 }
 
 function namespaceLabel(namespace: string): string {
-  if (namespace === 'phase') return 'Pipeline prompts'
-  if (namespace === 'application') return 'Application requirements'
-  return namespace
+  return PROMPT_LABELS[namespace] ?? namespace
 }
 
-function promptGroups(rows: PromptSummary[], namespace: string): PromptGroup[] | null {
-  if (namespace !== 'phase' && namespace !== 'application') return null
+function promptGroups(rows: PromptSummary[], namespace: string, names: Record<string, string>): PromptGroup[] | null {
+  if (!namespace) return [
+    { id: 'selectable', label: 'Prompt catalog', title: 'Available selections', rows: rows.filter(row => row.selection_enabled) },
+    { id: 'compatibility', label: 'Compatibility', title: 'Legacy templates and unresolved entries', rows: rows.filter(row => !row.selection_enabled) },
+  ].filter(group => group.rows.length)
+  if (namespace === 'system') return null
   const grouped = new Map<string, PromptSummary[]>()
   for (const row of rows) {
-    const id = namespace === 'phase' ? (row.key.split('/', 1)[0] ?? row.key) : row.key
+    const id = namespace === 'phase' ? row.phase ?? 'Unassigned' : namespace === 'application' ? row.is_shared ? 'Shared' : row.application_id ?? 'Unassigned' : row.environment_id ?? 'Unassigned'
     grouped.set(id, [...(grouped.get(id) ?? []), row])
   }
-  return [...grouped.entries()].map(([id, groupRows]) => ({
-    id,
-    label: namespace === 'phase' ? 'Pipeline prompt' : 'Application requirements',
-    title:
-      namespace === 'application'
-        ? groupRows[0]?.description || readableName(id)
-        : readableName(id),
-    rows: groupRows,
-  }))
+  return [...grouped.entries()].sort(([a], [b]) => namespace === 'phase' ? PHASE_NAMES.indexOf(a as PhaseName) - PHASE_NAMES.indexOf(b as PhaseName) : a.localeCompare(b)).map(([id, groupRows]) => ({ id, label: namespaceLabel(namespace), title: names[id] ?? readableName(id), rows: groupRows }))
 }
 
 function PromptRow({
@@ -112,6 +102,7 @@ function PromptRow({
           {prompt.key}
         </button>
       </td>
+      <td>{namespaceLabel(prompt.namespace)}{prompt.is_shared ? ' · Shared' : ''}</td>
       <td className="prompts-description">{prompt.description || EM_DASH}</td>
       <td>
         <div className="prompts-badges">
@@ -122,6 +113,7 @@ function PromptRow({
           ) : (
             <span className="prompts-muted">{EM_DASH}</span>
           )}
+          {prompt.is_default && <span className="topbar-meta-chip">default</span>}
           {archived && <span className="topbar-meta-chip prompts-archived-chip">archived</span>}
         </div>
       </td>
@@ -133,6 +125,7 @@ function PromptRow({
 }
 
 function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
+  const makeDefault = useMakeDefaultPrompt()
   const detailQuery = usePromptById(prompt?.namespace ?? '', prompt?.key ?? '', prompt?.id)
   if (!prompt) {
     return (
@@ -166,13 +159,14 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
       <div className="prompts-preview-header">
         <div>
           <p className="prompts-preview-kicker">
-            {detail.namespace === 'application' ? 'Application requirements' : 'Pipeline prompt'}
+            {namespaceLabel(detail.namespace)}
           </p>
           <h2>{detail.description || readableName(detail.key)}</h2>
           <code className="prompts-key-meta">{detail.key}</code>
         </div>
         <div className="prompts-preview-meta">
           {detail.active_version && <span className="dash-context-chip prompts-version-chip">Active v{detail.active_version.version}</span>}
+          {detail.is_default && <span className="dash-context-chip">Default</span>}
           {detail.archived_at && <span className="topbar-meta-chip prompts-archived-chip">archived</span>}
           <span className="prompts-muted" title={detail.updated_at ?? undefined}>{formatRelative(detail.updated_at)}</span>
         </div>
@@ -185,6 +179,8 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
       )}
       <div className="prompts-preview-footer">
         {detail.note ? <span className="prompts-muted">{detail.note}</span> : <span />}
+        {detail.selection_enabled && !detail.archived_at && !detail.is_default && ['system', 'phase'].includes(detail.namespace) && <RequireGlobalAdmin><button type="button" className="btn btn-secondary btn-sm" disabled={makeDefault.isPending} onClick={() => makeDefault.mutate(detail.id)}>Make default</button></RequireGlobalAdmin>}
+        {makeDefault.isError && <p role="alert">{makeDefault.error.message}</p>}
         <Link className="btn btn-secondary btn-sm" to={promptPath(detail.namespace, detail.key)}>
           Open full editor
         </Link>
@@ -195,33 +191,47 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
 
 interface CreateDraft {
   namespace: string
+  phase: PhaseName | null
+  application_id: string
+  environment_id: string
+  is_shared: boolean
+  is_default: boolean
   key: string
   description: string
   content: string
   note: string
 }
 
-const EMPTY_DRAFT: CreateDraft = { namespace: '', key: '', description: '', content: '', note: '' }
+const EMPTY_DRAFT: CreateDraft = { namespace: 'system', phase: null, application_id: '', environment_id: '', is_shared: false, is_default: false, key: '', description: '', content: '', note: '' }
 
 function CreatePromptPanel({
-  namespaces,
   onClose,
 }: {
-  namespaces: string[]
   onClose: () => void
 }) {
   const navigate = useNavigate()
   const create = useCreatePrompt()
+  const applications = useApplicationsIndex()
+  const environments = useEnvironmentsIndex()
   const [draft, setDraft] = useState<CreateDraft>(EMPTY_DRAFT)
 
   const valid =
-    draft.namespace.trim().length > 0 && draft.key.trim().length > 0 && draft.content.length > 0
+    draft.namespace.trim().length > 0 && draft.key.trim().length > 0 && draft.content.trim().length > 0 &&
+    (draft.namespace !== 'phase' || Boolean(draft.phase)) &&
+    (draft.namespace !== 'application' || draft.is_shared || Boolean(draft.application_id)) &&
+    (draft.namespace !== 'environment' || Boolean(draft.environment_id))
 
   function submit() {
     if (!valid || create.isPending) return
     create.mutate(
       {
         namespace: draft.namespace.trim(),
+        selection_enabled: true,
+        is_default: ['system', 'phase'].includes(draft.namespace) && draft.is_default,
+        phase: draft.namespace === 'phase' ? draft.phase : null,
+        application_id: draft.namespace === 'application' && !draft.is_shared ? draft.application_id : null,
+        is_shared: draft.namespace === 'application' && draft.is_shared,
+        environment_id: draft.namespace === 'environment' ? draft.environment_id : null,
         key: draft.key.trim(),
         content: draft.content,
         ...(draft.description.trim() ? { description: draft.description.trim() } : {}),
@@ -246,31 +256,28 @@ function CreatePromptPanel({
       closeOnEscape={!create.isPending}
     >
       <h2 className="prompt-modal-title">New prompt</h2>
-      <p>Creating this prompt also makes version 1 active immediately. Future runs that use this catalog key will resolve this content.</p>
+      <p>Creating this prompt makes version 1 available for selection. Existing tests keep their selected version.</p>
         <div className="prompt-form-grid">
           <label className="prompt-field">
-            <span className="prompt-field-label">Namespace</span>
-            <input
-              className="field-input"
-              list="prompt-namespaces"
-              value={draft.namespace}
-              onChange={(event) => setDraft({ ...draft, namespace: event.target.value })}
-              placeholder="phase"
-              aria-label="Namespace"
-            />
-            <datalist id="prompt-namespaces">
-              {namespaces.map((ns) => (
-                <option key={ns} value={ns} />
-              ))}
-            </datalist>
+            <span className="prompt-field-label">Category</span>
+            <select className="field-input" value={draft.namespace} aria-label="Category" onChange={event => setDraft({ ...draft, namespace: event.target.value })}>
+              {PROMPT_CATEGORIES.map(ns => <option key={ns} value={ns}>{namespaceLabel(ns)}</option>)}
+            </select>
           </label>
+          {draft.namespace === 'phase' && <label>Phase<select className="field-input" aria-label="Phase" value={draft.phase ?? ''} onChange={event => setDraft({ ...draft, phase: event.target.value as PhaseName })}><option value="">Choose a phase</option>{PHASE_NAMES.map(phase => <option key={phase} value={phase}>{readableName(phase)}</option>)}</select></label>}
+          {draft.namespace === 'application' && <>
+            <label>Applicability<select className="field-input" aria-label="Application applicability" value={draft.is_shared ? 'shared' : 'application'} onChange={event => setDraft({ ...draft, is_shared: event.target.value === 'shared' })}><option value="application">Application-specific</option><option value="shared">Shared</option></select></label>
+            {!draft.is_shared && <label>Application<select className="field-input" aria-label="Application" value={draft.application_id} onChange={event => setDraft({ ...draft, application_id: event.target.value })}><option value="">Choose an application</option>{applications.data?.map(app => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>}
+          </>}
+          {draft.namespace === 'environment' && <label>Environment<select className="field-input" aria-label="Environment" value={draft.environment_id} onChange={event => setDraft({ ...draft, environment_id: event.target.value })}><option value="">Choose an environment</option>{environments.data?.map(env => <option key={env.id} value={env.id}>{applications.data?.find(app => app.id === env.application_id)?.name ?? env.application_id} / {env.name}</option>)}</select></label>}
+          {['system', 'phase'].includes(draft.namespace) && <label><input type="checkbox" checked={draft.is_default} onChange={event => setDraft({ ...draft, is_default: event.target.checked })} /> Make default</label>}
           <label className="prompt-field">
             <span className="prompt-field-label">Key</span>
             <input
               className="field-input"
               value={draft.key}
               onChange={(event) => setDraft({ ...draft, key: event.target.value })}
-              placeholder="story_analysis/system"
+              placeholder="checkout-analysis"
               aria-label="Key"
             />
           </label>
@@ -366,10 +373,18 @@ export function PromptsPage() {
     const all = [...(data ?? [])].sort(
       (a, b) => a.namespace.localeCompare(b.namespace) || a.key.localeCompare(b.key),
     )
-    return selectedNs ? all.filter((row) => row.namespace === selectedNs) : all
+    return selectedNs ? all.filter((row) => row.namespace === selectedNs && row.selection_enabled) : all
   }, [data, selectedNs])
   const tree = useMemo(() => namespaceIndex(data ?? []), [data])
-  const groups = useMemo(() => promptGroups(rows, selectedNs), [rows, selectedNs])
+  const applications = useApplicationsIndex()
+  const environments = useEnvironmentsIndex()
+  const associationNames = useMemo(() => {
+    const names: Record<string, string> = {}
+    for (const app of applications.data ?? []) names[app.id] = app.name
+    for (const env of environments.data ?? []) names[env.id] = `${names[env.application_id] ?? env.application_id} / ${env.name}`
+    return names
+  }, [applications.data, environments.data])
+  const groups = useMemo(() => promptGroups(rows, selectedNs, associationNames), [rows, selectedNs, associationNames])
   const total = data?.length ?? 0
   const selectedPrompt = rows.find((row) => row.id === selectedId) ?? rows[0]
 
@@ -439,7 +454,7 @@ export function PromptsPage() {
             aria-current={selectedNs === '' ? 'true' : undefined}
             onClick={() => selectNamespace('')}
           >
-            <span>All namespaces</span>
+            <span>All Namespaces</span>
             <span className="prompts-tree-count">{total}</span>
           </button>
           {tree.map(({ ns, count }) => (
@@ -487,6 +502,7 @@ export function PromptsPage() {
                 <thead>
                   <tr>
                     <th>Key</th>
+                    <th>Category</th>
                     <th>Description</th>
                     <th>Active</th>
                     <th>Updated</th>
@@ -497,7 +513,7 @@ export function PromptsPage() {
                     <tbody key={group.id} className="prompts-table-group">
                       <tr className="prompts-group-heading">
                         <th
-                          colSpan={4}
+                          colSpan={5}
                           scope="rowgroup"
                           aria-label={`${group.label}: ${group.title}, ${group.rows.length} ${group.rows.length === 1 ? 'prompt' : 'prompts'}`}
                         >
@@ -541,7 +557,6 @@ export function PromptsPage() {
 
       {creating && (
         <CreatePromptPanel
-          namespaces={tree.map((entry) => entry.ns)}
           onClose={() => setCreating(false)}
         />
       )}

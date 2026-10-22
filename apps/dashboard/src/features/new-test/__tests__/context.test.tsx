@@ -376,8 +376,7 @@ describe('ContextStep', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
     const project = screen.getByLabelText('Project')
-    await user.clear(project)
-    await user.type(project, 'different-project')
+    await user.selectOptions(project, '')
     release()
 
     await waitFor(() => expect(uploads).toEqual(['first.txt']))

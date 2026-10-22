@@ -21,7 +21,10 @@ from apex.domain.input_limits import (
     validation_error_summary,
 )
 from apex.domain.integrations import LoadTestSpec
+from apex.domain.phase_execution import AnalysisConfiguration, PhaseExecution
 from apex.domain.pipeline import PHASE_ORDER, Phase
+from apex.domain.prompt_selection import PromptManifestV1, PromptSelectionsV1
+from apex.domain.test_scope import TestScopeV1
 from apex.services.run_validation import (
     MAX_MODEL_NAME_CHARS,
     MAX_PROMPT_PART_CHARS_HARD,
@@ -68,7 +71,33 @@ def normalize_durable_pipeline_snapshot(snapshot: dict[str, Any]) -> dict[str, A
         and all(type(key) is str for key in snapshot)
         and set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS
     ):
-        return {**snapshot, "cycle_dispatch_id": None}
+        snapshot = {**snapshot, "cycle_dispatch_id": None}
+    if set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS | {"cycle_dispatch_id"}:
+        snapshot = {**snapshot, "prompt_selections": None, "prompt_manifest": None}
+    if set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS | {
+        "cycle_dispatch_id",
+        "prompt_selections",
+        "prompt_manifest",
+    }:
+        snapshot = {**snapshot, "phase_execution": None, "analysis": None}
+    if set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS | {
+        "cycle_dispatch_id",
+        "prompt_selections",
+        "prompt_manifest",
+        "phase_execution",
+        "analysis",
+    }:
+        snapshot = {**snapshot, "test_scope": None, "test_scope_snapshot": None}
+    if set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS | {
+        "cycle_dispatch_id",
+        "prompt_selections",
+        "prompt_manifest",
+        "phase_execution",
+        "analysis",
+        "test_scope",
+        "test_scope_snapshot",
+    }:
+        snapshot = {**snapshot, "rerun_phases": None}
     return snapshot
 
 
@@ -120,6 +149,8 @@ class PipelineConfigurable(BaseModel):
     # Assistant used to create the run. The graph itself does not branch on
     # this value, but persisting it lets later phase re-runs target the same
     # golden assistant instead of silently falling back to the base graph.
+    test_scope: TestScopeV1 | None = None
+    test_scope_snapshot: dict[str, Any] | None = None
     assistant_id: NoNulStr = Field(default="pipeline", max_length=256)
     project_id: ScopeId | None = None
     app_id: ScopeId | None = None
@@ -135,11 +166,20 @@ class PipelineConfigurable(BaseModel):
 
     # Phase selection: explicit list wins over start/stop range; default = all.
     phases: list[Phase] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    # Server-owned execution window for an explicit rerun; launch ownership and
+    # frozen prompt/scope choices remain intact for future reruns.
+    rerun_phases: list[Phase] | None = Field(
+        default=None, min_length=1, max_length=len(PHASE_ORDER)
+    )
+    phase_execution: PhaseExecution | None = None
+    analysis: AnalysisConfiguration | None = None
     start_phase: Phase | None = None
     stop_after: Phase | None = None
 
     gates: dict[Phase, GatePolicy] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
     prompt_overrides: dict[str, PromptOverride] = Field(default_factory=dict, max_length=32)
+    prompt_selections: PromptSelectionsV1 | None = None
+    prompt_manifest: PromptManifestV1 | None = None
     pre_execution_context: list[NoNulStr] = Field(default_factory=list, max_length=32)
     model_by_phase: dict[Phase, NoNulStr] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
     # Per-run LoadTestSpec overrides plus provider-specific execution options.
@@ -152,6 +192,173 @@ class PipelineConfigurable(BaseModel):
     # effect when an Anthropic key is configured; otherwise the phase fails.
     agent_backend: str = Field(default="stub", max_length=32)
     limits: Limits = Field(default_factory=Limits)
+
+    @model_validator(mode="after")
+    def validate_phase_execution(self):
+        if self.rerun_phases is not None:
+            if self.phase_execution is None or self.rerun_phases != [
+                phase for phase in PHASE_ORDER if phase in self.rerun_phases
+            ]:
+                raise ValueError(
+                    "rerun_phases requires ownership and a unique canonical phase plan"
+                )
+        if self.phase_execution is not None:
+            if (
+                self.start_phase is not None
+                or self.stop_after is not None
+                or (self.phases is not None and self.phases != list(PHASE_ORDER))
+            ):
+                raise ValueError(
+                    "phase ownership requires the full canonical plan without start/stop limits"
+                )
+        if self.analysis is not None:
+            self.analysis.validate_engine(self.engine)
+        if (
+            self.phase_execution
+            and self.engine in {"apex_load", "loadrunner"}
+            and (not self.analysis or not self.analysis.selections)
+        ):
+            raise ValueError("select at least one compatible analysis tool")
+        return self
+
+    def planned_phases(self) -> list[Phase]:
+        """All required work, including human phases; legacy subset semantics remain intact."""
+        if self.rerun_phases is not None:
+            return list(self.rerun_phases)
+        return list(PHASE_ORDER) if self.phase_execution else self.selected_phases()
+
+    def agent_phases(self) -> list[Phase]:
+        return [phase for phase in self.planned_phases() if self.executor(phase) == "langgraph"]
+
+    @property
+    def application_ids(self) -> set[str]:
+        return (
+            {p.application_id for p in self.test_scope.participants}
+            if self.test_scope
+            else ({self.app_id} if self.app_id is not None else set())
+        )
+
+    @property
+    def environment_ids(self) -> set[str]:
+        return (
+            {p.environment_id for p in self.test_scope.participants}
+            if self.test_scope
+            else ({self.environment_id} if self.environment_id is not None else set())
+        )
+
+    @property
+    def traffic_project_id(self) -> str | None:
+        return (
+            self.test_scope.traffic_entry.project_id
+            if self.test_scope and self.test_scope.traffic_entry
+            else self.project_id
+        )
+
+    @property
+    def traffic_app_id(self) -> str | None:
+        return (
+            self.test_scope.traffic_entry.application_id
+            if self.test_scope and self.test_scope.traffic_entry
+            else self.app_id
+        )
+
+    @model_validator(mode="after")
+    def validate_test_scope(self):
+        if self.test_scope:
+            if self.test_scope_snapshot is not None:
+                snapshot_scope = {
+                    **{
+                        key: self.test_scope_snapshot.get(key)
+                        for key in (
+                            "schema_version",
+                            "primary_participant_id",
+                            "traffic_entry_participant_id",
+                        )
+                    },
+                    "participants": [
+                        {
+                            key: item.get(key)
+                            for key in (
+                                "id",
+                                "project_id",
+                                "application_id",
+                                "environment_id",
+                                "layer",
+                            )
+                        }
+                        for item in self.test_scope_snapshot.get("participants", [])
+                    ],
+                }
+                resolved = TestScopeV1.model_validate(snapshot_scope)
+                if (
+                    resolved.primary_participant_id != self.test_scope.primary_participant_id
+                    or resolved.traffic_entry_participant_id
+                    != self.test_scope.traffic_entry_participant_id
+                    or {p.id: p for p in resolved.participants}
+                    != {p.id: p for p in self.test_scope.participants}
+                ):
+                    raise ValueError("Resolved scope snapshot does not match test participants")
+            primary = self.test_scope.primary
+            if self.project_id not in (None, primary.project_id) or self.app_id not in (
+                None,
+                primary.application_id,
+            ):
+                raise ValueError("Run ownership must match the primary system")
+            self.project_id, self.app_id = primary.project_id, primary.application_id
+            entry = self.test_scope.traffic_entry
+            self.environment_id = entry.environment_id if entry else None
+        return self
+
+    def executor(self, phase: Phase) -> str:
+        return self.phase_execution.owners[phase] if self.phase_execution else "langgraph"
+
+    @model_validator(mode="after")
+    def validate_prompt_selections(self):
+        if self.prompt_selections is not None:
+            if self.prompt_overrides:
+                raise ValueError("prompt_selections cannot be combined with prompt_overrides")
+            prompt_phases = (
+                [phase for phase in PHASE_ORDER if self.executor(phase) == "langgraph"]
+                if self.rerun_phases is not None
+                else self.agent_phases()
+            )
+            if set(self.prompt_selections.phases) != set(prompt_phases):
+                raise ValueError("prompt_selections.phases must match the included phases")
+            if self.prompt_manifest is not None:
+                manifest = self.prompt_manifest
+                if set(manifest.phases) != set(self.prompt_selections.phases):
+                    raise ValueError("Prompt manifest phase coverage is invalid")
+                entries = [
+                    manifest.system,
+                    *manifest.phases.values(),
+                    *manifest.application,
+                    *manifest.environment,
+                ]
+                references = [
+                    self.prompt_selections.system,
+                    *[self.prompt_selections.phases[phase] for phase in manifest.phases],
+                    *self.prompt_selections.application,
+                    *self.prompt_selections.environment,
+                ]
+                if len(entries) != len(references) or any(
+                    (entry.prompt_id, entry.version_id)
+                    != (reference.prompt_id, reference.version_id)
+                    for entry, reference in zip(entries, references, strict=True)
+                ):
+                    raise ValueError("Prompt manifest does not match selected versions")
+                if any(
+                    not entry.is_shared and entry.application_id not in self.application_ids
+                    for entry in manifest.application
+                ):
+                    raise ValueError("Prompt manifest application scope is invalid")
+                if any(
+                    entry.environment_id not in self.environment_ids
+                    for entry in manifest.environment
+                ):
+                    raise ValueError("Prompt manifest environment scope is invalid")
+        elif self.prompt_manifest is not None:
+            raise ValueError("prompt_manifest requires prompt_selections")
+        return self
 
     @field_validator("connections")
     @classmethod
@@ -313,6 +520,8 @@ class PipelineConfigurable(BaseModel):
         """
 
         current = cls.from_config(config)
+        if current.prompt_selections is not None and current.prompt_manifest is None:
+            raise ValueError("This test is missing its persisted prompt manifest")
         snapshot = state.get("run_config")
         if snapshot is None:
             return current
@@ -403,7 +612,7 @@ class PipelineConfigurable(BaseModel):
         if snapshot is None:
             return parsed
         plan = state.get("phases_plan")
-        expected = [selected.value for selected in parsed.selected_phases()]
+        expected = [selected.value for selected in parsed.planned_phases()]
         if (
             type(plan) is not list
             or len(plan) != len(expected)

@@ -1,3 +1,5 @@
+import { parseTestScope, testScopeIssues, type TestScopeV1 } from './testScope'
+import { emptyPromptSelections, parsePromptSelections, type DraftPromptSelections } from '@/features/prompts/promptCategories'
 /**
  * wizardState.ts — the one typed WizardDraft the 6-step wizard edits, plus the
  * pure derivations around it: per-step validation, phase prerequisites,
@@ -70,15 +72,26 @@ export type GatesMode = 'all_gated' | 'all_auto' | 'custom'
 export type GateMatrix = Record<PhaseName, GatePolicy>
 
 export interface WizardScope {
+  test_scope?: TestScopeV1
   project_id: string
   app_id: string | null
   environment_id: string | null
 }
 
+export type AnalysisTool = 'lra_engine' | 'internal_rca' | 'perfreportforge' | 'other'
+export interface AnalysisSelection { tool: AnalysisTool; connection_id: string }
+export const ANALYSIS_LABELS: Record<AnalysisTool, string> = { lra_engine: 'LRA Engine', internal_rca: 'Internal RCA', perfreportforge: 'PerfReportForge', other: 'Other Tools' }
+export function allowedAnalysisTools(engine: EngineId): AnalysisTool[] {
+  return engine === 'sim' ? [] : [engine === 'loadrunner' ? 'lra_engine' : 'internal_rca', 'perfreportforge', 'other']
+}
 export interface WizardConfig {
+  schema_version?: 2
+  migrated_phase_ownership?: boolean
+  analysis?: { schema_version: 1; selections: AnalysisSelection[]; timeout_s?: number }
+
   engine: EngineId
   unsupported_engine?: string | null
-  /** null = all 7 phases (canonical order). */
+  /** Agent-owned phases; null assigns every phase to LangGraph. */
   phases: PhaseName[] | null
   /** UI focus for the Prompts tab; not sent to the backend. */
   prompt_focus_phase: PhaseName | null
@@ -105,8 +118,13 @@ export interface WizardDraft {
   document_ids: string[]
   context_summary_ids: string[]
   config: WizardConfig
+  prompt_selections?: DraftPromptSelections
+  prompt_selection_issues?: string[]
   prompt_overrides: Record<string, { content: string }>
   prompt_override_removals: string[]
+  /** Pre-migration source used only to quarantine unresolved older launches. */
+  legacy_prompt_overrides?: Record<string, { content: string }>
+  legacy_prompt_override_removals?: string[]
 }
 
 export function createLaunchIdempotencyKey(): string {
@@ -127,12 +145,17 @@ export function emptyDraft(): WizardDraft {
     config: {
       engine: 'sim',
       unsupported_engine: null,
+      schema_version: 2,
+      migrated_phase_ownership: false,
+      analysis: { schema_version: 1, selections: [] },
       phases: null,
       prompt_focus_phase: PHASE_NAMES[0]!,
       gates_mode: 'all_gated',
       golden_config_id: null,
       golden_configurable: null,
     },
+    prompt_selections: emptyPromptSelections(),
+    prompt_selection_issues: ['Loading prompt catalog…'],
     prompt_overrides: {},
     prompt_override_removals: [],
   }
@@ -242,6 +265,11 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
       prompt_overrides[key] = { content: entry['content'] }
     }
   }
+  const legacyOverridesIn = payload['legacy_prompt_overrides']
+  const legacyOverrides = isRecord(legacyOverridesIn) ? Object.fromEntries(
+    Object.entries(legacyOverridesIn).flatMap(([key, entry]) =>
+      isRecord(entry) && typeof entry['content'] === 'string' ? [[key, { content: entry['content'] }]] : []),
+  ) : undefined
   const engine = config['engine']
   const gatesMode = config['gates_mode']
   return {
@@ -252,6 +280,7 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
     title: stringOr(payload['title'], base.title),
     request: stringOr(payload['request'], base.request),
     scope: {
+      test_scope: parseTestScope(scope['test_scope']),
       project_id: stringOr(scope['project_id'], base.scope.project_id),
       app_id: stringOrNull(scope['app_id']),
       environment_id: stringOrNull(scope['environment_id']),
@@ -265,6 +294,9 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
         : base.config.engine,
       unsupported_engine: stringOrNull(config['unsupported_engine']) ??
         (typeof engine === 'string' && !(ENGINES as readonly string[]).includes(engine) ? engine : null),
+      schema_version: 2,
+      migrated_phase_ownership: config['migrated_phase_ownership'] === true || (config['schema_version'] !== 2 && Array.isArray(config['phases']) && config['phases'].length < PHASE_NAMES.length),
+      analysis: normalizeAnalysis(config['analysis']),
       phases: normalizePhases(config['phases']),
       prompt_focus_phase: isPhaseName(config['prompt_focus_phase'])
         ? config['prompt_focus_phase']
@@ -281,8 +313,11 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
         ? config['golden_configurable']
         : null,
     },
+    prompt_selections: parsePromptSelections(payload['prompt_selections']),
+    prompt_selection_issues: ['Validating prompt selections…'],
     prompt_overrides,
     prompt_override_removals: stringArray(payload['prompt_override_removals']),
+    ...(legacyOverrides ? { legacy_prompt_overrides: legacyOverrides, legacy_prompt_override_removals: stringArray(payload['legacy_prompt_override_removals']) } : {}),
   }
 }
 
@@ -300,6 +335,16 @@ export const PHASE_PREREQUISITES: Record<PhaseName, readonly PhaseName[]> = {
 }
 
 /** The run's phase plan in canonical order (null subset = all 7). */
+export function normalizeAnalysis(value: unknown): { schema_version: 1; selections: AnalysisSelection[]; timeout_s?: number } {
+  const selections = isRecord(value) && Array.isArray(value.selections) ? value.selections : []
+  return { schema_version: 1, selections: selections.filter((s): s is AnalysisSelection => isRecord(s) && typeof s.tool === 'string' && s.tool in ANALYSIS_LABELS && typeof s.connection_id === 'string'), ...(isRecord(value) && typeof value.timeout_s === 'number' ? { timeout_s: value.timeout_s } : {}) }
+}
+export function plannedPhases(): PhaseName[] { return [...PHASE_NAMES] }
+export function phaseOwners(config: WizardConfig): Record<PhaseName, 'langgraph' | 'hitl'> {
+  const agents = new Set(selectedPhases(config))
+  return Object.fromEntries(PHASE_NAMES.map(phase => [phase, agents.has(phase) ? 'langgraph' : 'hitl'])) as Record<PhaseName, 'langgraph' | 'hitl'>
+}
+
 export function selectedPhases(config: WizardConfig): PhaseName[] {
   return config.phases ?? [...PHASE_NAMES]
 }
@@ -376,6 +421,7 @@ export function stepIssues(
     case 'scope': {
       if (draft.title.trim().length === 0) issues.push('Title is required')
       if (draft.request.trim().length === 0) issues.push('Request is required')
+      issues.push(...testScopeIssues(draft.scope.test_scope))
       if (draft.scope.project_id.trim().length === 0) issues.push('Project is required')
       break
     }
@@ -410,15 +456,23 @@ export function stepIssues(
         issues.push('Execution connection selection is invalid; choose a valid preset or clear it')
       }
       if (draft.config.unsupported_engine) issues.push(`Engine ${draft.config.unsupported_engine} is not supported by this deployment; choose a supported engine`)
-      if (draft.config.phases !== null && draft.config.phases.length === 0) {
-        issues.push('Select at least one phase')
-      } else {
-        issues.push(...phaseDependencyHints(selectedPhases(draft.config)))
-      }
+      const analysis = draft.config.analysis?.selections ?? []
+      if (draft.config.engine !== 'sim' && analysis.length === 0) issues.push('Select at least one analysis tool')
+      if (analysis.some(s => !allowedAnalysisTools(draft.config.engine).includes(s.tool))) issues.push('Remove analysis tools incompatible with the selected engine')
+      if (analysis.some(s => !s.connection_id.trim())) issues.push('Choose a connector for every analysis tool')
+      if (new Set(analysis.map(s => s.connection_id)).size !== analysis.length) issues.push('Choose distinct analysis connectors')
       break
     }
     case 'prompts': {
+      if (!selectedPhases(draft.config).length) break
+      const selection = draft.prompt_selections
+      if (selectedPhases(draft.config).length && !selection?.system) issues.push('Select a System Prompt')
+      for (const phase of selectedPhases(draft.config)) {
+        if (!selection?.phases[phase]) issues.push(`Select Phase context for ${phase}`)
+      }
+      issues.push(...(draft.prompt_selection_issues ?? []))
       for (const [key, override] of Object.entries(draft.prompt_overrides)) {
+        if (key.startsWith('phase/') && !selectedPhases(draft.config).some(phase => key.startsWith(`phase/${phase}`))) continue
         if (override.content.trim().length === 0) {
           issues.push(`Override for ${key} is empty — edit it or revert to catalog`)
         }
@@ -527,7 +581,7 @@ export function assessWizardReadiness(
     }
   }
   if (phases.includes('execution') && draft.config.golden_configurable?.agent_backend === 'anthropic') {
-    executionIssues.push({ step: 'config', message: 'Model-generated scripts require an approved provider or Cycle handoff before execution. Select planning phases only to author the script first.' })
+    executionIssues.push({ step: 'config', message: 'Model-generated scripts require an approved provider or Cycle handoff before execution. Assign Execution to HITL to supply approved external results.' })
   }
 
   if (draft.scope.environment_id && target) {
@@ -536,9 +590,9 @@ export function assessWizardReadiness(
       executionIssues.push({ step: 'scope', message: target.failed
         ? 'Selected environment could not be verified; retry or choose another environment'
         : 'Verifying selected environment before launch' })
-    } else if (environment.application_id !== draft.scope.app_id) {
+    } else if (environment.application_id !== (draft.scope.test_scope?.participants.find(p => p.id === draft.scope.test_scope?.traffic_entry_participant_id)?.application_id ?? draft.scope.app_id)) {
       executionIssues.push({ step: 'scope', message: 'Selected environment does not belong to this application' })
-    } else if (draft.config.engine !== 'sim' && (!environment.target_approved || !environment.base_url || environment.target_version < 1)) {
+    } else if (executesAgainstTarget && (!environment.target_approved || !environment.base_url || environment.target_version < 1)) {
       executionIssues.push({ step: 'scope', message: `Environment ${environment.name} needs an approved target before launch` })
     }
   }
@@ -547,7 +601,7 @@ export function assessWizardReadiness(
     executionNotes.push('Choose a supported engine before execution readiness can be determined.')
   } else if (!phases.includes('execution')) {
     executionNotes.push(
-      'This plan stops before Execution. Select a target and verify the engine before adding execution.',
+      'Execution is assigned to HITL. Supply completed execution evidence before the workflow continues.',
     )
   } else if (draft.config.engine === 'sim') {
     executionNotes.push('Simulation does not use a live environment target. Select an application when the chosen connection requires it; otherwise an application is optional.')
@@ -637,9 +691,18 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
     }
   }
   if (Object.keys(effectiveOverrides).length === 0) delete configurable['prompt_overrides']
+  delete configurable['prompt_manifest']
+  if (draft.prompt_selections && includedPhases.size) {
+    configurable['prompt_selections'] = { ...draft.prompt_selections, phases: Object.fromEntries(Object.entries(draft.prompt_selections.phases).filter(([phase]) => includedPhases.has(phase as PhaseName))) }
+    delete configurable['prompt_overrides']
+  }
+
+  if (!includedPhases.size) { delete configurable['prompt_selections']; delete configurable['prompt_overrides']; delete configurable['model_by_phase'] }
 
   // The compact scope/phase controls are authoritative even when they clear a
   // value inherited from an assistant bundle.
+  if (scope.test_scope) configurable['test_scope'] = scope.test_scope
+  delete configurable['test_scope_snapshot']
   if (scope.app_id) configurable['app_id'] = scope.app_id
   else delete configurable['app_id']
   if (scope.environment_id) configurable['environment_id'] = scope.environment_id
@@ -650,7 +713,9 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
   delete configurable['stop_after']
   // The wizard's visible plan is authoritative, including all seven phases.
   // Sparse assistant-inherited API requests outside the wizard remain distinct.
-  configurable['phases'] = selectedPhases(config)
+  configurable['phases'] = [...PHASE_NAMES]
+  configurable['phase_execution'] = { schema_version: 1, owners: phaseOwners(config) }
+  configurable['analysis'] = config.analysis ?? { schema_version: 1, selections: [] }
   // This field was never consumed by the graph. Context is now resolved into
   // input.context_packets by the domain launch endpoint.
   delete configurable['pre_execution_context']

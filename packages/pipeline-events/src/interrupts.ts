@@ -58,6 +58,9 @@ export type ReviewPromptSource = z.infer<typeof ReviewPromptSourceSchema>;
 
 export const ReviewPromptSchema = z
   .object({
+    system_locked: z.boolean().optional(),
+    contexts: z.array(z.object({ namespace: z.string(), key: z.string(), prompt_id: z.string(), version_id: z.string(), version: z.number(), content: z.string() }).passthrough()).optional(),
+    selections: z.array(z.record(z.string(), z.unknown())).optional(),
     system: z.string(),
     user: z.string(),
     application: z.string().nullable().optional(),
@@ -173,11 +176,26 @@ export const EngineRetryPayloadSchema = z
   .passthrough();
 export type EngineRetryPayload = z.infer<typeof EngineRetryPayloadSchema>;
 
+export const HumanCompletionPayloadSchema = z.object({
+  schema_version: schemaVersion,
+  kind: z.literal("human_completion"), phase: PhaseNameSchema,
+  task_id: z.string(), revision: z.number().int().positive(),
+  actions: z.array(z.string()), sections: z.array(z.string()),
+  artifact_ids: z.array(z.string()), created_at: z.string(), engine: z.string(),
+  requires_load_test_spec: z.boolean(),
+  approved_target: z.string().nullable().optional(),
+  analysis_selections: z.array(z.object({ tool: z.string(), connection_id: z.string() })),
+  error: z.string().optional(),
+}).passthrough();
+export type HumanCompletionPayload = z.infer<typeof HumanCompletionPayloadSchema>;
+
 /** Union over human-review and provider-recovery interrupt payloads. */
 export const GateInterruptPayloadSchema = z.union([
   PromptReviewPayloadSchema,
   PhaseReviewPayloadSchema,
   EngineRetryPayloadSchema,
+  HumanCompletionPayloadSchema,
+  z.object({ schema_version: schemaVersion, kind: z.literal("analysis_recovery"), phase: PhaseNameSchema, actions: z.array(z.string()), message: z.string(), error: z.string().nullable().optional() }).passthrough(),
 ]);
 export type GateInterruptPayload = z.infer<typeof GateInterruptPayloadSchema>;
 
@@ -203,6 +221,7 @@ export function parseGateInterrupt(
 /** Partial prompt edit: omitted keys keep the current value (prompt_gate). */
 export const PromptEditSchema = z
   .object({
+    context_edits: z.array(z.object({ prompt_id: z.string(), content: z.string() }).strict()).max(64).optional(),
     system: z.string().optional(),
     user: z.string().optional(),
     application: z.string().optional(),
@@ -263,6 +282,22 @@ export type PhaseReviewDecision = z.infer<typeof PhaseReviewDecisionSchema>;
 export const EngineRetryDecisionSchema = RetryActionSchema;
 export type EngineRetryDecision = z.infer<typeof EngineRetryDecisionSchema>;
 
+export const CompleteHumanActionSchema = z.object({
+  action: z.literal("complete"),
+  task_id: z.string().min(1),
+  expected_revision: z.number().int().positive(),
+  output: z.record(z.string(), z.unknown()),
+});
+export const AssignHumanActionSchema = z.object({
+  action: z.literal("assign_hitl"),
+  note: z.string().optional(),
+});
+export const HumanCompletionDecisionSchema = z.discriminatedUnion("action", [CompleteHumanActionSchema, AbortActionSchema]);
+export type HumanCompletionDecision = z.infer<typeof HumanCompletionDecisionSchema>;
+export const AnalysisRecoveryDecisionSchema = z.discriminatedUnion("action", [RetryActionSchema, AssignHumanActionSchema, AbortActionSchema]);
+
+export type AnalysisRecoveryDecision = z.infer<typeof AnalysisRecoveryDecisionSchema>;
+
 /** Any gate decision (use the per-gate unions when the gate kind is known). */
 export const GateDecisionSchema = z.discriminatedUnion("action", [
   ApproveActionSchema,
@@ -272,5 +307,7 @@ export const GateDecisionSchema = z.discriminatedUnion("action", [
   ReviseActionSchema,
   DiscussActionSchema,
   RetryActionSchema,
+  CompleteHumanActionSchema,
+  AssignHumanActionSchema,
 ]);
 export type GateDecision = z.infer<typeof GateDecisionSchema>;

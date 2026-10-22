@@ -69,6 +69,12 @@ def _phase_list_limit(field: str) -> int:
 
 
 def _validate_reducer_json(value: Any, *, phase_entry: bool = False) -> None:
+    manifest_prompt = (
+        phase_entry
+        and type(value) is dict
+        and type(value.get("resolved_prompt")) is dict
+        and value["resolved_prompt"].get("system_locked") is True
+    )
     stack: list[tuple[Any, int]] = [(value, 0)]
     nodes = 0
     while stack:
@@ -92,7 +98,7 @@ def _validate_reducer_json(value: Any, *, phase_entry: bool = False) -> None:
                 raise ValueError("checkpointed reducer entry is too large")
             stack.extend((nested, depth + 1) for nested in current)
         elif type(current) is str:
-            if len(current) > 50_000 or "\x00" in current:
+            if len(current) > (500_000 if manifest_prompt else 50_000) or "\x00" in current:
                 raise ValueError("checkpointed reducer entry is invalid")
         elif current is None or type(current) is bool:
             continue
@@ -138,7 +144,14 @@ def _validate_phase_entry(entry: JsonDict) -> None:
     if contains_credential_material(
         scan_entry,
         max_nodes=MAX_REDUCER_JSON_NODES,
-        max_total_chars=200_000,
+        max_string_chars=500_000
+        if type(entry.get("resolved_prompt")) is dict
+        and entry["resolved_prompt"].get("system_locked")
+        else 250_000,
+        max_total_chars=1_200_000
+        if type(entry.get("resolved_prompt")) is dict
+        and entry["resolved_prompt"].get("system_locked")
+        else 200_000,
     ):
         raise ValueError("checkpointed phase entry contains credential material")
 
@@ -154,10 +167,10 @@ def _validate_review_entry(entry: JsonDict) -> None:
     while stack:
         current, depth = stack.pop()
         nodes += 1
-        if nodes > 128 or depth > 6:
+        if nodes > (4000 if entry.get("system_locked") else 128) or depth > 6:
             raise ValueError("checkpointed prompt review is too large")
         if type(current) is dict:
-            if len(current) > 32:
+            if len(current) > (66 if entry.get("system_locked") else 32):
                 raise ValueError("checkpointed prompt review is too large")
             for key, nested in current.items():
                 if type(key) is not str or not 1 <= len(key) <= 255 or "\x00" in key:
@@ -165,11 +178,14 @@ def _validate_review_entry(entry: JsonDict) -> None:
                 total_chars += len(key)
                 stack.append((nested, depth + 1))
         elif type(current) is list:
-            if len(current) > 32:
+            if len(current) > (66 if entry.get("system_locked") else 32):
                 raise ValueError("checkpointed prompt review is too large")
             stack.extend((nested, depth + 1) for nested in current)
         elif type(current) is str:
-            if len(current) > MAX_REVIEW_STRING_CHARS or "\x00" in current:
+            if (
+                len(current) > (500_000 if entry.get("system_locked") else MAX_REVIEW_STRING_CHARS)
+                or "\x00" in current
+            ):
                 raise ValueError("checkpointed prompt review is invalid")
             total_chars += len(current)
         elif current is None or type(current) is bool:
@@ -182,12 +198,13 @@ def _validate_review_entry(entry: JsonDict) -> None:
                 raise ValueError("checkpointed prompt review is invalid")
         else:
             raise ValueError("checkpointed prompt review contains an unsupported value")
-        if total_chars > MAX_REVIEW_ENTRY_CHARS:
+        if total_chars > (1_200_000 if entry.get("system_locked") else MAX_REVIEW_ENTRY_CHARS):
             raise ValueError("checkpointed prompt review is too large")
     if contains_credential_material(
         entry,
-        max_nodes=128,
-        max_total_chars=MAX_REVIEW_ENTRY_CHARS,
+        max_nodes=4000 if entry.get("system_locked") else 128,
+        max_total_chars=1_200_000 if entry.get("system_locked") else MAX_REVIEW_ENTRY_CHARS,
+        max_string_chars=500_000 if entry.get("system_locked") else MAX_REVIEW_STRING_CHARS,
     ):
         raise ValueError("checkpointed prompt review contains credential material")
 

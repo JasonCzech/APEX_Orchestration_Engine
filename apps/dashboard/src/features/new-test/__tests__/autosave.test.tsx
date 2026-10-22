@@ -36,7 +36,10 @@ describe('wizard draft autosave', () => {
     const { captured } = installWizardHandlers()
     const { router } = renderWizard()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Add backend' }))
+    await vi.waitFor(() => expect(screen.getByRole('option', { name: 'demo' })).toBeInTheDocument())
     setField('Project', 'demo')
+    fireEvent.click(screen.getByRole('radio', { name: 'Primary system under test' }))
     setField('Title', 'Soak test')
     expect(captured.creates).toHaveLength(0) // debounce still pending
     expect(screen.getByTestId('draft-save-state')).toHaveTextContent('Unsaved changes')
@@ -69,7 +72,7 @@ describe('wizard draft autosave', () => {
     )
 
     // A later change UPDATES the same draft — no second create.
-    setField('Project', 'proj-b')
+    setField('Project', '')
     setField('Title', 'Soak test v2')
     await advanceDebounce()
     await vi.waitFor(() => expect(captured.updates).toHaveLength(1))
@@ -77,11 +80,11 @@ describe('wizard draft autosave', () => {
     expect(captured.updates[0]).toMatchObject({
       id: 'draft-1',
       title: 'Soak test v2',
-      project_id: 'proj-b',
+      project_id: null,
       payload: {
         title: 'Soak test v2',
         request: 'Hammer checkout',
-        scope: { project_id: 'proj-b' },
+        scope: { project_id: '' },
       },
     })
   })

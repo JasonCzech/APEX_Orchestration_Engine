@@ -496,9 +496,27 @@ async def admit_models(
 
     settings = get_settings()
     supplied = configurable.get("model_by_phase") or {}
-    selected = {
-        phase.value: supplied.get(phase.value, settings.llm.default_model) for phase in Phase
+    phases = list(Phase)
+    active_phases = phases
+    if configurable.get("phase_execution") is not None:
+        from apex.graphs.pipeline.configurable import PipelineConfigurable
+
+        # Admission also receives sparse API inputs and runtime-only fields.
+        # Validate the ownership/window contract independently of those fields.
+        execution = PipelineConfigurable.model_validate(
+            {
+                "phase_execution": configurable["phase_execution"],
+                "rerun_phases": configurable.get("rerun_phases"),
+            }
+        )
+        phases = [phase for phase in phases if execution.executor(phase) == "langgraph"]
+        active_phases = execution.agent_phases()
+    resolved = {
+        phase.value: supplied.get(phase.value, settings.llm.default_model) for phase in phases
     }
+    selected = {phase.value: resolved[phase.value] for phase in active_phases}
+    if not selected:
+        return resolved
     async with get_sessionmaker()() as session:
         # Resume is only requested by the trusted facade after reading the durable
         # checkpoint. Retain every admitted selection, so a rejected concurrent
@@ -508,7 +526,7 @@ async def admit_models(
             await session.get(ModelRunAdmission, (thread_id, selection_hash)) if thread_id else None
         )
         if resume and admission is not None:
-            return dict(admission.models)
+            return {**resolved, **admission.models}
         if any(key not in settings.llm.allowed_models for key in selected.values()):
             raise HTTPException(422, "Selected model is not allowlisted")
         for key in sorted(set(selected.values()), key=lambda key: (provider_for(key), key)):
@@ -531,7 +549,9 @@ async def admit_models(
                 .on_conflict_do_nothing(index_elements=["thread_id", "models_hash"])
             )
         await session.commit()
-    return selected
+    # The hook writes this mapping back to the durable configuration. Keep
+    # choices outside this rerun window for subsequent phase reruns.
+    return resolved
 
 
 async def initialize_pricing() -> None:

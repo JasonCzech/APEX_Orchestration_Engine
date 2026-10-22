@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import Table, create_engine, insert, select
 
 from apex.auth.identity import ScopeRef
-from apex.persistence.models import AgentEvent, UsageEvent
+from apex.persistence.models import AgentEvent, RunParticipant, RunScopeBinding, UsageEvent
 from apex.services.analytics_scope import analytics_scope_filter
 
 
@@ -34,6 +34,8 @@ def _visible_ids(
     try:
         with engine.begin() as connection:
             connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
+            cast(Table, RunParticipant.__table__).create(connection)
+            cast(Table, RunScopeBinding.__table__).create(connection)
             cast(Table, model.__table__).create(connection)
             connection.execute(insert(model), _values(model))
             predicate = analytics_scope_filter(model, scopes)

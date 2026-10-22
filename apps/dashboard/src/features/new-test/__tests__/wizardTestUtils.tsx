@@ -1,3 +1,5 @@
+import { expect } from 'vitest'
+import { PHASE_NAMES } from '@apex/pipeline-events'
 /**
  * Shared msw handlers + render helper for the wizard tests. Default handlers
  * cover every /v1 surface the wizard touches (the global msw server runs with
@@ -7,7 +9,7 @@
  * here — test files that mount the Config/Review steps must vi.mock
  * '@/api/langgraphClient' themselves (vi.mock is per-module and hoisted).
  */
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor, screen as testingScreen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 
@@ -21,6 +23,11 @@ import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
 type DraftRead = components['schemas']['DraftRead']
+
+export const DEFAULT_PROMPT_ROWS = [
+  { id: 'system-default', namespace: 'system', key: 'default', phase: null, is_default: true, is_shared: false, selection_enabled: true, active_version: { id: 'system-default-v1', version: 1 } },
+  ...PHASE_NAMES.map(phase => ({ id: `phase-${phase}`, namespace: 'phase', key: `${phase}/system`, phase, is_default: true, is_shared: false, selection_enabled: true, active_version: { id: `phase-${phase}-v1`, version: 1 } })),
+]
 
 export const APPLICATIONS = [
   {
@@ -134,6 +141,7 @@ export function defaultWizardHandlers() {
       const body = await request.json() as { phases: string[] }
       return HttpResponse.json({ execution_selected: body.phases.includes('execution'), configuration_valid: true, requires_application: false, detail: null })
     }),
+    http.get('*/v1/pipelines/analysis/connections', () => HttpResponse.json([{ id: 'analysis-forge', name: 'Forge analysis', provider: 'perfreportforge', kind: 'analysis' }, { id: 'native-rca', name: 'Internal RCA', provider: 'apex_load', kind: 'execution_engine' }])),
     http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [], truncated: false })),
     http.post('*/assistants/search', () => HttpResponse.json([])),
     http.get('*/v1/catalog/applications', () => HttpResponse.json(APPLICATIONS)),
@@ -148,7 +156,8 @@ export function defaultWizardHandlers() {
     http.get('*/v1/work-tracking/saved-queries', () =>
       HttpResponse.json({ items: [], limit: 50, offset: 0 }),
     ),
-    http.get('*/v1/prompts', () => HttpResponse.json([])),
+    http.get('*/v1/prompts', () => HttpResponse.json(DEFAULT_PROMPT_ROWS)),
+    http.get('*/v1/prompts/:id/versions/:version', ({ params }) => HttpResponse.json({ id: params.version, version: 1, content: 'Default test instructions', note: null })),
   ]
 }
 
@@ -197,7 +206,15 @@ export async function fillScope(
   user: { type: (element: Element, text: string) => Promise<void> },
   screen: { getByLabelText: (label: string) => HTMLElement },
 ) {
-  if (!(screen.getByLabelText('Project') as HTMLInputElement).value) await user.type(screen.getByLabelText('Project'), 'demo')
+  fireEvent.click(testingScreen.getByRole('button', { name: 'Add backend' }))
+  await waitFor(() => expect(testingScreen.getByRole('option', { name: 'demo' })).toBeInTheDocument())
+  fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'demo' } })
+  await waitFor(() => expect(testingScreen.getByRole('option', { name: /Checkout · demo/ })).toBeInTheDocument())
+  fireEvent.change(screen.getByLabelText('Application'), { target: { value: APPLICATIONS[0]!.id } })
+  await waitFor(() => expect(testingScreen.getByRole('option', { name: /staging/i })).toBeInTheDocument())
+  fireEvent.change(screen.getByLabelText('Environment'), { target: { value: ENVIRONMENTS[0]!.id } })
+  fireEvent.click(testingScreen.getByRole('radio', { name: 'Primary system under test' }))
+  fireEvent.click(testingScreen.getByRole('radio', { name: 'Traffic entry' }))
   await user.type(screen.getByLabelText('Title'), 'Checkout soak')
   await user.type(screen.getByLabelText('Request'), 'Soak the checkout flow for 1h')
 }

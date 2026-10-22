@@ -788,7 +788,11 @@ requires_minio = pytest.mark.skipif(
 
 def _real_store() -> S3ArtifactStore:
     secret = SecretValue(value=os.environ.get("APEX_INTEGRATION_MINIO_SECRET_KEY", "apex-minio"))
-    return S3ArtifactStore(_conn(bucket="apex-artifacts-test"), secret)
+    # This fixture owns the local MinIO endpoint; authorize only this connection
+    # instead of depending on a developer's global private-network setting.
+    return S3ArtifactStore(
+        _conn(bucket="apex-artifacts-test", _apex_trusted_private_host=True), secret
+    )
 
 
 @requires_minio

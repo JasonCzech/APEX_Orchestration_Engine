@@ -40,7 +40,12 @@ def analytics_scope_filter(
                     model.app_id == scope.app_id,
                 )
             )
-    return or_(*predicates) if predicates else false()
+    base = or_(*predicates) if predicates else false()
+    if hasattr(model, "thread_id"):
+        from apex.services.test_scope import participant_visibility
+
+        return and_(base, participant_visibility(model.thread_id, visible_scopes))
+    return base
 
 
 @dataclass(frozen=True)

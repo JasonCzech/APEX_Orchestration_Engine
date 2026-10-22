@@ -8,6 +8,7 @@ describe('operator results and phase consistency', () => {
     expect(executionResultLabel({})).toBe('Not available')
     expect(executionResultLabel({ execution_result: null })).toBe('Not available')
     expect(orchestrationStatusLabel('interrupted')).toBe('Awaiting review')
+    expect(orchestrationStatusLabel('interrupted', [{ phase: 'reporting', status: 'awaiting_human_completion' }])).toBe('Awaiting human completion')
   })
   it('uses validated state over a stale summary and excludes unselected phases', () => {
     const strip = normalizedPhases({ phases_plan: ['execution', 'reporting'], phase_results: { execution: { status: 'failed' }, reporting: { status: 'pending' } } }, [{ phase: 'execution', status: 'succeeded' }, { phase: 'reporting', status: 'succeeded' }])
@@ -36,6 +37,21 @@ describe('operator results and phase consistency', () => {
 })
 
 describe('honest lifecycle projections', () => {
+  it.each([
+    [{ thread_status: 'interrupted', pending_gate: { interrupt_id: 'human-task', kind: 'human_completion', phase: 'execution' } }, 'awaiting_human_completion'],
+    [{ thread_status: 'error', current_phase: 'execution' }, 'failed'],
+  ] as const)('retains phase ownership and provenance when projecting %j', (context, status) => {
+    const state = {
+      phases_plan: ['execution' as const],
+      run_config: { phase_execution: { owners: { execution: 'hitl' } } },
+      phase_results: { execution: { status: 'pending' as const, attempt: 2, completed_by: 'operator-1' } },
+    }
+    expect(normalizedPhases(state, [], false, context).find(entry => entry.phase === 'execution')).toEqual({
+      phase: 'execution', status, attempt: 2, executor: 'hitl', completed_by: 'operator-1',
+    })
+    const recordedOwner = { ...state, phase_results: { execution: { ...state.phase_results.execution, executor: 'langgraph' } } }
+    expect(normalizedPhases(recordedOwner, [], false, context).find(entry => entry.phase === 'execution')?.executor).toBe('langgraph')
+  })
   it('uses the current gate and terminal failure without inventing a successful phase', () => {
     const state = { phases_plan: ['execution' as const], phase_results: { execution: { status: 'pending' as const } } }
     const failed = normalizedPhases(state, [], false, { thread_status: 'error', current_phase: 'execution' })

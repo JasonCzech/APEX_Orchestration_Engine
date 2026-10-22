@@ -53,7 +53,7 @@ export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 export const ApprovalRecordSchema = z
   .object({
     id: z.string(),
-    gate: GateNameSchema.optional(),
+    gate: GateNameSchema.or(z.literal("human_completion")).optional(),
     action: z.string().optional(),
     actor: z.string().optional(),
     at: z.string().optional(),
@@ -126,6 +126,9 @@ export type ResolvedPromptSource = z.infer<typeof ResolvedPromptSourceSchema>;
 /** Extra phase-entry key written by prepare/prompt_gate: {system, user, application}. */
 export const ResolvedPromptSchema = z
   .object({
+    system_locked: z.boolean().optional(),
+    contexts: z.array(z.object({ namespace: z.string(), key: z.string(), prompt_id: z.string(), version_id: z.string(), version: z.number(), content: z.string() }).passthrough()).optional(),
+    selections: z.array(z.record(z.string(), z.unknown())).optional(),
     system: z.string().nullish(),
     user: z.string().nullish(),
     application: z.string().nullish(),
@@ -135,6 +138,9 @@ export type ResolvedPrompt = z.infer<typeof ResolvedPromptSchema>;
 
 export const PromptReviewDraftSchema = z
   .object({
+    system_locked: z.boolean().optional(),
+    contexts: z.array(z.object({ namespace: z.string(), key: z.string(), prompt_id: z.string(), version_id: z.string(), version: z.number(), content: z.string() }).passthrough()).optional(),
+    selections: z.array(z.record(z.string(), z.unknown())).optional(),
     system: z.string(),
     phase_prompt: z.string(),
     application: z.string().nullable(),

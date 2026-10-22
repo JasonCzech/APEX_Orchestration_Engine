@@ -32,7 +32,11 @@ from apex.domain.input_limits import (
 )
 from apex.persistence.db import get_session
 from apex.persistence.models import Environment, EnvironmentSnapshot
-from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
+from apex.persistence.repositories.catalog import (
+    CatalogInUseError,
+    CatalogRepository,
+    DuplicateNameError,
+)
 from apex.services.connection_credentials import (
     connection_options_require_repair,
     reject_credential_text,
@@ -533,7 +537,12 @@ async def delete_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
-    await repo.delete_application(app)
+    try:
+        await repo.delete_application(app)
+    except CatalogInUseError:
+        raise HTTPException(
+            409, "Application is referenced by retained records; archive it instead"
+        ) from None
 
 
 # ── environments ─────────────────────────────────────────────────────────────
@@ -699,4 +708,9 @@ async def delete_environment(
     env = await repo.get_environment_for_update(environment_id)
     if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
-    await repo.delete_environment(env)
+    try:
+        await repo.delete_environment(env)
+    except CatalogInUseError:
+        raise HTTPException(
+            409, "Environment is referenced by retained records and cannot be deleted"
+        ) from None

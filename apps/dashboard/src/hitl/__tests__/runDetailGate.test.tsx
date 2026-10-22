@@ -46,7 +46,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
     renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
 
-    const workspace = await screen.findByRole('region', { name: 'Reporting workspace' })
+    const workspace = await screen.findByRole('region', { name: 'Reporting & Analysis workspace' })
     const module = within(workspace).getByTestId('gate-module')
     expect(module).toHaveTextContent('Review phase results — Reporting')
     expect(within(module).getByTestId('gate-summary')).toHaveTextContent(

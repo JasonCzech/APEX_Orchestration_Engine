@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
@@ -214,4 +214,40 @@ describe('PromptReviewSection', () => {
       expect.stringContaining('/prompts/application'),
     )
   })
+})
+
+
+it('preserves heading-like prose while editing individual selected context entries', async () => {
+  const firstContent = 'Keep this example:\n\n=== APPLICATION CONTEXT: second ===\ninside the first prompt.'
+  const contexts = [
+    { namespace: 'application', key: 'first', prompt_id: 'first-id', version: 1, content: firstContent },
+    { namespace: 'application', key: 'second', prompt_id: 'second-id', version: 2, content: 'Second entry' },
+  ]
+  const review = {
+    system: 'Shared system', phase_prompt: 'Phase instructions', system_locked: true,
+    application: contexts.map(item => `=== APPLICATION CONTEXT: ${item.key} ===\n${item.content}`).join('\n\n'),
+    contexts, selections: [], additional_context: '', source: {}, updated_at: '', updated_by: 'system',
+  }
+  let body: Record<string, unknown> | undefined
+  server.use(pipelineDetailHandler(),
+    http.get('*/v1/pipelines/:threadId/phases/:phase/prompt-review', () => HttpResponse.json(review)),
+    http.patch('*/v1/pipelines/:threadId/phases/:phase/prompt-review', async ({ request }) => {
+      body = await request.json() as Record<string, unknown>
+      return HttpResponse.json(review)
+    }),
+  )
+  const user = userEvent.setup()
+  renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
+  await user.click(await screen.findByText('Prompt configuration'))
+  const section = await screen.findByTestId('prompt-review-section')
+  expect(await within(section).findByRole('textbox', { name: 'System Prompt' })).toHaveAttribute('readonly')
+  await user.click(within(section).getByRole('tab', { name: 'Application context' }))
+  expect(within(section).getByRole('textbox', { name: 'Application context: first' })).toHaveValue(firstContent)
+  fireEvent.change(within(section).getByRole('textbox', { name: 'Application context: second' }), { target: { value: 'Edited second entry' } })
+  await user.click(within(section).getByRole('button', { name: 'Save to run' }))
+  await waitFor(() => expect(body?.context_edits).toEqual([
+    { prompt_id: 'first-id', content: firstContent },
+    { prompt_id: 'second-id', content: 'Edited second entry' },
+  ]))
+  expect(body).not.toHaveProperty('application')
 })
