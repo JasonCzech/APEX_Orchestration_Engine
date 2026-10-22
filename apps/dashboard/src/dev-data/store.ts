@@ -31,6 +31,7 @@ import {
   type DemoEnvCode,
   type DemoRunProfile,
 } from './telecomCatalog'
+import { buildDemoUsage, DEMO_MODELS, demoModel, demoPriceAt, type DemoHistoricalRun, type DemoModel, type DemoPriceGeneration, type DemoUsageEvent } from './agentUsage'
 
 type Application = components['schemas']['ApplicationOut']
 type ProjectLabel = components['schemas']['ProjectLabelOut']
@@ -95,24 +96,7 @@ type AgentSort =
   | 'p95_latency_ms'
   | 'runs'
 
-interface AgentMetricEvent {
-  at: string
-  thread_id: string
-  thread_title: string
-  project_id: string | null
-  phase: PhaseName
-  agent_name: string
-  model: string
-  provider: string
-  status: 'ok' | 'error'
-  input_tokens: number
-  output_tokens: number
-  cache_read_tokens: number
-  cache_creation_tokens: number
-  reasoning_tokens: number
-  cost_usd: number
-  latency_ms: number
-}
+type AgentMetricEvent = DemoUsageEvent
 
 export interface DevArtifactBytes {
   blob: Blob
@@ -191,7 +175,7 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
 const DEMO_STATE_VERSION = 4
 const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
-const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
+const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test', 'application', 'user']
 const AGENT_SORTS: AgentSort[] = [
   'key',
   'events',
@@ -301,12 +285,32 @@ function percentile95(values: number[]): number | null {
   return sorted[index] ?? null
 }
 
-function agentGroupKey(event: AgentMetricEvent, groupBy: AgentGroupBy): string {
+function applicationKey(projectId: string | null, appId: string | null): string {
+  const project = projectId ?? ''
+  const app = appId ?? ''
+  return `${project.length}:${project}${app.length}:${app}`
+}
+
+function agentGroupKey(event: AgentMetricEvent, groupBy: AgentGroupBy, bucket: 'day' | 'hour' = 'day'): string {
   if (groupBy === 'stage') return event.phase
   if (groupBy === 'agent') return event.agent_name
-  if (groupBy === 'date') return event.at.slice(0, 10)
+  if (groupBy === 'date') return agentBucketStart(event.at, bucket)
   if (groupBy === 'test') return event.thread_id
-  return event.model
+  if (groupBy === 'application') return applicationKey(event.project_id, event.app_id)
+  if (groupBy === 'user') return event.consumer_id ?? 'unknown'
+  return event.model_catalog_id
+}
+
+function agentGroupMetadata(events: AgentMetricEvent[], groupBy: AgentGroupBy): Partial<AgentAnalyticsBreakdownRow> {
+  const first = events[0]
+  if (!first) return {}
+  if (groupBy === 'model') {
+    const model = demoModel(first.model)
+    return { model_id: first.model_catalog_id, model: first.model, provider: first.provider, label: `${first.provider} / ${model?.display_name ?? first.model}`, archived: events.some((event) => event.archived) }
+  }
+  if (groupBy === 'application') return { project_id: first.project_id, app_id: first.app_id, label: `${first.project_id ?? 'Unknown project'} / ${first.app_id ?? 'Unknown application'}` }
+  if (groupBy === 'user') return { label: first.consumer_name_snapshot ?? first.consumer_id ?? 'Unattributed' }
+  return {}
 }
 
 function agentBucketStart(at: string, bucket: 'day' | 'hour'): string {
@@ -340,9 +344,10 @@ function agentTotals(events: AgentMetricEvent[]): AgentAnalyticsTotals {
   }
 }
 
-function agentBreakdownRow(key: string, events: AgentMetricEvent[]): AgentAnalyticsBreakdownRow {
+function agentBreakdownRow(key: string, events: AgentMetricEvent[], groupBy: AgentGroupBy = 'model'): AgentAnalyticsBreakdownRow {
   const totals = agentTotals(events)
   return {
+    ...agentGroupMetadata(events, groupBy),
     key,
     priced_events: totals.priced_events, unpriced_events: totals.unpriced_events, cost_complete: totals.cost_complete,
     events: totals.events,
@@ -582,6 +587,9 @@ export class DevDataStore {
   private reportingTickets = new Map<string, string>()
   private pipelineLaunches = new Map<string, StartPipelineResponse>()
   private baseline!: DemoBaseline
+  private usageEvents: AgentMetricEvent[] | null = null
+  private historicalRuns = new Map<string, DemoHistoricalRun>()
+  private modelState = new Map<string, { archivedAt: string | null; reason: string | null; version: number }>()
   private activationTime = nowIso()
   private apexScenarios: Array<Record<string, unknown>> = [
     { id: 'scenario-esim-peak', name: 'ACC add-a-line peak certification', status: 'ready', protocol: 'mixed-jmeter-vugen' },
@@ -629,6 +637,7 @@ export class DevDataStore {
     this.assistants = this.makeAssistants(created, updated)
     this.seedPipelines()
     this.seedArtifacts()
+    this.agentMetricEvents()
     this.baseline = this.captureBaseline()
     this.restorePersistedState()
   }
@@ -826,6 +835,8 @@ export class DevDataStore {
     let response: Response
     if (method === 'GET' && path === '/v1/system/info') response = jsonResponse(this.systemInfo)
     else if (method === 'GET' && path === '/v1/analytics/agents') response = jsonResponse(this.agentAnalytics(url.searchParams))
+    else if (method === 'GET' && path.startsWith('/v1/analytics/agents/')) response = this.handleAgentUsage(path, url.searchParams)
+    else if (path.startsWith('/v1/analytics/models')) response = await this.handleModels(method, path, request, url.searchParams)
     else if (method === 'GET' && path === '/v1/analytics/usage') response = jsonResponse(this.usage(url.searchParams))
     else if (method === 'POST' && path === '/v1/logs/search') response = jsonResponse(await this.searchLogs(request))
     else if (path.startsWith('/v1/pipelines')) response = await this.handlePipelines(method, path, request, url.searchParams)
@@ -894,7 +905,7 @@ export class DevDataStore {
       prompts: this.prompts.length,
       seededRuns: this.pipelineDetails.size,
       logs: this.logs.length,
-      phaseMetricEvents: this.agentMetricEvents('day').length,
+      phaseMetricEvents: this.agentMetricEvents().length,
       usageDays: 14,
       artifacts: this.artifacts.size,
     }
@@ -1008,6 +1019,7 @@ export class DevDataStore {
   }
 
   listRuns(threadId: string): Run[] {
+    if (threadId.startsWith('hist-')) this.ensureHistoricalRun(threadId)
     return clone(this.runs.get(threadId) ?? [])
   }
 
@@ -1279,6 +1291,8 @@ export class DevDataStore {
   }
 
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
+    const pathThread = decodePart(path.split('/')[3])
+    if (pathThread.startsWith('hist-')) this.ensureHistoricalRun(pathThread)
     if (method === 'POST' && path === '/v1/pipelines/execution-readiness') {
       return request.json().then((body: { phases?: string[] }) => jsonResponse({
         execution_selected: body.phases?.includes('execution') ?? false,
@@ -1380,7 +1394,7 @@ export class DevDataStore {
       })
     }
     if (method === 'GET' && path === '/v1/pipelines') {
-      let items = [...this.pipelineDetails.values()].map((detail) => this.toSummary(detail))
+      let items = [...this.pipelineDetails.values()].filter((detail) => !detail.values?.['demo_historical']).map((detail) => this.toSummary(detail))
       const status = params.get('status')
       const project = params.get('project')
       const q = params.get('q')
@@ -2490,10 +2504,10 @@ export class DevDataStore {
     detail.values = state as Record<string, unknown>
   }
 
-  private pipelineDetail(id: string, title: string, projectId: string | undefined, status: 'busy' | 'interrupted' | 'idle' | 'error', phase: PhaseName, profileKey: DemoRunProfile['key'] = 'acc-flagship'): PipelineDetail {
+  private pipelineDetail(id: string, title: string, projectId: string | undefined, status: 'busy' | 'interrupted' | 'idle' | 'error', phase: PhaseName, profileKey: DemoRunProfile['key'] = 'acc-flagship', anchor = this.activationTime): PipelineDetail {
     const profile = DEMO_RUN_PROFILES[profileKey]
     const request = profile.request || ACC_DEMO_CONTEXT
-    const state = makePipelineState(title, phase, status, this.activationTime, profile, this.seededPromptReviews(profile, title, request))
+    const state = makePipelineState(title, phase, status, anchor, profile, this.seededPromptReviews(profile, title, request))
     const primary = profile.participants.find((item) => item.id === profile.primary)!
     const detail: PipelineDetail = {
       thread_id: id,
@@ -2762,6 +2776,42 @@ export class DevDataStore {
     return { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate, execution_result }
   }
 
+  /** Filters shared by aggregate analytics, usage history, facets and export. */
+  private filteredUsage(params: URLSearchParams, defaults: { span_ms?: number } = {}): { events: AgentMetricEvent[]; from: string; to: string } {
+    const to = params.get('to') ?? nowIso()
+    const from = params.get('from') ?? new Date(Date.parse(to) - (defaults.span_ms ?? 7 * 86_400_000)).toISOString()
+    const fromTime = new Date(from).getTime()
+    const toTime = new Date(to).getTime()
+    const models = new Set(parseMulti(params, 'model'))
+    const stages = new Set(parseMulti(params, 'stage'))
+    const agents = new Set(parseMulti(params, 'agent'))
+    const project = params.get('project')
+    const app = params.get('app')
+    const modelId = params.get('model_id')
+    const provider = params.get('provider')
+    const consumerId = params.get('view') === 'mine' ? 'cons-admin' : params.get('consumer_id')
+    const status = params.get('status') === 'ok' || params.get('status') === 'error' ? params.get('status') : null
+    const test = params.get('test')?.toLowerCase() ?? null
+    const events = this.agentMetricEvents().filter((event) => {
+      const at = new Date(event.at).getTime()
+      return (
+        (Number.isNaN(fromTime) || at >= fromTime) &&
+        (Number.isNaN(toTime) || at <= toTime) &&
+        (!project || event.project_id === project) &&
+        (!app || event.app_id === app) &&
+        (!modelId || event.model_catalog_id === modelId) &&
+        (!provider || event.provider === provider) &&
+        (!consumerId || event.consumer_id === consumerId) &&
+        (models.size === 0 || models.has(event.model)) &&
+        (stages.size === 0 || stages.has(event.phase)) &&
+        (agents.size === 0 || agents.has(event.agent_name)) &&
+        (!status || event.status === status) &&
+        (!test || event.thread_id.toLowerCase().includes(test) || event.thread_title.toLowerCase().includes(test))
+      )
+    })
+    return { events, from, to }
+  }
+
   private agentAnalytics(params: URLSearchParams): AgentAnalytics {
     const rawGroupBy = params.get('group_by')
     const groupBy = AGENT_GROUP_BYS.includes(rawGroupBy as AgentGroupBy) ? (rawGroupBy as AgentGroupBy) : 'model'
@@ -2771,37 +2821,14 @@ export class DevDataStore {
     const order = params.get('order') === 'asc' ? 'asc' : 'desc'
     const limit = Math.min(Math.max(parsePositiveInt(params.get('limit'), 20), 1), 100)
     const offset = parsePositiveInt(params.get('offset'), 0)
-    const from = params.get('from') ?? isoMinutesAgo(bucket === 'hour' ? 8 * 60 : 7 * 1_440, this.activationTime)
-    const to = params.get('to') ?? nowIso()
-    const fromTime = new Date(from).getTime()
-    const toTime = new Date(to).getTime()
-    const models = new Set(parseMulti(params, 'model'))
-    const stages = new Set(parseMulti(params, 'stage'))
-    const agents = new Set(parseMulti(params, 'agent'))
-    const project = params.get('project')
-    const status = params.get('status') === 'ok' || params.get('status') === 'error' ? params.get('status') : null
-    const test = params.get('test')?.toLowerCase() ?? null
-
-    let events = this.agentMetricEvents(bucket).filter((event) => {
-      const at = new Date(event.at).getTime()
-      return (
-        (Number.isNaN(fromTime) || at >= fromTime) &&
-        (Number.isNaN(toTime) || at <= toTime) &&
-        (!project || event.project_id === project) &&
-        (models.size === 0 || models.has(event.model)) &&
-        (stages.size === 0 || stages.has(event.phase)) &&
-        (agents.size === 0 || agents.has(event.agent_name)) &&
-        (!status || event.status === status) &&
-        (!test || event.thread_id.toLowerCase().includes(test) || event.thread_title.toLowerCase().includes(test))
-      )
-    })
+    const { events, from, to } = this.filteredUsage(params)
 
     const breakdownGroups = new Map<string, AgentMetricEvent[]>()
     for (const event of events) {
-      const key = agentGroupKey(event, groupBy)
+      const key = agentGroupKey(event, groupBy, bucket)
       breakdownGroups.set(key, [...(breakdownGroups.get(key) ?? []), event])
     }
-    const breakdown = Array.from(breakdownGroups, ([key, grouped]) => agentBreakdownRow(key, grouped))
+    const breakdown = Array.from(breakdownGroups, ([key, grouped]) => agentBreakdownRow(key, grouped, groupBy))
     breakdown.sort((left, right) => {
       const leftValue = left[sort as keyof AgentAnalyticsBreakdownRow]
       const rightValue = right[sort as keyof AgentAnalyticsBreakdownRow]
@@ -2818,158 +2845,213 @@ export class DevDataStore {
     const seriesGroups = new Map<string, { bucketStart: string; key: string; events: AgentMetricEvent[] }>()
     for (const event of events) {
       const bucketStart = agentBucketStart(event.at, bucket)
-      const key = agentGroupKey(event, groupBy)
+      const key = agentGroupKey(event, groupBy, bucket)
       const groupId = `${bucketStart}\u0000${key}`
       const current = seriesGroups.get(groupId) ?? { bucketStart, key, events: [] }
       current.events.push(event)
       seriesGroups.set(groupId, current)
     }
     const series = Array.from(seriesGroups.values())
-      .map((group) => agentSeriesPoint(group.bucketStart, group.key, group.events))
+      .map((group) => ({ ...agentGroupMetadata(group.events, groupBy), ...agentSeriesPoint(group.bucketStart, group.key, group.events) }))
       .sort((left, right) => left.bucket_start.localeCompare(right.bucket_start) || left.key.localeCompare(right.key))
-
-    const page = { limit, offset, total: breakdown.length }
-    events = events.sort((left, right) => left.at.localeCompare(right.at))
 
     return {
       window: { from, to, bucket, group_by: groupBy },
       totals: agentTotals(events),
       breakdown: breakdown.slice(offset, offset + limit),
       series,
-      page,
+      page: { limit, offset, total: breakdown.length },
       cost_visible: true,
     }
   }
 
-  private agentMetricEvents(bucket: 'day' | 'hour'): AgentMetricEvent[] {
-    const phaseMetrics: Record<
-      PhaseName,
-      {
-        model: string
-        input: number
-        output: number
-        cacheRead: number
-        cacheCreate: number
-        reasoning: number
-        latency: number
+  private usageEventOut(event: AgentMetricEvent) {
+    const cost = event.pricing_interval_id ? event.cost_usd.toFixed(6) : null
+    return {
+      id: event.id,
+      at: event.at,
+      thread_id: event.thread_id,
+      project_id: event.project_id,
+      app_id: event.app_id,
+      consumer_id: event.consumer_id,
+      consumer_name_snapshot: event.consumer_name_snapshot,
+      phase: event.phase,
+      agent_name: event.agent_name,
+      model: event.model,
+      model_catalog_id: event.model_catalog_id,
+      provider: event.provider,
+      archived: event.archived,
+      status: event.status,
+      input_tokens: event.input_tokens,
+      output_tokens: event.output_tokens,
+      cache_read_tokens: event.cache_read_tokens,
+      cache_creation_tokens: event.cache_creation_tokens,
+      reasoning_tokens: event.reasoning_tokens,
+      total_tokens: event.total_tokens,
+      latency_ms: event.latency_ms,
+      pricing_interval_id: event.pricing_interval_id,
+      original_cost_usd: cost,
+      effective_cost_usd: cost,
+    }
+  }
+
+  private handleAgentUsage(path: string, params: URLSearchParams): Response {
+    if (path === '/v1/analytics/agents/events') {
+      const { events } = this.filteredUsage(params)
+      const newestFirst = [...events].reverse()
+      const offset = parsePositiveInt(params.get('cursor'), 0)
+      const limit = Math.min(Math.max(parsePositiveInt(params.get('limit'), 20), 1), 100)
+      const page = newestFirst.slice(offset, offset + limit)
+      return jsonResponse({ items: page.map((event) => this.usageEventOut(event)), next_cursor: offset + limit < newestFirst.length ? String(offset + limit) : null, cost_visible: true })
+    }
+    if (path.startsWith('/v1/analytics/agents/events/')) {
+      const id = decodePart(path.slice('/v1/analytics/agents/events/'.length))
+      const event = this.agentMetricEvents().find((item) => item.id === id)
+      if (!event) return problemResponse(404, 'not_found', `Usage event ${id} was not found.`)
+      const model = demoModel(event.model)
+      const generation = model?.generations.find((item) => `${model.id}-g${item.number}` === event.pricing_interval_id)
+      return jsonResponse({ ...this.usageEventOut(event), cost_visible: true, corrections: [], original_pricing: generation ? { input: String(generation.price.input), output: String(generation.price.output), cache_read: String(generation.price.cacheRead), cache_creation: String(generation.price.cacheCreate), unit: 'million_tokens', currency: 'USD' } : null })
+    }
+    if (path === '/v1/analytics/agents/facets') {
+      const { events } = this.filteredUsage(new URLSearchParams([...params].filter(([key]) => !['app', 'consumer_id'].includes(key))))
+      const q = params.get('q')?.toLowerCase() ?? ''
+      const apps = new Map<string, { value: string; label: string; project_id: string; app_id: string }>()
+      const users = new Map<string, { value: string; label: string }>()
+      for (const event of events) {
+        const appName = this.applications.find((item) => item.id === event.app_id)?.name ?? event.app_id
+        apps.set(applicationKey(event.project_id, event.app_id), { value: applicationKey(event.project_id, event.app_id), label: `${appName} · ${event.project_id}`, project_id: event.project_id, app_id: event.app_id })
+        users.set(event.consumer_id, { value: event.consumer_id, label: event.consumer_name_snapshot })
       }
-    > = {
-      story_analysis: {
-        model: 'claude-sonnet-4-20250514',
-        input: 11_500,
-        output: 2_200,
-        cacheRead: 2_600,
-        cacheCreate: 700,
-        reasoning: 150,
-        latency: 4_200,
-      },
-      test_planning: {
-        model: 'claude-sonnet-4-20250514',
-        input: 7_600,
-        output: 1_850,
-        cacheRead: 1_200,
-        cacheCreate: 420,
-        reasoning: 120,
-        latency: 5_200,
-      },
-      env_triage: {
-        model: 'claude-3-5-haiku-20241022',
-        input: 2_800,
-        output: 650,
-        cacheRead: 500,
-        cacheCreate: 150,
-        reasoning: 40,
-        latency: 2_100,
-      },
-      script_scenario: {
-        model: 'claude-sonnet-4-20250514',
-        input: 13_200,
-        output: 3_100,
-        cacheRead: 1_800,
-        cacheCreate: 650,
-        reasoning: 100,
-        latency: 6_100,
-      },
-      execution: {
-        model: 'claude-3-5-haiku-20241022',
-        input: 900,
-        output: 280,
-        cacheRead: 250,
-        cacheCreate: 60,
-        reasoning: 20,
-        latency: 1_100,
-      },
-      reporting: {
-        model: 'claude-opus-4-20250514',
-        input: 15_800,
-        output: 4_200,
-        cacheRead: 2_300,
-        cacheCreate: 900,
-        reasoning: 250,
-        latency: 7_600,
-      },
-      postmortem: {
-        model: 'claude-sonnet-4-20250514',
-        input: 6_400,
-        output: 1_700,
-        cacheRead: 800,
-        cacheCreate: 250,
-        reasoning: 130,
-        latency: 4_800,
-      },
+      const match = <T extends { label: string }>(rows: T[]) => rows.filter((row) => !q || row.label.toLowerCase().includes(q)).sort((left, right) => left.label.localeCompare(right.label))
+      return jsonResponse({ applications: match([...apps.values()]), users: match([...users.values()]), truncated: false })
     }
-    const pricing: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
-      'claude-3-5-haiku-20241022': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
-      'claude-sonnet-4-20250514': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-      'claude-opus-4-20250514': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+    if (path === '/v1/analytics/agents/export') {
+      const { events } = this.filteredUsage(params)
+      const header = 'at,event_id,project_id,app_id,thread_id,phase,agent_name,provider,model,archived,consumer,status,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,reasoning_tokens,latency_ms,cost_usd'
+      const rows = events.map((event) => [event.at, event.id, event.project_id, event.app_id, event.thread_id, event.phase, event.agent_name, event.provider, event.model, event.archived, `"${event.consumer_name_snapshot}"`, event.status, event.input_tokens, event.output_tokens, event.cache_read_tokens, event.cache_creation_tokens, event.reasoning_tokens, event.latency_ms, event.cost_usd.toFixed(6)].join(','))
+      return new Response([header, ...rows].join('\n') + '\n', { status: 200, headers: { 'content-type': 'text/csv; charset=utf-8' } })
     }
-    const details = Array.from(this.pipelineDetails.values()).sort((left, right) =>
-      left.thread_id.localeCompare(right.thread_id),
-    )
-    const events: AgentMetricEvent[] = []
-    details.forEach((detail, runIndex) => {
-      PHASE_NAMES.forEach((phase, phaseIndex) => {
-        const metric = phaseMetrics[phase]
-        const runScale = detail.thread_id === 'run-aborted' ? 0.68 : 0.92 + runIndex * 0.07
-        const phaseScale = 1 + phaseIndex * 0.018
-        const scale = runScale * phaseScale
-        const input = Math.round(metric.input * scale)
-        const output = Math.round(metric.output * scale)
-        const cacheRead = Math.round(metric.cacheRead * scale)
-        const cacheCreate = Math.round(metric.cacheCreate * scale)
-        const reasoning = Math.round(metric.reasoning * scale)
-        const rates = pricing[metric.model]!
-        const cost = Number(
-          (
-            (input * rates.input + output * rates.output + cacheRead * rates.cacheRead + cacheCreate * rates.cacheCreate) /
-            1_000_000
-          ).toFixed(6),
-        )
-        const minutesAgo =
-          bucket === 'hour'
-            ? (details.length - 1 - runIndex) * 55 + (PHASE_NAMES.length - phaseIndex) * 4
-            : (details.length - 1 - runIndex) * 1_440 + (PHASE_NAMES.length - phaseIndex) * 75
-        events.push({
-          at: isoMinutesAgo(minutesAgo, this.activationTime),
+    return problemResponse(501, 'demo_handler_missing', `Offline demo has no handler for GET ${path}.`)
+  }
+
+  private modelOut(model: DemoModel) {
+    const anchor = Date.parse(this.activationTime)
+    const state = this.modelState.get(model.id)
+    const archivedDaysAgo = state ? state.archivedAt : model.archivedDaysAgo === null ? null : isoMinutesAgo(model.archivedDaysAgo * 1_440, this.activationTime)
+    const current = demoPriceAt(model, archivedDaysAgo ? Date.parse(archivedDaysAgo) - 1 : anchor, anchor)
+    const generationOut = current ? this.priceInterval(model, current) : null
+    return {
+      id: model.id,
+      model_key: model.model_key,
+      display_name: model.display_name,
+      provider: model.provider,
+      availability: archivedDaysAgo ? 'archived' as const : 'available' as const,
+      archived_at: archivedDaysAgo,
+      archived_by: archivedDaysAgo ? 'Demo Curator' : null,
+      archive_reason: archivedDaysAgo ? (state?.reason ?? model.archiveReason) : null,
+      current_price: generationOut,
+      active_correction_id: null,
+      active_pricing_generation_id: current ? `${model.id}-gen${current.number}` : null,
+      created_at: isoMinutesAgo(model.addedDaysAgo * 1_440, this.activationTime),
+      updated_at: isoMinutesAgo(Math.min(...model.generations.map((item) => item.effectiveDaysAgo), model.archivedDaysAgo ?? Infinity) * 1_440, this.activationTime),
+      version: model.generations.length + (archivedDaysAgo ? 1 : 0) + (state?.version ?? 0),
+    }
+  }
+
+  private priceInterval(model: DemoModel, generation: DemoPriceGeneration) {
+    const next = model.generations.filter((item) => item.effectiveDaysAgo < generation.effectiveDaysAgo).sort((left, right) => right.effectiveDaysAgo - left.effectiveDaysAgo)[0]
+    return {
+      id: `${model.id}-g${generation.number}`,
+      generation_id: `${model.id}-gen${generation.number}`,
+      input: generation.price.input.toFixed(4),
+      output: generation.price.output.toFixed(4),
+      cache_read: generation.price.cacheRead.toFixed(4),
+      cache_creation: generation.price.cacheCreate.toFixed(4),
+      currency: 'USD' as const,
+      unit: 'million_tokens' as const,
+      effective_from: isoMinutesAgo(generation.effectiveDaysAgo * 1_440, this.activationTime),
+      effective_to: next ? isoMinutesAgo(next.effectiveDaysAgo * 1_440, this.activationTime) : null,
+    }
+  }
+
+  private async handleModels(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    if (method === 'GET' && path === '/v1/analytics/models') {
+      const status = params.get('status') ?? 'active'
+      const q = params.get('q')?.toLowerCase() ?? ''
+      const provider = params.get('provider')
+      const rows = DEMO_MODELS.map((model) => this.modelOut(model)).filter((model) =>
+        (status === 'all' || (status === 'archived' ? model.availability === 'archived' : model.availability !== 'archived')) &&
+        (!q || `${model.model_key} ${model.display_name}`.toLowerCase().includes(q)) &&
+        (!provider || model.provider === provider) &&
+        (params.get('missing_pricing') !== 'true' || model.current_price === null),
+      )
+      const limit = Math.min(Math.max(parsePositiveInt(params.get('limit'), 20), 1), 100)
+      const offset = parsePositiveInt(params.get('offset'), 0)
+      return jsonResponse({ items: rows.slice(offset, offset + limit), total: rows.length, limit, offset })
+    }
+    const parts = path.split('/')
+    const model = DEMO_MODELS.find((item) => item.id === decodePart(parts[4]))
+    if (!model) return problemResponse(404, 'not_found', `Model ${decodePart(parts[4])} was not found.`)
+    if (method === 'GET' && parts.length === 5) return jsonResponse(this.modelOut(model))
+    if (method === 'GET' && parts[5] === 'prices') {
+      const items = [...model.generations].sort((left, right) => left.effectiveDaysAgo - right.effectiveDaysAgo).map((generation) => ({
+        id: `${model.id}-gen${generation.number}`,
+        model_id: model.id,
+        number: generation.number,
+        reason: generation.reason,
+        source: generation.source,
+        job_id: null,
+        created_by: 'cons-admin',
+        creator_name: 'Demo Curator',
+        created_at: isoMinutesAgo(generation.effectiveDaysAgo * 1_440 + 60, this.activationTime),
+        published_at: isoMinutesAgo(generation.effectiveDaysAgo * 1_440, this.activationTime),
+        intervals: [this.priceInterval(model, generation)],
+      }))
+      return jsonResponse({ items, total: items.length })
+    }
+    if (method === 'POST' && (parts[5] === 'archive' || parts[5] === 'restore')) {
+      const body = await request.json().catch(() => ({})) as { reason?: string }
+      const state = this.modelState.get(model.id) ?? { archivedAt: model.archivedDaysAgo === null ? null : isoMinutesAgo(model.archivedDaysAgo * 1_440, this.activationTime), reason: model.archiveReason, version: 0 }
+      this.modelState.set(model.id, { archivedAt: parts[5] === 'archive' ? nowIso() : null, reason: body.reason ?? state.reason, version: state.version + 1 })
+      return jsonResponse(this.modelOut(model))
+    }
+    return problemResponse(409, 'demo_pricing_read_only', 'Price edits and cost corrections are not simulated in the offline demo; review the published history instead.')
+  }
+
+  private agentMetricEvents(): AgentMetricEvent[] {
+    if (!this.usageEvents) {
+      const seeded = [...this.pipelineDetails.values()].filter((detail) => !detail.values?.['demo_historical'] && detail.values?.['demo_profile']).map((detail) => {
+        const state = detail.values as PipelineState
+        return {
           thread_id: detail.thread_id,
-          thread_title: detail.title ?? detail.thread_id,
-          project_id: detail.project_id ?? null,
-          phase,
-          agent_name: `${phase}.worker`,
-          model: metric.model,
-          provider: 'anthropic',
-          status: detail.thread_id === 'run-aborted' && (phase === 'env_triage' || phase === 'execution') ? 'error' : 'ok',
-          input_tokens: input,
-          output_tokens: output,
-          cache_read_tokens: cacheRead,
-          cache_creation_tokens: cacheCreate,
-          reasoning_tokens: reasoning,
-          cost_usd: cost,
-          latency_ms: Math.round(metric.latency * scale + runIndex * 85),
-        })
+          title: detail.title ?? detail.thread_id,
+          project_id: detail.project_id ?? TELECOM_PROJECT_ID,
+          app_id: detail.app_id ?? FLAGSHIP_APP_ID,
+          phases: PHASE_NAMES.filter((phase) => (state.phase_results?.[phase]?.status ?? 'pending') !== 'pending').map((phase) => ({ phase, startedAgo: PHASE_WINDOWS[phase][0], failed: state.phase_results?.[phase]?.status === 'failed' })),
+        }
       })
-    })
-    return events
+      const usage = buildDemoUsage(this.activationTime, seeded)
+      this.usageEvents = usage.events
+      this.historicalRuns = new Map(usage.historicalRuns.map((run) => [run.thread_id, run]))
+    }
+    return this.usageEvents
+  }
+
+  /** Lazily materializes a completed historical run referenced by usage analytics. */
+  private ensureHistoricalRun(threadId: string): void {
+    if (this.pipelineDetails.has(threadId)) return
+    this.agentMetricEvents()
+    const run = this.historicalRuns.get(threadId)
+    if (!run) return
+    const detail = this.pipelineDetail(threadId, run.title, run.project_id, 'idle', 'postmortem', run.profile, run.endedAt)
+    detail.created_at = new Date(Date.parse(run.endedAt) - 180 * 60_000).toISOString()
+    detail.updated_at = run.endedAt
+    detail.values = { ...(detail.values ?? {}), demo_historical: true, artifacts: [] }
+    const runs: Run[] = [{ run_id: `${threadId}-run`, thread_id: threadId, assistant_id: 'pipeline', created_at: detail.created_at, updated_at: run.endedAt, status: 'success', metadata: {}, multitask_strategy: 'reject' }]
+    this.pipelineDetails.set(threadId, detail)
+    this.baseline.pipelineDetails.set(threadId, clone(detail))
+    this.runs.set(threadId, runs)
+    this.baseline.runs.set(threadId, clone(runs))
   }
 
   private usage(params: URLSearchParams): UsageAnalytics {
