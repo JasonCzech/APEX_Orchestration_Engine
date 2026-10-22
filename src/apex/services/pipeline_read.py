@@ -13,6 +13,7 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -54,6 +55,7 @@ from apex.services.langgraph_client import (
     delete_native_thread_definitively,
 )
 from apex.services.launch_locks import LaunchLockManager
+from apex.services.model_pricing import admit_models
 from apex.services.pipeline_public import (
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_NODES,
@@ -204,6 +206,62 @@ class PromptReviewConflictError(Exception):
 
 class RerunConfigurationConflictError(Exception):
     """The durable rerun snapshot is missing, malformed, or ownership-drifted."""
+
+
+class ModelAdmissionError(LaunchReadinessError):
+    """A selected model is not allowlisted, archived, or otherwise invalid."""
+
+    def __init__(self, message: str, *, status_code: int = 422) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ModelAdmissionUnavailableError(Exception):
+    """Model admission could not be checked; the launch may be retried."""
+
+
+# Configurable fields an assistant may supply that change which models a run
+# uses. A sparse launch inherits them, as the native runtime merge would.
+_ADMISSION_INHERITED_FIELDS = ("model_by_phase", "phase_execution")
+
+
+async def _admit_run_models(
+    run_configurable: JsonDict,
+    *,
+    thread_id: str,
+    actor_id: str,
+    resume: bool = False,
+    inherited: JsonDict | None = None,
+) -> None:
+    """Admit and pin the run's per-phase models, as the native run hook does.
+
+    In-process SDK calls bypass LangGraph auth, so facade launches and reruns
+    must run admission themselves: refuse non-allowlisted or archived models,
+    record the admission for the thread, and pin defaults so a later default
+    change cannot alter this run's model choices. ``resume`` retains a thread's
+    earlier admission (a bound launch retried on its existing thread).
+    """
+    from fastapi import HTTPException
+
+    basis = dict(run_configurable)
+    for key in _ADMISSION_INHERITED_FIELDS:
+        if key not in basis and inherited is not None and inherited.get(key) is not None:
+            basis[key] = inherited[key]
+    try:
+        resolved = await admit_models(basis, thread_id=thread_id, actor_id=actor_id, resume=resume)
+    except HTTPException as exc:
+        raise ModelAdmissionError(
+            str(exc.detail), status_code=409 if exc.status_code == 409 else 422
+        ) from None
+    except ValueError:
+        raise ModelAdmissionError("Selected models are invalid for this test") from None
+    except Exception as exc:  # noqa: BLE001 - catalog/database boundary normalization
+        logger.warning("pipeline.model_admission_unavailable", error_type=safe_type_name(exc))
+        raise ModelAdmissionUnavailableError(
+            "Model availability cannot be checked; retry later"
+        ) from None
+    if resolved:
+        run_configurable["model_by_phase"] = resolved
 
 
 class CycleRerunConflictError(RerunConfigurationConflictError):
@@ -1163,6 +1221,7 @@ class PipelineReadService:
                     recursion_limit=recursion_limit,
                     before_run_start=before_run_start,
                     prepare_configurable=prepare_configurable,
+                    admission_actor=principal_id or "pipeline-facade",
                     reuse_existing_thread=reuse_existing_thread,
                     recovery_only=recovery_only,
                 )
@@ -1177,6 +1236,7 @@ class PipelineReadService:
             recursion_limit=recursion_limit,
             before_run_start=before_run_start,
             prepare_configurable=prepare_configurable,
+            admission_actor=principal_id or "pipeline-facade",
             reuse_existing_thread=reuse_existing_thread,
             recovery_only=recovery_only,
         )
@@ -1196,15 +1256,16 @@ class PipelineReadService:
         reuse_existing_thread: bool,
         recovery_only: bool = False,
         prepare_configurable: Callable[[JsonDict, JsonDict], Awaitable[None]] | None = None,
+        admission_actor: str = "pipeline-facade",
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
         thread_id: str | None = None
         thread_metadata: JsonDict | None = None
         thread_error_type: str | None = None
+        create_thread = True
         try:
             thread_response = None
-            create_thread = True
             if (reuse_existing_thread or recovery_only) and deterministic_thread_id is not None:
                 create_thread = False
                 try:
@@ -1280,33 +1341,49 @@ class PipelineReadService:
         if recovery_only:
             raise LaunchValidationError("No submitted legacy run; complete test_scope")
 
-        if before_run_start is not None or prepare_configurable is not None:
-            try:
-                # Prepare only a run that will be submitted; an adopted replay
-                # above keeps the configuration it was created with.
-                if prepare_configurable is not None:
-                    await prepare_configurable(run_configurable, run_input)
-                generated_context_packets = (
-                    await before_run_start(thread_id) if before_run_start is not None else None
-                )
-            except LaunchReadinessError:
-                # No run has been submitted. Preserve deterministic claims, but
-                # remove a fresh random thread rejected by this metadata check.
-                if deterministic_thread_id is None:
-                    try:
-                        await delete_native_thread_definitively(self._client, thread_id)
-                    except Exception as cleanup_exc:
-                        logger.warning(
-                            "pipeline.rejected_launch_thread_cleanup_failed",
-                            thread_id=thread_id,
-                            error_type=safe_type_name(cleanup_exc),
-                        )
-                raise
-            if generated_context_packets:
-                existing_context_packets = run_input.get("context_packets", [])
-                run_input["context_packets"] = validate_context_packets(
-                    [*existing_context_packets, *generated_context_packets]
-                )
+        try:
+            # Prepare only a run that will be submitted; an adopted replay
+            # above keeps the configuration it was created with.
+            # A sparse launch (no frozen test_scope snapshot) still inherits the
+            # assistant's model choices at run time; admit what it will use.
+            inherited = None
+            if run_configurable.get("test_scope") is None:
+                # Best effort: a missing assistant fails at run creation below
+                # with the provider's own error.
+                with contextlib.suppress(LaunchValidationError):
+                    inherited = await self.assistant_launch_defaults(selected_assistant_id)
+            await _admit_run_models(
+                run_configurable,
+                thread_id=thread_id,
+                actor_id=admission_actor,
+                # A thread bound by an earlier attempt (Cycle dispatch) already
+                # passed admission; keep its choices rather than re-deciding.
+                resume=not create_thread,
+                inherited=inherited,
+            )
+            if prepare_configurable is not None:
+                await prepare_configurable(run_configurable, run_input)
+            generated_context_packets = (
+                await before_run_start(thread_id) if before_run_start is not None else None
+            )
+        except (LaunchReadinessError, ModelAdmissionUnavailableError):
+            # No run has been submitted. Preserve deterministic claims, but
+            # remove a fresh random thread rejected by this metadata check.
+            if deterministic_thread_id is None:
+                try:
+                    await delete_native_thread_definitively(self._client, thread_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "pipeline.rejected_launch_thread_cleanup_failed",
+                        thread_id=thread_id,
+                        error_type=safe_type_name(cleanup_exc),
+                    )
+            raise
+        if generated_context_packets:
+            existing_context_packets = run_input.get("context_packets", [])
+            run_input["context_packets"] = validate_context_packets(
+                [*existing_context_packets, *generated_context_packets]
+            )
 
         run_id: str | None = None
         create_conflict = False
@@ -2236,6 +2313,22 @@ class PipelineReadService:
                     label="pipeline rerun reconciliation",
                 )
             _ensure_rerun_checkpoint_is_terminal(state)
+            if rerun_config.analysis is not None:
+                # A rerun is a new run, not a continuation: recheck the analysis
+                # tools it will call, as the native run hook would.
+                from apex.services.analysis_readiness import require_analysis_readiness
+
+                try:
+                    await require_analysis_readiness(rerun_config)
+                except ValueError:
+                    raise LaunchReadinessError(
+                        "Analysis configuration is unavailable or incompatible"
+                    ) from None
+            # Admission sees the rerun window; the fingerprint above stays the
+            # caller's request so an ambiguous retry still adopts its run.
+            await _admit_run_models(
+                run_config, thread_id=thread_id, actor_id=principal_id or "pipeline-facade"
+            )
             run: JsonDict | None = None
             conflict = False
             try:

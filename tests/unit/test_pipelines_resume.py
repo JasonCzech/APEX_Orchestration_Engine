@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -2170,3 +2170,78 @@ def test_owned_rerun_keeps_full_frozen_prompt_choices_for_subsequent_reruns():
         ).prompt_manifest
         == cfg.prompt_manifest
     )
+
+
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (HTTPException(409, "Model gpt-4o is archived; select an active model"), 409),
+        (ConnectionError("catalog down"), 503),
+        (None, 202),
+    ],
+)
+def test_rerun_admits_its_models_before_create(monkeypatch, error, status) -> None:
+    admitted: list[tuple[str, str, JsonDict]] = []
+
+    async def admit(configurable, *, thread_id, actor_id, resume=False):
+        admitted.append((thread_id, actor_id, dict(configurable)))
+        if error is not None:
+            raise error
+        return {"execution": "pinned-model"}
+
+    monkeypatch.setattr("apex.services.pipeline_read.admit_models", admit)
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                trusted_rerun_snapshot(),
+                phase_results={"execution": {"status": "succeeded", "attempt": 4}},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={"phases": ["execution"], "gates_mode": "inherit", "idempotency_key": "k-1"},
+        )
+
+    assert response.status_code == status
+    assert len(admitted) == 1 and admitted[0][0] == "t-1"
+    if status == 202:
+        configurable = runs.create_calls[0]["config"]["configurable"]
+        assert configurable["model_by_phase"] == {"execution": "pinned-model"}
+    else:
+        assert runs.create_calls == []
+
+
+def test_rerun_rechecks_analysis_readiness_before_create(monkeypatch) -> None:
+    async def unavailable(_config) -> None:
+        raise ValueError("connection removed")
+
+    monkeypatch.setattr("apex.services.analysis_readiness.require_analysis_readiness", unavailable)
+    snapshot = trusted_rerun_snapshot()
+    snapshot["analysis"] = {
+        "schema_version": 1,
+        "selections": [{"tool": "lra_engine", "connection_id": "conn-lra"}],
+        "timeout_s": 1800,
+    }
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                PipelineConfigurable.model_validate(snapshot).snapshot(),
+                phase_results={"execution": {"status": "succeeded", "attempt": 4}},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={"phases": ["execution"], "gates_mode": "inherit", "idempotency_key": "k-2"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["title"] == "Analysis configuration is unavailable or incompatible"
+    assert runs.create_calls == []

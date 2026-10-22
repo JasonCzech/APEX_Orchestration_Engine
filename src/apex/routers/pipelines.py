@@ -75,6 +75,8 @@ from apex.services.pipeline_read import (
     LaunchIdempotencyConflictError,
     LaunchProviderError,
     LaunchValidationError,
+    ModelAdmissionError,
+    ModelAdmissionUnavailableError,
     NoActiveRunError,
     PipelineReadService,
     PromptReviewConflictError,
@@ -856,8 +858,12 @@ async def create_pipeline_run(
         )
     except LaunchProviderError:
         launch_error = _pipeline_runtime_unavailable()
+    except ModelAdmissionError as exc:
+        launch_error = HTTPException(status_code=exc.status_code, detail=str(exc))
     except LaunchReadinessError as exc:
         launch_error = HTTPException(status_code=422, detail=str(exc))
+    except ModelAdmissionUnavailableError as exc:
+        launch_error = HTTPException(status_code=503, detail=str(exc))
     except ValueError:
         launch_error = HTTPException(status_code=422, detail="invalid pipeline configuration")
     except Exception:
@@ -1118,6 +1124,17 @@ async def rerun_pipeline(
             "rerun_already_active",
             detail="the pipeline already has an active run",
         )
+    except ModelAdmissionError as exc:
+        # A rerun replays the run's stored model choices; it offers no picker.
+        failure = HTTPException(
+            status_code=exc.status_code,
+            detail=f"{exc} Reruns reuse this run's models; create a new test from this run "
+            "to choose another model.",
+        )
+    except LaunchReadinessError as exc:
+        failure = HTTPException(status_code=422, detail=str(exc))
+    except ModelAdmissionUnavailableError as exc:
+        failure = HTTPException(status_code=503, detail=str(exc))
     except ValueError:
         failure = HTTPException(status_code=422, detail="invalid rerun request")
     except Exception:
