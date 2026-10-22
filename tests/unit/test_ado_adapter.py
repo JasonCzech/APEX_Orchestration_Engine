@@ -127,7 +127,9 @@ def test_constructor_rejects_coercible_identity_options(
         AdoWorkTrackingAdapter(conn, SecretValue(value="ado-pat-secret"))
 
 
-@pytest.mark.parametrize("pat", ["unsafe\r\npat", "p" * 16_385])
+@pytest.mark.parametrize(
+    "pat", ["unsafe\r\npat", "p" * 16_385], ids=["header-injection", "oversized"]
+)
 def test_constructor_rejects_unsafe_or_oversized_pat_without_reflection(pat: str) -> None:
     conn = ConnectionConfig(
         id="ado-credential-boundary",

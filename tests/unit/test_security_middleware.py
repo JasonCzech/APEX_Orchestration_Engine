@@ -2595,6 +2595,22 @@ async def test_public_assistant_delete_cannot_cascade_to_threads(
             b"&".join(f"field{index}=x".encode() for index in range(65)),
         ),
     ],
+    ids=[
+        "xray-boolean",
+        "xray-capitalized-boolean",
+        "xray-zero",
+        "xray-too-deep",
+        "duplicate-xray",
+        "unknown-graph-option",
+        "recursive-subgraphs",
+        "capitalized-recursion",
+        "duplicate-recursion",
+        "unknown-subgraph-option",
+        "schema-xray-option",
+        "oversized-namespace",
+        "oversized-query",
+        "too-many-query-fields",
+    ],
 )
 async def test_public_assistant_structural_reads_reject_unbounded_controls(
     path: str,

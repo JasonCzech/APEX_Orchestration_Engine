@@ -262,6 +262,25 @@ def test_constructor_rejects_invalid_numeric_options(
         ("fail_at_pct", "101"),
         ("fail_at_pct", "9" * 1_000),
     ],
+    ids=[
+        "started-at-nan",
+        "started-at-infinite",
+        "started-at-future",
+        "duration-nan",
+        "duration-infinite",
+        "duration-zero",
+        "duration-above-limit",
+        "duration-oversized-number",
+        "vusers-zero",
+        "vusers-above-limit",
+        "vusers-fractional",
+        "vusers-oversized-number",
+        "fail-at-nan",
+        "fail-at-infinite",
+        "fail-at-negative",
+        "fail-at-above-limit",
+        "fail-at-oversized-number",
+    ],
 )
 async def test_status_rejects_corrupt_numeric_handle_extras(name: str, value: str) -> None:
     handle = await _engine().provision(_spec())
@@ -271,7 +290,11 @@ async def test_status_rejects_corrupt_numeric_handle_extras(name: str, value: st
         await _engine().get_status(handle)
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-1", "101", "9" * 1_000])
+@pytest.mark.parametrize(
+    "value",
+    ["nan", "inf", "-1", "101", "9" * 1_000],
+    ids=["nan", "infinite", "negative", "above-limit", "oversized-number"],
+)
 async def test_status_rejects_corrupt_aborted_progress(value: str) -> None:
     handle = await _engine().provision(_spec())
     handle.extras.update({"aborted": "true", "aborted_progress_pct": value})

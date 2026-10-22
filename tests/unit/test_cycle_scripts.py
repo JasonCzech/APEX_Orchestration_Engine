@@ -57,7 +57,11 @@ async def test_bounded_read_closes_oversized_provider_stream():
     assert closed == [True]
 
 
-@pytest.mark.parametrize("source", ["", "x" * (MAX_SCRIPT_BYTES + 1), "é" * MAX_SCRIPT_BYTES])
+@pytest.mark.parametrize(
+    "source",
+    ["", "x" * (MAX_SCRIPT_BYTES + 1), "é" * MAX_SCRIPT_BYTES],
+    ids=["empty", "oversized-ascii", "oversized-utf8"],
+)
 def test_source_byte_bound_is_not_character_bound(source):
     with pytest.raises(ValueError):
         script_bytes(source)

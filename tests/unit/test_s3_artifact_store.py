@@ -687,6 +687,7 @@ def test_constructor_rejects_invalid_bucket_before_sdk_use(bucket: str) -> None:
         ("access_key", "unsafe\r\nkey", "control"),
         ("access_key", "a" * 1_025, "1024"),
     ],
+    ids=["boolean-endpoint", "boolean-access-key", "access-key-controls", "oversized-access-key"],
 )
 def test_constructor_rejects_unsafe_sdk_identity_options(
     option: str,
@@ -697,7 +698,9 @@ def test_constructor_rejects_unsafe_sdk_identity_options(
         S3ArtifactStore(_conn(**{option: value}), SecretValue(value="secret"))
 
 
-@pytest.mark.parametrize("secret", ["unsafe\r\nsecret", "s" * 16_385])
+@pytest.mark.parametrize(
+    "secret", ["unsafe\r\nsecret", "s" * 16_385], ids=["header-injection", "oversized"]
+)
 def test_constructor_rejects_unsafe_secret_without_reflection(secret: str) -> None:
     with pytest.raises(ValueError) as error:
         S3ArtifactStore(_conn(), SecretValue(value=secret))

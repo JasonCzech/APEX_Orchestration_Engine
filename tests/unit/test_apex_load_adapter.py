@@ -76,6 +76,7 @@ def test_constructor_rejects_report_limit_above_server_ceiling() -> None:
         "https://apexload.acme.test:99999",
         f"https://apexload.acme.test/{'x' * 1_800}",
     ],
+    ids=["embedded-credentials", "query", "fragment", "invalid-port", "oversized"],
 )
 def test_constructor_rejects_unsafe_console_url(console_url: str) -> None:
     with pytest.raises(ValueError, match="console_url"):
@@ -912,6 +913,7 @@ def test_constructor_requires_base_url_and_secret() -> None:
 @pytest.mark.parametrize(
     "api_key",
     ["unsafe-api-key\r\nInjected: value", "k" * 16_385, "non-ascii-\N{SNOWMAN}"],
+    ids=["header-injection", "oversized", "non-ascii"],
 )
 def test_constructor_rejects_unsafe_or_oversized_api_key_without_reflection(
     api_key: str,

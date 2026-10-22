@@ -48,6 +48,7 @@ async def invoke(app: Any, body: bytes, messages: list[dict[str, Any]], *, stall
         (b"", True, 408),
         (b'{"limit":5,"select":["assistant_id"]}', False, 200),
     ],
+    ids=["excessive-limit", "missing-select", "too-deep", "oversized-body", "stalled", "valid"],
 )
 async def test_native_read_guards_across_real_anyio_task_groups(body, stalled, status, depth):
     route_effects = []
