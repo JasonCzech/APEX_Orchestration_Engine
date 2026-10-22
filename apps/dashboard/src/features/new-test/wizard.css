@@ -736,3 +736,102 @@
   display: block;
   margin-top: 3px;
 }
+
+/* Prompts: a secondary vertical tab rail (one slot per tab) beside one panel,
+   so it reads as a level below the wizard's own underline tabs. */
+.wizard-prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.wizard-prompt-nav { display: flex; flex-direction: column; gap: 8px; position: sticky; top: 16px; min-width: 0; }
+.wizard-prompt-tablist { display: flex; flex-direction: column; gap: 2px; }
+.wizard-prompt-nav-group {
+  margin: 12px 0 4px;
+  padding: 0 10px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: var(--label-tracking, 0.05em);
+  text-transform: var(--label-case, uppercase);
+  color: var(--text-muted);
+}
+.wizard-prompt-tab {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
+}
+.wizard-prompt-tab:hover { background: var(--bg-hover); }
+.wizard-prompt-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wizard-prompt-tab[aria-selected='true'] { border-color: var(--accent-border); border-left-color: var(--accent); background: var(--accent-soft); }
+.wizard-prompt-tab-marker {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.wizard-prompt-tab--ok .wizard-prompt-tab-marker { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
+.wizard-prompt-tab--attention .wizard-prompt-tab-marker { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
+.wizard-prompt-tab-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wizard-prompt-tab-label { font-weight: 600; font-size: var(--font-size-sm); }
+.wizard-prompt-tab[aria-selected='true'] .wizard-prompt-tab-label { color: var(--accent-text); }
+.wizard-prompt-tab-summary { font-size: var(--font-size-xs); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wizard-prompt-tab--attention .wizard-prompt-tab-summary { color: var(--warning-text); }
+.wizard-prompt-nav-note { padding: 0 10px; }
+.wizard-prompt-tabpanel { display: flex; flex-direction: column; gap: 12px; align-self: stretch; min-width: 0; padding: 16px; border-radius: var(--radius); }
+.wizard-prompt-tabpanel-head { display: flex; flex-direction: column; gap: 4px; }
+.wizard-prompt-tabpanel-head h3 { margin: 0; }
+.wizard-prompt-block--flat { padding: 0; }
+/* The selected prompt reads in full and fills the panel down to the pager. */
+.wizard-prompt-tabpanel > .wizard-prompt-block--flat:not(section),
+.wizard-prompt-block--flat > .wizard-prompt-preview { flex: 1 1 auto; }
+.wizard-prompt-preview { gap: 8px; padding: 0; }
+.wizard-prompt-preview-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.wizard-prompt-preview-head p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.wizard-prompt-preview > p { margin: 0; }
+.wizard-prompt-content {
+  flex: 1 1 auto;
+  min-height: 240px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wizard-prompt-context-item { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border-subtle, var(--border)); }
+.wizard-prompt-pager { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border-subtle, var(--border)); }
+.wizard-prompt-legacy { display: flex; flex-direction: column; gap: 8px; }
+.wizard-prompt-legacy h3 { margin: 0; }
+@media (max-width: 900px) {
+  .wizard-prompt-layout { grid-template-columns: minmax(0, 1fr); }
+  .wizard-prompt-nav { position: static; }
+  .wizard-prompt-tablist { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .wizard-prompt-nav-group { display: none; }
+  .wizard-prompt-tab { flex: none; width: auto; max-width: 220px; border-left-width: 1px; }
+  .wizard-prompt-tab[aria-selected='true'] { border-left-color: var(--accent-border); border-bottom: 3px solid var(--accent); }
+}
+@media (prefers-reduced-motion: reduce) { .wizard-prompt-tab { transition: none; } }
