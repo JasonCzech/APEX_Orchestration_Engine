@@ -21,17 +21,17 @@ describe('dev-data store', () => {
     const endpoint = 'http://localhost/v1/catalog/projects'
     const labels = async () => jsonOf<Array<{ project_id: string; name: string }>>(await store.handleApexRequest(new Request(endpoint)))
     const initial = await labels()
-    expect(initial).toEqual([expect.objectContaining({ project_id: 'telecom-modernization', name: 'Telecom modernization' })])
+    expect(initial.map(row => row.name)).toEqual(['ACC Perf', 'Digital Perf', 'Legacy Perf', 'NPI', 'HRP'])
     const write = (project: string, name: string) => store.handleApexRequest(new Request(endpoint, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: project, name }) }))
     expect((await write('other-project', 'Unauthorized'))?.status).toBe(403)
-    expect((await write('telecom-modernization', 'Renamed project'))?.status).toBe(200)
+    expect((await write('acc-perf', 'Renamed project'))?.status).toBe(200)
     store = createDevDataStore()
-    expect((await labels())[0]?.name).toBe('Renamed project')
-    expect((await store.handleApexRequest(new Request(`${endpoint}?project=telecom-modernization`, { method: 'DELETE' })))?.status).toBe(204)
+    expect((await labels()).find(row => row.project_id === 'acc-perf')?.name).toBe('Renamed project')
+    expect((await store.handleApexRequest(new Request(`${endpoint}?project=acc-perf`, { method: 'DELETE' })))?.status).toBe(204)
     store = createDevDataStore()
-    expect(await labels()).toEqual([])
+    expect((await labels()).map(row => row.project_id)).toEqual(['digital-perf', 'legacy-perf', 'npi', 'hrp'])
     const apps = await jsonOf<Array<{ project_id: string }>>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/applications')))
-    expect(apps.some(app => app.project_id === 'telecom-modernization')).toBe(true)
+    expect(apps.some(app => app.project_id === 'acc-perf')).toBe(true)
   })
 
   it('derives every demo summary from its corresponding phase state', async () => {
@@ -129,20 +129,23 @@ describe('dev-data store', () => {
     const store = createDevDataStore()
     expect(store.getFixtureStats()).toMatchObject(TELECOM_DATASET_REQUIREMENTS)
     const environment = await jsonOf<{ name: string; options: { dependencies: Array<{ application: string; environment: string }> } }>(
-      await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-perf')),
+      await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-acc-perf-acc-perfhyper2')),
     )
     expect(environment.name).toBe('PERFHYPER2')
     expect(environment.options.dependencies).toEqual(expect.arrayContaining([
-      expect.objectContaining({ application: 'Mulesoft', environment: 'TEST' }),
-      expect.objectContaining({ application: 'BSSe', environment: 'TEST' }),
+      expect.objectContaining({ application: 'Mule', environment: 'PERFHYPER2' }),
     ]))
+    const idp = await jsonOf<typeof environment>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-acc-perf-idp-perfhyper2')))
+    expect(idp.options.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ application: 'BSSe', environment: 'PERF BSSe' })]))
+    const opus = await jsonOf<typeof environment>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-legacy-perf-csi-t4')))
+    expect(opus.options.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ application: 'TLG', environment: 'PERF TLG' })]))
     const align = await jsonOf<{ items: Array<{ key: string }>; provider: string }>(
       await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-align', query: { provider: 'jira_align', query: "programId eq 42 and contains(title,'ACC add-a-line')" } }) })),
     )
     const jira = await jsonOf<{ items: Array<{ key: string }>; provider: string }>(
       await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-jira', query: { provider: 'jira', query: 'project = PERF' } }) })),
     )
-    const prompts = await jsonOf<unknown[]>(await store.handleApexRequest(new Request('http://localhost/v1/prompts?include_archived=true&limit=50')))
+    const prompts = await jsonOf<unknown[]>(await store.handleApexRequest(new Request('http://localhost/v1/prompts?include_archived=true&limit=200')))
 
     expect(align.provider).toBe('jira_align')
     expect(align.items.map((item) => item.key)).toEqual(expect.arrayContaining(['feature:583', 'story:9012']))
@@ -177,8 +180,8 @@ describe('dev-data store', () => {
 
   it('uses phase-safe deterministic response branches without invoking an LLM', () => {
     expect(deterministicAgentReply('env_triage', 'Why is the MQ queue growing?')).toContain('four consumers')
-    expect(deterministicAgentReply('reporting', 'What is the SLA release risk?')).toContain('conditional certification')
-    expect(deterministicAgentReply('env_triage', 'Is the Oracle configuration correct?')).toContain('non-PERFHYPER2 BSSe test endpoint')
+    expect(deterministicAgentReply('reporting', 'What is the SLA release risk?')).toContain('not certified')
+    expect(deterministicAgentReply('env_triage', 'Is the Oracle configuration correct?')).toContain('non-PERFHYPER2 IDP endpoint')
   })
 
   it('reserves PERF-248 for the scripted finding and sequences manual Jira Cloud tickets from PERF-249', async () => {
@@ -194,8 +197,9 @@ describe('dev-data store', () => {
     const testScope = {
       schema_version: 1,
       participants: [
-        { id: 'acc', project_id: 'telecom-modernization', application_id: 'app-digital-device', environment_id: 'env-perf', layer: 'frontend' },
-        { id: 'bsse', project_id: 'telecom-modernization', application_id: 'app-usage-billing', environment_id: 'env-qc-reference', layer: 'backend' },
+        { id: 'acc', project_id: 'acc-perf', application_id: 'app-acc-perf-acc', environment_id: 'env-acc-perf-acc-perfhyper2', layer: 'frontend' },
+        { id: 'mule', project_id: 'acc-perf', application_id: 'app-acc-perf-mule', environment_id: 'env-acc-perf-mule-perfhyper2', layer: 'middle' },
+        { id: 'bsse', project_id: 'acc-perf', application_id: 'app-acc-perf-bsse', environment_id: 'env-acc-perf-bsse-perf-bsse', layer: 'backend' },
       ],
       primary_participant_id: 'acc',
       traffic_entry_participant_id: 'acc',
@@ -203,7 +207,7 @@ describe('dev-data store', () => {
     const request = () => new Request('http://localhost/v1/pipelines', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'ACC Add-a-Line Peak Certification', request: 'Certify the flagship.', project_id: 'telecom-modernization', app_id: 'app-digital-device', test_scope: testScope }),
+      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'ACC Add-a-Line Peak Certification', request: 'Certify the flagship.', project_id: 'acc-perf', app_id: 'app-acc-perf-acc', test_scope: testScope }),
     })
     const launchResponse = await store.handleApexRequest(request())
     expect(launchResponse?.status).toBe(202)
@@ -219,7 +223,7 @@ describe('dev-data store', () => {
 
   it('hydrates compatible journals and safely discards corrupt state', async () => {
     const store = createDevDataStore()
-    await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/saved-queries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Persisted query', provider: 'jira', query: 'project = PERF', project_id: 'telecom-modernization' }) }))
+    await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/saved-queries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Persisted query', provider: 'jira', query: 'project = PERF', project_id: 'acc-perf' }) }))
     expect(localStorage.getItem(DEMO_STATE_STORAGE_KEY)).toContain('Persisted query')
     const hydrated = createDevDataStore()
     const list = await jsonOf<{ items: Array<{ name: string }> }>(await hydrated.handleApexRequest(new Request('http://localhost/v1/work-tracking/saved-queries')))
@@ -232,7 +236,7 @@ describe('dev-data store', () => {
     expect(canonical.items).toHaveLength(4)
 
     localStorage.setItem(DEMO_STATE_STORAGE_KEY, JSON.stringify({
-      version: 3,
+      version: 4,
       activationTime: new Date().toISOString(),
       nextId: 101,
       mutations: { workItemProviders: { upsert: 'not-an-array', removed: [] } },
@@ -357,7 +361,7 @@ describe('dev-data store', () => {
   it('applies the project filter to context evidence packets', async () => {
     const store = createDevDataStore()
     const matching = await jsonOf<unknown[]>(await store.handleApexRequest(new Request(
-      'http://localhost/v1/context/evidence?project=telecom-modernization',
+      'http://localhost/v1/context/evidence?project=acc-perf',
     )))
     const unrelated = await jsonOf<unknown[]>(await store.handleApexRequest(new Request(
       'http://localhost/v1/context/evidence?project=another-project',
@@ -402,7 +406,7 @@ describe('dev-data store', () => {
   it('keeps context summaries out of the pipeline fleet and varies deterministic output by subject', async () => {
     const store = createDevDataStore()
     const before = store.getFixtureStats().seededRuns
-    const accepted = await jsonOf<{ run_id: string; stream_url: string }>(await store.handleApexRequest(new Request('http://localhost/v1/context/summaries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: 'telecom-modernization', subject: 'Explain the MQ queue risk' }) })))
+    const accepted = await jsonOf<{ run_id: string; stream_url: string }>(await store.handleApexRequest(new Request('http://localhost/v1/context/summaries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: 'acc-perf', subject: 'Explain the MQ queue risk' }) })))
     expect(store.getFixtureStats().seededRuns).toBe(before)
     const response = store.handleRawRequest(new Request(`http://localhost${accepted.stream_url}`))
     expect(await response?.text()).toContain('four')
@@ -438,7 +442,7 @@ describe('dev-data store', () => {
       await store.handleApexRequest(new Request(`http://localhost/v1/prompts/${prompt.id}/test`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sample_input: { story: 'story:9012' }, project_id: 'telecom-modernization' }),
+        body: JSON.stringify({ sample_input: { story: 'story:9012' }, project_id: 'acc-perf' }),
       })),
     )
     for await (const event of store.joinRunStream(accepted.thread_id, accepted.run_id)) {
@@ -456,10 +460,10 @@ describe('dev-data store', () => {
     await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/saved-queries', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Hydration sentinel', provider: 'jira', query: 'project = PERF', project_id: 'telecom-modernization' }),
+      body: JSON.stringify({ name: 'Hydration sentinel', provider: 'jira', query: 'project = PERF', project_id: 'acc-perf' }),
     }))
     store = createDevDataStore()
-    const thread = store.createThread({ metadata: { project_id: 'telecom-modernization' } })
+    const thread = store.createThread({ metadata: { project_id: 'acc-perf' } })
     const consume = async (runId: string) => {
       const events: unknown[] = []
       for await (const event of store.joinRunStream(thread.thread_id, runId)) {
@@ -489,7 +493,7 @@ describe('dev-data store', () => {
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(parseGateInterrupt((detail as unknown as { interrupts: Array<{ payload: unknown }> }).interrupts[0]?.payload)).not.toBeNull()
     expect(JSON.stringify(detail)).toContain('only two consumers are active')
-    expect(JSON.stringify(detail)).toContain('non-PERFHYPER2 BSSe test endpoint')
+    expect(JSON.stringify(detail)).toContain('non-PERFHYPER2 IDP endpoint')
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'revise', message: 'Correct the Oracle configuration and rescan.' })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))

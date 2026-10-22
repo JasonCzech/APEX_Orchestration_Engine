@@ -255,29 +255,48 @@ caddy/nginx container) with:
 4. Optional `config.json` beside `index.html` when the APIs live on another
    origin (see Runtime configuration).
 
-### ACC add-a-line demo (v2.0)
+### Telecom performance demo (v3.0)
 
-The offline demo uses ACC, the employee web application for mobile phone, cellular
-plan, and internet sales. Its flagship draft, **ACC Add-a-Line Peak Certification**,
-adds a line to an existing customer's cellular plan in **PERFHYPER2**, through
-**Mulesoft TEST** and **BSSe TEST**. Open `/runs/new?draft=draft-esim` to start;
-the legacy internal draft ID is retained for existing links.
+The offline demo models a telecom performance-engineering organization with five
+projects: **ACC Perf**, **Digital Perf**, **Legacy Perf**, **NPI**, and **HRP**.
+Each project registers the applications it tests, so the same application can
+appear under several projects:
 
-The context, work items, prompts, test plan, synthetic account CSV, review gates,
-and reports cover account lookup, eligibility and line limits, phone/BYOD and SIM
-selection, quote review, submission, activation confirmation, duplicate prevention,
-dependency failures, and cleanup. Existing lines and charges must be preserved.
-Internet sales and device replacements are outside this scenario.
+| Layer | Applications |
+| --- | --- |
+| Frontend | ACC, OPUS |
+| Middle tier | Mule, IDP, CSI, CAS, CRM, BOBPM |
+| Backend | BSSe, TLG |
 
-All endpoints (`example.test`), infrastructure details, prices, load targets,
-thresholds, and measured results are illustrative. The demo makes no integration
-calls. The 85 TPS target describes aggregate API traffic at 300 employee sessions,
-not completed line additions per second. Timestamps are relative to activation.
-The simulated release result retains a BSSe latency breach to demonstrate review,
-remediation, and Jira defect creation.
+Environments follow two stacks. The **PERFHYPER1–3** stacks host ACC with Mule as
+its integration layer, IDP (the BSSe-side equivalent of CSI) and CRM, all calling
+the shared **PERF BSSe** backend. The **T3–T5** stacks host OPUS, CSI, CAS, BOBPM
+and CRM, all writing to the shared **PERF TLG** backend. Other applications also
+reach PERF TLG when they read legacy-billed accounts. Each environment's `dependencies`
+option lists its approved downstream targets.
 
-Dataset v2.0 invalidates the previous version's browser mutation journal on load;
-**Reset demo** restores the canonical ACC data. The connected development catalog
-seed (`scripts/seed_catalog.py` at the repository root) also creates ACC and
-PERFHYPER2 with placeholder dependency hosts. Existing catalog rows are preserved;
-the script is not a migration of previously seeded Checkout records.
+The prompt catalog covers all four layers: System Prompts (a CoE default and a
+release-certification variant), Phase context (canonical defaults plus telecom
+alternatives), Application context per project registration plus shared
+order-integrity context, and Environment Context for each traffic-entry and
+backend registration. Seeded runs span all five projects, with run-specific test
+scope, phase outputs, logs and artifacts.
+
+The flagship draft, **ACC Add-a-Line Peak Certification** (ACC Perf), adds a line to
+an existing customer's plan on **PERFHYPER2** through Mule and IDP into PERF BSSe.
+Open `/runs/new?draft=draft-esim` to start; the legacy internal draft ID is
+retained for existing links.
+
+All endpoints (`example.test`), application roles, infrastructure details, prices,
+load targets, thresholds, and measured results are illustrative. The demo makes no
+integration calls. The 85 TPS target describes aggregate API traffic at 300
+employee sessions, not completed line additions per second. Timestamps are relative
+to activation. The simulated release result keeps a BSSe create-order latency
+breach to demonstrate review, remediation, and Jira defect creation.
+
+Dataset v3.0 invalidates earlier browser mutation journals on load; **Reset demo**
+restores the canonical data. The connected development catalog seed
+(`scripts/seed_catalog.py` at the repository root) still creates only ACC and
+PERFHYPER2 in a `demo` project with placeholder dependency hosts. Existing catalog
+rows are preserved; the script is not a migration of previously seeded Checkout
+records.

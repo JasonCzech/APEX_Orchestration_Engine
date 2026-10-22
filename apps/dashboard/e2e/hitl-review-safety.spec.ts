@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 test('gate keyboard editing preserves prompts, drafts and queue focus', async ({ page }) => {
   await page.goto('/approvals')
-  const promptRow = page.getByRole('option').filter({ hasText: 'PI 26.3 workload prompt review' })
+  const promptRow = page.getByRole('option').filter({ hasText: 'OPUS upgrade orders PI 26.4 — T4 workload review' })
   await promptRow.click()
   const gate = page.getByRole('region', { name: 'Review prompts' })
   const editor = gate.getByRole('textbox', { name: 'System prompt', exact: true })

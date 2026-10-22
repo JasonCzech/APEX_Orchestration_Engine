@@ -1,5 +1,5 @@
-import { parseTestScope, testScopeIssues } from '@/features/new-test/testScope'
-import { ACC_DEMO_CONTEXT, ACC_DEMO_DEPENDENCIES, ACC_DEMO_TEST_PLAN, ACC_DEMO_TEST_DATA } from './telecomFixtures'
+import { parseTestScope, testScopeIssues, type TestScopeV1 } from '@/features/new-test/testScope'
+import { ACC_DEMO_CONTEXT, ACC_DEMO_TEST_PLAN, ACC_DEMO_TEST_DATA } from './telecomFixtures'
 import type { components } from '@apex/api-client'
 import type { Assistant, Run, Thread } from '@langchain/langgraph-sdk'
 
@@ -9,9 +9,28 @@ import { APPLICATION_PROMPT_TEMPLATE, SHARED_SYSTEM_PROMPT, SCRIPT_VARIANT_PROMP
 import {
   deterministicAgentReply,
   FLAGSHIP_ALIGN_QUERY,
+  FLAGSHIP_APP_ID,
+  FLAGSHIP_ENV_ID,
   TELECOM_DATASET_VERSION,
   TELECOM_PROJECT_ID,
 } from './telecomFixtures'
+import {
+  DEMO_APPS,
+  DEMO_ENVIRONMENTS,
+  DEMO_PHASE_ALTERNATIVES,
+  DEMO_PROJECTS,
+  DEMO_RUN_PROFILES,
+  DEMO_SYSTEM_PROMPTS,
+  demoAppId,
+  demoApplicationPrompts,
+  demoBaseUrl,
+  demoDependencies,
+  demoEnvId,
+  demoEnvironmentPrompts,
+  type DemoAppCode,
+  type DemoEnvCode,
+  type DemoRunProfile,
+} from './telecomCatalog'
 
 type Application = components['schemas']['ApplicationOut']
 type ProjectLabel = components['schemas']['ProjectLabelOut']
@@ -170,7 +189,7 @@ interface DemoBaseline {
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
-const DEMO_STATE_VERSION = 3
+const DEMO_STATE_VERSION = 4
 const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
 const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
 const AGENT_SORTS: AgentSort[] = [
@@ -395,167 +414,142 @@ function artifactRef(
   }
 }
 
+type DemoPhaseStatus = 'pending' | 'running' | 'awaiting_prompt_review' | 'awaiting_output_review' | 'succeeded' | 'failed'
+
+const PHASE_WINDOWS: Record<PhaseName, [number, number]> = {
+  story_analysis: [140, 138],
+  test_planning: [132, 128],
+  env_triage: [125, 123],
+  script_scenario: [118, 112],
+  execution: [90, 58],
+  reporting: [52, 48],
+  postmortem: [47, 45],
+}
+
+function demoPhaseStatus(phase: PhaseName, currentPhase: PhaseName, status: 'busy' | 'interrupted' | 'idle' | 'error'): DemoPhaseStatus {
+  if (status === 'idle') return 'succeeded'
+  const order = PHASE_NAMES.indexOf(phase) - PHASE_NAMES.indexOf(currentPhase)
+  if (order < 0) return 'succeeded'
+  if (order > 0) return 'pending'
+  if (status === 'busy') return 'running'
+  if (status === 'error') return 'failed'
+  if (phase === 'test_planning') return 'awaiting_prompt_review'
+  return phase === 'execution' ? 'running' : 'awaiting_output_review'
+}
+
 function makePipelineState(
   title: string,
   currentPhase: PhaseName,
   status: 'busy' | 'interrupted' | 'idle' | 'error',
-  anchor?: string,
+  anchor: string | undefined,
+  profile: DemoRunProfile,
+  promptReviews: PipelineState['prompt_reviews'],
 ): PipelineState {
   const report = artifactRef('exec-report', 'load-report.json', 'report', 'application/json', 'Normalized KPI summary', anchor)
-  const transcript = artifactRef(
-    'execution-transcript',
-    'execution transcript.txt',
-    'transcript',
-    'text/plain',
-    'Execution agent transcript',
-    anchor,
-  )
+  const transcript = artifactRef('execution-transcript', 'execution-transcript.txt', 'transcript', 'text/plain', 'Execution agent transcript', anchor)
   const archive = artifactRef('results-archive', 'results.zip', 'archive', 'application/octet-stream', 'Raw engine results', anchor)
-  const promptReviews = Object.fromEntries(
-    PHASE_NAMES.map((phase) => [
-      phase,
-      {
-        system: `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
-        phase_prompt: `Prepare the ${phase.replaceAll('_', ' ')} deliverable for: ${title}.`,
-        application: 'ACC add-a-line requirements: preserve order idempotency, monitor BSSe p95, MQ depth, APIM limits, and AKS scaling.',
-        additional_context: ACC_DEMO_CONTEXT,
-        source: { origin: 'catalog', ref: `phase/${phase}@dev` },
-        updated_at: isoMinutesAgo(140, anchor),
-        updated_by: 'system',
-      },
-    ]),
-  ) as PipelineState['prompt_reviews']
+  const externalRunId = `AL-${profile.key.toUpperCase()}-${title.length}`
+  const engineHandle = { engine: 'apexload', connection_id: demoLoadConnectionId(profile.project), external_run_id: externalRunId }
+  const statusOf = (phase: PhaseName) => demoPhaseStatus(phase, currentPhase, status)
+  const timing = (phase: PhaseName) => {
+    const phaseStatus = statusOf(phase)
+    if (phaseStatus === 'pending') return {}
+    const [startedAgo, endedAgo] = PHASE_WINDOWS[phase]
+    const ended = ['succeeded', 'failed'].includes(phaseStatus)
+    return {
+      attempt: 1,
+      started_at: isoMinutesAgo(startedAgo, anchor),
+      ended_at: ended ? isoMinutesAgo(endedAgo, anchor) : null,
+      duration_s: ended ? (startedAgo - endedAgo) * 60 : null,
+    }
+  }
+  const result = (phase: PhaseName, summary: string, extra: Record<string, unknown> = {}) => {
+    const phaseStatus = statusOf(phase)
+    if (phaseStatus === 'pending') return { phase, status: phaseStatus }
+    return { phase, status: phaseStatus, ...timing(phase), summary, ...extra }
+  }
+  const executionStatus = statusOf('execution')
+  const executionFinished = executionStatus === 'succeeded' || executionStatus === 'failed'
   return {
     title,
-    request: ACC_DEMO_CONTEXT,
+    request: profile.request || ACC_DEMO_CONTEXT,
     current_phase: currentPhase,
     phases_plan: [...PHASE_NAMES],
     prompt_reviews: promptReviews,
     phase_results: {
-      story_analysis: {
-        phase: 'story_analysis',
-        status: 'succeeded',
-        attempt: 1,
-        started_at: isoMinutesAgo(140, anchor),
-        ended_at: isoMinutesAgo(138, anchor),
-        duration_s: 105,
-        summary: ACC_DEMO_CONTEXT,
-        reasoning_digest: 'Prioritized cross-system paths with asynchronous back-pressure and duplicate-order risk.',
-        resolved_prompt: {
-          system: 'You are the story analysis phase operator.',
-          user: 'Analyze feature:583 and story:9012 for performance-test scope.',
-        },
-        resolved_prompt_source: { origin: 'catalog', ref: 'phase/story_analysis/system@v3' },
-      },
-      test_planning: {
-        phase: 'test_planning',
-        status: status === 'interrupted' && currentPhase === 'test_planning' ? 'awaiting_prompt_review' : 'succeeded',
-        attempt: 1,
-        started_at: isoMinutesAgo(132, anchor),
-        ended_at: isoMinutesAgo(128, anchor),
-        duration_s: 220,
-        summary: 'Planned load, stress, and endurance coverage with a stepped ramp to 300 users and 85 TPS.',
-        warnings: ['BSSe create-order is within 20% of its configured p95 budget.'],
-      },
-      env_triage: {
-        phase: 'env_triage',
-        status: 'succeeded',
-        attempt: 1,
-        started_at: isoMinutesAgo(125, anchor),
-        ended_at: isoMinutesAgo(123, anchor),
-        duration_s: 94,
-        summary: 'PERFHYPER2 is reachable; mulesoft-add-line-api points at bsse-other-test and MQ has two consumers instead of four.',
-        warnings: ['non-PERFHYPER2 BSSe test endpoint would invalidate results until corrected.', 'MQ consumer capacity is below the approved reference.'],
-      },
-      script_scenario: {
-        phase: 'script_scenario',
-        status: 'succeeded',
-        attempt: 1,
-        started_at: isoMinutesAgo(118, anchor),
-        ended_at: isoMinutesAgo(112, anchor),
-        duration_s: 360,
-        summary: 'Generated correlated JMeter and VuGen scripts with synthetic ACC add-a-line data and explicit SLA assertions.',
+      story_analysis: result('story_analysis', profile.stories, {
+        reasoning_digest: 'Ordered each scenario by tier from the traffic entry to the backend system of record and flagged shared-backend and idempotency risks.',
+        resolved_prompt: { system: promptReviews?.story_analysis?.system ?? '', user: promptReviews?.story_analysis?.phase_prompt ?? '' },
+        resolved_prompt_source: { origin: 'catalog', ref: 'phase/story_analysis/system@v2' },
+      }),
+      test_planning: result('test_planning', profile.plan, profile.planWarnings.length ? { warnings: profile.planWarnings } : {}),
+      env_triage: result('env_triage', profile.envSummary, profile.envWarnings.length ? { warnings: profile.envWarnings } : {}),
+      script_scenario: result('script_scenario', profile.script, {
         load_test_spec: {
           title,
-          target_environment: 'env-perf',
-          vusers: 300,
-          ramp_s: 300,
-          duration_s: 1500,
-          slas: { p95_ms: 3000, error_rate: 0.02 },
-          script_refs: ['memory://scripts/acc-add-line.jmx', 'memory://scripts/acc_add_line.c'],
+          target_environment: demoEnvIdFor(profile, profile.traffic ?? profile.primary),
+          vusers: profile.vusers,
+          ramp_s: profile.rampS,
+          duration_s: profile.durationS,
+          slas: profile.slas,
+          script_refs: profile.scriptRefs,
         },
-      },
-      execution: {
-        phase: 'execution',
-        status: status === 'busy' ? 'running' : status === 'error' ? 'failed' : 'succeeded',
-        attempt: status === 'error' ? 2 : 1,
-        started_at: isoMinutesAgo(90, anchor),
-        ended_at: status === 'busy' ? null : isoMinutesAgo(58, anchor),
-        duration_s: status === 'busy' ? null : 1920,
-        summary:
-          status === 'error'
-            ? 'Execution orchestration failed while collecting the simulated engine result.'
-            : 'Execution reached 300 users; BSSe p95 breached 3,000ms while MQ backlog recovered after a ramp hold.',
-        warnings: status === 'error' ? ['Result collection requires an operator retry.'] : ['BSSe create-order p95 exceeded SLA and warrants a Jira Cloud defect.'],
-        artifact_ids: [report.id, archive.id, transcript.id],
+      }),
+      execution: result('execution', profile.executionSummary, {
+        ...(profile.executionWarnings.length ? { warnings: profile.executionWarnings } : {}),
+        artifact_ids: executionFinished ? [report.id, archive.id, transcript.id] : [],
         engine: 'apexload',
         engine_started_at: isoMinutesAgo(89, anchor),
-        engine_handle: { engine: 'apexload', connection_id: 'conn-apex-load', external_run_id: 'AL-DEMO-2603' },
-        test_summary: {
-          engine: 'apexload',
-          passed: false,
-          kpis: status === 'error' ? {} : { tps_avg: 82.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300 },
-          sla_breaches: status === 'error' ? [] : ['oms_create_order_p95_ms', 'error_rate'],
-          notes: status === 'error' ? 'Collection did not complete.' : 'Orchestration succeeded; the tested release is a conditional fail pending BSSe/MQ remediation.',
-        },
-        transcript_ref: transcript,
-      },
-      reporting: {
-        phase: 'reporting',
-        status:
-          status === 'interrupted' && currentPhase === 'reporting'
-            ? 'awaiting_output_review'
-            : status === 'busy'
-              ? 'pending'
-              : 'succeeded',
-        attempt: status === 'busy' ? undefined : 1,
-        started_at: status === 'busy' ? null : isoMinutesAgo(50, anchor),
-        ended_at: status === 'busy' ? null : isoMinutesAgo(45, anchor),
-        duration_s: status === 'busy' ? null : 290,
-        summary: 'Drafted executive and technical reports with Jira Cloud defect PERF-248.',
-      },
-      postmortem: {
-        phase: 'postmortem',
-        status: 'pending',
-      },
+        engine_handle: engineHandle,
+        ...(executionStatus !== 'pending' ? { transcript_ref: transcript } : {}),
+        ...(executionFinished ? {
+          test_summary: {
+            engine: 'apexload',
+            passed: profile.passed,
+            kpis: profile.kpis,
+            sla_breaches: profile.breaches,
+            notes: profile.executionNotes,
+          },
+        } : {}),
+      }),
+      reporting: result('reporting', profile.reporting),
+      postmortem: result('postmortem', profile.postmortem),
     },
     artifacts: [report, archive, transcript],
-    dialogue: [
-      {
-        id: 'dlg-1',
-        phase: 'test_planning',
-        role: 'operator',
-        content: 'Include asynchronous MQ backlog and retry-idempotency coverage.',
-        at: isoMinutesAgo(127, anchor),
-      },
-      {
-        id: 'dlg-2',
-        phase: 'test_planning',
-        role: 'agent',
-        content: 'The workload now covers both paths with stepped-ramp checkpoints.',
-        at: isoMinutesAgo(126, anchor),
-      },
-    ],
-    context_packets: [
-      {
-        id: 'ctx-1',
-        source: 'jira_align',
-        title: 'story:9012 acceptance criteria',
-        summary: 'ACC add-a-lines must remain idempotent while fulfillment traverses IBM MQ.',
-        ref: 'story:9012',
-      },
-    ],
-    engine_handle: { engine: 'apexload', connection_id: 'conn-apex-load', external_run_id: 'AL-DEMO-2603' },
+    dialogue: profile.dialogue.flatMap((turn, index) => {
+      const [startedAgo, endedAgo] = PHASE_WINDOWS[turn.phase]
+      const at = Math.max(endedAgo, startedAgo - 1 - index * 2)
+      return [
+        { id: `dlg-${index * 2 + 1}`, phase: turn.phase, role: 'operator', content: turn.operator, at: isoMinutesAgo(at, anchor) },
+        { id: `dlg-${index * 2 + 2}`, phase: turn.phase, role: 'agent', content: turn.agent, at: isoMinutesAgo(at - 0.5, anchor) },
+      ]
+    }),
+    context_packets: [{ id: 'ctx-1', ...profile.contextPacket }],
+    engine_handle: engineHandle,
+  }
+}
+
+function demoEnvIdFor(profile: DemoRunProfile, participantId: string): string {
+  const participant = profile.participants.find((item) => item.id === participantId) ?? profile.participants[0]!
+  return demoEnvId(profile.project, participant.app, participant.env)
+}
+
+function demoLoadConnectionId(project: string): string {
+  return project === TELECOM_PROJECT_ID ? 'conn-apex-load' : `conn-apex-load-${project}`
+}
+
+function demoTestScope(profile: DemoRunProfile): TestScopeV1 {
+  return {
+    schema_version: 1,
+    participants: profile.participants.map((item) => ({
+      id: item.id,
+      project_id: profile.project,
+      application_id: demoAppId(profile.project, item.app),
+      environment_id: demoEnvId(profile.project, item.app, item.env),
+      layer: DEMO_APPS[item.app].layer,
+    })),
+    primary_participant_id: profile.primary,
+    traffic_entry_participant_id: profile.traffic,
   }
 }
 
@@ -611,7 +605,7 @@ export class DevDataStore {
     consumer: {
       name: 'Demo Presenter',
       role: 'admin',
-      scopes: [{ project_id: TELECOM_PROJECT_ID, app_id: null }],
+      scopes: DEMO_PROJECTS.map((project) => ({ project_id: project.id, app_id: null })),
     },
   }
 
@@ -619,7 +613,7 @@ export class DevDataStore {
     this.activationTime = this.persistedActivationTime()
     const created = isoMinutesAgo(8_000, this.activationTime)
     const updated = isoMinutesAgo(20, this.activationTime)
-    this.projectLabels = [{ project_id: TELECOM_PROJECT_ID, name: 'Telecom modernization', updated_at: updated }]
+    this.projectLabels = DEMO_PROJECTS.map((project) => ({ project_id: project.id, name: project.name, updated_at: updated }))
     this.applications = []
     this.environments = []
     this.connections = []
@@ -708,37 +702,35 @@ export class DevDataStore {
 
   private seedTelecomCatalog(created: string, updated: string): void {
     const project = TELECOM_PROJECT_ID
-    this.applications = [
-      { id: 'app-digital-device', name: 'ACC', project_id: project, description: 'ACC is the employee-facing web application for selling mobile phones, cellular plans, and internet service. Demo scope: add a line to an existing customer cellular plan.', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-order-fulfillment', name: 'Mulesoft', project_id: project, description: 'Test integration dependency connecting ACC in PERFHYPER2 to BSSe; infrastructure and telemetry are synthetic demo assumptions.', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-usage-billing', name: 'BSSe', project_id: project, description: 'Test billing dependency for existing accounts, plan eligibility, line orders, and resulting charges.', archived_at: null, created_at: created, updated_at: updated },
-    ]
-    this.environments = [
-      this.environment('env-perf', 'app-digital-device', 'PERFHYPER2', 'k8s', 'https://acc.perfhyper2.example.test', false),
-      this.environment('env-perf-dr', 'app-digital-device', 'PERFHYPER2-DR', 'k8s', 'https://acc.perfhyper2-dr.example.test', true),
-      this.environment('env-qc-reference', 'app-usage-billing', 'BSSe TEST', 'vm', 'https://bsse.perfhyper2.example.test', false),
-      this.environment('env-production', 'app-order-fulfillment', 'Mulesoft TEST', 'k8s', 'https://mulesoft.perfhyper2.example.test', true),
-    ]
+    this.applications = DEMO_PROJECTS.flatMap((item) => item.apps.map((code) => ({
+      id: demoAppId(item.id, code),
+      name: DEMO_APPS[code].name,
+      project_id: item.id,
+      description: DEMO_APPS[code].description,
+      archived_at: null,
+      created_at: created,
+      updated_at: updated,
+    })))
+    this.environments = DEMO_PROJECTS.flatMap((item) => item.apps.flatMap((code) => DEMO_APPS[code].environments.map((env) => this.catalogEnvironment(item.id, code, env))))
     this.inventories.clear()
-    const inventoryServices = [
-      { name: 'acc-web', image: 'registry.example.test/acc-web:4.8.2', replicas: 4 },
-      { name: 'mulesoft-add-line-api', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
-      { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 2 },
-      { name: 'bsse-account-api', image: 'registry.example.test/usage-profile:2.9.4', replicas: 3 },
-    ]
     for (const env of this.environments) {
-      this.inventories.set(env.id, { environment_id: env.id, snapshot: { scanned_at: updated, stale: env.id !== 'env-perf', services: inventoryServices.map((service) => ({ ...service, replicas: env.id === 'env-perf' ? service.replicas : Math.max(1, service.replicas - 1) })) } })
+      const [projectId, code, envCode] = this.environmentParts(env.id)
+      this.inventories.set(env.id, { environment_id: env.id, snapshot: { scanned_at: env.last_snapshot?.scanned_at ?? updated, stale: DEMO_ENVIRONMENTS[envCode].stale, services: this.inventoryServices(code, envCode, projectId === project && envCode === 'perfhyper2' && code === 'idp' ? 2 : null) } })
     }
     this.connections = [
       this.connection('conn-align', 'work_tracking', 'jira_align', 'Jira Align Portfolio', project, 'https://align.example.test', true, { base_url: 'https://align.example.test', program_id: '42' }, null),
       this.connection('conn-jira', 'work_tracking', 'jira', 'Jira Cloud Performance Defects', project, 'https://jira.example.test', true, { base_url: 'https://jira.example.test', user_email: 'demo-presenter@example.test', project_key: 'PERF' }, null),
-      this.connection('conn-apex-load', 'execution_engine', 'apex_load', 'APEX Load PERFHYPER2 Pool', project, null, true, { pool: 'perf-demo' }, null),
-      this.connection('conn-observe', 'observability', 'stub', 'Dynatrace + Prometheus', project, null, true, {}, null),
-      this.connection('conn-logs', 'log_search', 'elasticsearch', 'Telecom ELK', project, 'https://elk.example.test', true, {}, null),
-      this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', project, null, true, {}, null),
-      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERFHYPER2 Cluster', project, null, true, { kube_context: 'aks-perf-demo' }, null),
-      this.connection('conn-source', 'source_control', 'stub', 'Script Repository', project, null, true, {}, null),
-      this.connection('conn-artifacts', 'artifact_store', 'stub', 'Demo Artifact Store', project, null, true, {}, null),
+      this.connection('conn-apex-load', 'execution_engine', 'apex_load', 'APEX Load PERFHYPER Pool — ACC Perf', project, null, true, { pool: 'perfhyper-acc' }, null),
+      this.connection('conn-apex-load-digital-perf', 'execution_engine', 'apex_load', 'APEX Load PERFHYPER API Pool — Digital Perf', 'digital-perf', null, true, { pool: 'perfhyper-api' }, null),
+      this.connection('conn-apex-load-legacy-perf', 'execution_engine', 'apex_load', 'APEX Load T-Stack Pool — Legacy Perf', 'legacy-perf', null, true, { pool: 't-stack-store' }, null),
+      this.connection('conn-apex-load-npi', 'execution_engine', 'apex_load', 'APEX Load Launch Pool — NPI', 'npi', null, true, { pool: 'npi-launch' }, null),
+      this.connection('conn-apex-load-hrp', 'execution_engine', 'apex_load', 'APEX Load Peak Pool — HRP', 'hrp', null, true, { pool: 'hrp-peak' }, null),
+      this.connection('conn-observe', 'observability', 'stub', 'Dynatrace + Prometheus', null, null, true, {}, null),
+      this.connection('conn-logs', 'log_search', 'elasticsearch', 'Performance ELK', null, 'https://elk.example.test', true, {}, null),
+      this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', null, null, true, {}, null),
+      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERFHYPER Clusters', null, null, true, { kube_context: 'aks-perfhyper' }, null),
+      this.connection('conn-source', 'source_control', 'stub', 'Script Repository', null, null, true, {}, null),
+      this.connection('conn-artifacts', 'artifact_store', 'stub', 'Demo Artifact Store', null, null, true, {}, null),
     ]
     this.hostMappings.clear()
     this.hostMappings.set('conn-jira', [{ id: 'map-jira-1', pattern: 'jira.internal.example.test', target: 'jira.example.test', enabled: true }])
@@ -749,19 +741,21 @@ export class DevDataStore {
       this.consumer('cons-ci', 'Nightly Certification', 'operator', 'headless', true, 'd3m00004'),
     ]
     this.documents = [
-      this.document('doc-architecture', 'acc-add-line-architecture.pdf', 'application/pdf', 1_420_000, ACC_DEMO_CONTEXT),
-      this.document('doc-sla', 'acc-add-line-demo-sla.md', 'text/markdown', 18_420, 'Synthetic demo SLAs and release thresholds; confirm before a real test.'),
-      this.document('doc-traffic', 'peak-hour-traffic-profile.csv', 'text/csv', 9_810, 'Synthetic employee-session volumes and API transaction targets.'),
-      this.document('doc-runbook', 'mq-backlog-response-runbook.md', 'text/markdown', 21_200, 'Ramp-hold and queue recovery procedure.'),
-      this.document('doc-baselines', 'historical-baselines.json', 'application/json', 14_660, 'Five synthetic baseline runs.'),
-      this.document('doc-data', 'synthetic-test-data-contract.md', 'text/markdown', 8_140, 'Synthetic existing accounts with active plans, current line counts, line limits, compatible devices, SIMs, expected charges, and rejection cases. Exclusive account allocation and cleanup after each run.'),
+      this.document('doc-architecture', 'acc-add-line-architecture.pdf', 'application/pdf', 1_420_000, 'ACC > Mule > IDP > BSSe add-a-line call flow on PERFHYPER2, including IBM MQ fulfillment and CRM interaction notes.'),
+      this.document('doc-sla', 'acc-add-line-demo-sla.md', 'text/markdown', 18_420, 'Synthetic per-journey release gates for ACC add-a-line (submit p95 3,000ms, errors < 2%, ≥ 80 TPS); confirm before a real test.'),
+      this.document('doc-traffic', 'peak-hour-traffic-profile.csv', 'text/csv', 9_810, 'Synthetic ACC employee-session volumes and Mule API transaction targets by hour.'),
+      this.document('doc-runbook', 'idp-mq-backlog-runbook.md', 'text/markdown', 21_200, 'Ramp-hold and IDP fulfillment queue recovery procedure for PERFHYPER stacks.'),
+      this.document('doc-baselines', 'historical-baselines.json', 'application/json', 14_660, 'Certified PERFHYPER2 baselines 26.1.3 through 26.2.2 for ACC add-a-line.'),
+      this.document('doc-data', 'synthetic-test-data-contract.md', 'text/markdown', 8_140, 'Synthetic SYN- accounts with active plans, line counts and limits, compatible devices, SIMs, expected charges, and rejection cases. Exclusive account leases and cleanup after each run.'),
+      this.document('doc-tlg-windows', 'perf-tlg-shared-window-runbook.md', 'text/markdown', 12_300, 'Booking rules for the shared PERF TLG environment: one certification load at a time, T5 batch-driver schedule, and the 01:00–04:00 CT bill-cycle blackout.', 'legacy-perf'),
+      this.document('doc-npi-forecast', 'unlimited-premium-launch-forecast.csv', 'text/csv', 6_420, 'Provisional launch-day forecast (marketing estimate v2): 2.5x plan-change and new-line volume for the first four hours.', 'npi'),
     ]
     this.drafts = [
       this.draft('draft-esim', 'ACC Add-a-Line Peak Certification', project, {
         launch_idempotency_key: 'demo-esim-launch',
         title: 'ACC Add-a-Line Peak Certification',
         request: ACC_DEMO_CONTEXT,
-        scope: { project_id: project, app_id: 'app-digital-device', environment_id: 'env-perf' },
+        scope: { project_id: project, app_id: FLAGSHIP_APP_ID, environment_id: FLAGSHIP_ENV_ID, test_scope: demoTestScope(DEMO_RUN_PROFILES['acc-flagship']) },
         work_items: [
           { key: 'feature:583', connection_id: 'conn-align', provider: 'jira_align' },
           { key: 'story:9012', connection_id: 'conn-align', provider: 'jira_align' },
@@ -775,33 +769,40 @@ export class DevDataStore {
     this.evidence = Array.from({ length: 12 }, (_, index) => ({
       id: `evidence-${index + 1}`,
       source: index < 4 ? 'jira_align' : index < 8 ? 'observability' : 'documents',
-      title: ['ACC add-a-line acceptance criteria', 'BSSe fulfillment path', 'Retry idempotency', 'Peak traffic objective', 'BSSe latency baseline', 'MQ depth baseline', 'AKS HPA history', 'BSSe read baseline', 'Architecture packet', 'SLA standard', 'Backlog runbook', 'Synthetic data contract'][index]!,
-      summary: ['ACC must add exactly one line and one set of charges to the existing cellular plan, preserving all existing lines.', 'ACC in PERFHYPER2 submits through Mulesoft TEST to BSSe TEST. APIM, AKS, and MQ telemetry is illustrative.', 'Every retry carries the same idempotency key.', 'Illustrative target: 85 aggregate API TPS at 300 employee sessions; measure completed add-line journeys separately.', 'Historical BSSe p95 is 2.4 seconds.', 'Normal fulfillment depth is below 2,000.', 'HPA reaches six pods within two minutes.', 'Usage profile p95 is 180ms.', 'ACC PERFHYPER2 connects to Mulesoft TEST and BSSe TEST; infrastructure details are illustrative.', 'BSSe create-order p95 must remain below 3,000ms.', 'Hold the ramp while backlog stabilizes.', 'All accounts and devices are synthetic.'][index]!,
+      title: ['ACC add-a-line acceptance criteria', 'ACC > Mule > IDP > BSSe order path', 'Retry idempotency', 'Peak traffic objective', 'BSSe create-order baseline', 'IDP MQ depth baseline', 'ACC AKS HPA history', 'BSSe eligibility read baseline', 'Architecture packet', 'SLA standard', 'MQ backlog runbook', 'Synthetic data contract'][index]!,
+      summary: ['ACC must add exactly one line and one set of charges to the existing cellular plan, preserving all existing lines.', 'ACC on PERFHYPER2 submits through Mule and IDP on PERFHYPER2 to PERF BSSe; IDP publishes fulfillment events to IBM MQ. Telemetry values are illustrative.', 'Every retry carries the same idempotency key; Mule stores keys in Object Store for 24 hours.', 'Illustrative target: 85 aggregate Mule API TPS at 300 employee sessions; measure completed add-line journeys separately.', 'Certified baseline 26.2.2: BSSe create-order p95 2,520ms.', 'Normal IDP fulfillment depth stays below 2,000 with four consumers.', 'ACC HPA reaches six pods within two minutes of the 200-session step.', 'BSSe eligibility read p95 is 180ms at baseline load.', 'PERFHYPER2 hosts ACC, Mule, IDP and CRM; BSSe runs in the shared PERF BSSe environment.', 'ACC submit p95 must remain at or below 3,000ms.', 'Hold the ramp while IDP MQ depth exceeds 10,000 and resume after it drains below 2,000.', 'All accounts and devices are synthetic SYN- records.'][index]!,
       ref: index < 4 ? ['feature:583', 'story:9012', 'story:9013', 'objective:77'][index]! : `demo:evidence:${index + 1}`,
-      thread_id: index % 3 === 0 ? 'run-conditional' : null,
+      thread_id: index % 3 === 0 ? 'run-report-review' : null,
     }))
     const align: WorkItem[] = [
       { key: 'epic:310', title: 'Employee sales modernization', kind: 'epic', status: 'In Progress', description: 'Modernize sales and service journeys.', url: 'https://align.example.test/epics/310' },
       { key: 'capability:420', title: 'Existing customer plan management', kind: 'capability', status: 'In Progress', description: 'Add and activate a line on an existing cellular plan through ACC.', url: 'https://align.example.test/capabilities/420', parent_key: 'epic:310' },
-      { key: 'feature:583', title: 'ACC add-a-line orchestration', kind: 'feature', status: 'Ready for Test', description: 'Add one line to an existing cellular plan in ACC on PERFHYPER2 through Mulesoft and BSSe TEST, preserving existing lines and preventing duplicate charges.', url: 'https://align.example.test/features/583', parent_key: 'capability:420', priority: 'Critical', sprint: 'PI 26.3' },
+      { key: 'feature:583', title: 'ACC add-a-line orchestration', kind: 'feature', status: 'Ready for Test', description: 'Add one line to an existing cellular plan in ACC on PERFHYPER2 through Mule and IDP into PERF BSSe, preserving existing lines and preventing duplicate charges.', url: 'https://align.example.test/features/583', parent_key: 'capability:420', priority: 'Critical', sprint: 'PI 26.3' },
       { key: 'story:9012', title: 'Employee completes ACC add-a-line with resilient order fulfillment', kind: 'story', status: 'In Progress', description: ACC_DEMO_CONTEXT, url: 'https://align.example.test/stories/9012', parent_key: 'feature:583', assignee: 'Morgan Lee', sprint: 'PI 26.3 / I2' },
       { key: 'story:9013', title: 'ACC add-a-line idempotent submission retry', kind: 'story', status: 'Ready for Test', description: 'Reuse the original idempotency key on network retry.', url: 'https://align.example.test/stories/9013', parent_key: 'feature:583' },
       { key: 'story:9014', title: 'Existing account and plan eligibility lookup', kind: 'story', status: 'Accepted', description: 'Read eligibility state from BSSe before adding a line.', url: 'https://align.example.test/stories/9014', parent_key: 'feature:583' },
-      { key: 'bug:9441', title: 'Fulfillment events queue during peak line additions', kind: 'bug', status: 'Open', description: 'IBM MQ depth rises when BSSe consumers lag.', url: 'https://align.example.test/bugs/9441', parent_key: 'story:9012', severity: 'High' },
+      { key: 'bug:9441', title: 'Fulfillment events queue during peak line additions', kind: 'bug', status: 'Open', description: 'IDP fulfillment queue depth on IBM MQ rises when only two of four consumers are running.', url: 'https://align.example.test/bugs/9441', parent_key: 'story:9012', severity: 'High' },
       { key: 'objective:77', title: 'Peak-hour ACC reliability', kind: 'objective', status: 'In Progress', description: 'Meet peak release certification targets.', url: 'https://align.example.test/objectives/77' },
       { key: 'feature:590', title: 'ACC line activation status', kind: 'feature', status: 'Pending Approval', description: 'Expose asynchronous activation status.', url: 'https://align.example.test/features/590', parent_key: 'capability:420' },
       { key: 'story:9050', title: 'Employee views line activation status', kind: 'story', status: 'Open', description: 'Poll status with bounded backoff.', url: 'https://align.example.test/stories/9050', parent_key: 'feature:590' },
-      { key: 'bug:9460', title: 'Activation polling ignores Retry-After', kind: 'bug', status: 'Open', description: 'Polling can overload APIM during delays.', url: 'https://align.example.test/bugs/9460', parent_key: 'story:9050' },
+      { key: 'bug:9460', title: 'Activation polling ignores Retry-After', kind: 'bug', status: 'Open', description: 'ACC status polling ignores Retry-After from Mule and can trip API Manager rate limits during delayed activation.', url: 'https://align.example.test/bugs/9460', parent_key: 'story:9050' },
       { key: 'story:9061', title: 'ACC add-a-line line-limit rejection', kind: 'story', status: 'Funnel', description: 'Reject accounts at the line limit without creating an order or charge.', url: 'https://align.example.test/stories/9061', parent_key: 'feature:583' },
+      { key: 'feature:612', title: 'Unlimited Premium plan launch (NPI)', kind: 'feature', status: 'Ready for Test', description: 'Launch the Unlimited Premium plan and launch promo in ACC through Mule and IDP into BSSe on PERFHYPER3.', url: 'https://align.example.test/features/612', priority: 'Critical', sprint: 'PI 26.4' },
+      { key: 'story:9120', title: 'Plan change to Unlimited Premium at launch-day volume', kind: 'story', status: 'In Progress', description: 'Plan change and new-line orders must meet launch-day volume (2.5x normal) for the first four hours.', url: 'https://align.example.test/stories/9120', parent_key: 'feature:612', sprint: 'PI 26.4 / I1' },
+      { key: 'feature:640', title: 'Digital order-status API at channel scale', kind: 'feature', status: 'Ready for Test', description: 'Mule order-status and account-summary experience APIs for digital channels, served through IDP from BSSe.', url: 'https://align.example.test/features/640', priority: 'High', sprint: 'PI 26.4' },
+      { key: 'feature:705', title: 'OPUS device upgrade at store-hour peak', kind: 'feature', status: 'Ready for Test', description: 'OPUS upgrade and activation orders through CSI, CAS and BOBPM into TLG at store-hour peak on T4.', url: 'https://align.example.test/features/705', priority: 'High', sprint: 'PI 26.4' },
+      { key: 'story:9301', title: 'Store rep completes a device upgrade in OPUS', kind: 'story', status: 'In Progress', description: 'Upgrade order commits one TLG service order and one payment authorization per submit.', url: 'https://align.example.test/stories/9301', parent_key: 'feature:705', sprint: 'PI 26.4 / I1' },
+      { key: 'story:9302', title: 'Activation with CAS credit decision and BOBPM fallout', kind: 'story', status: 'Ready for Test', description: 'New activations run a CAS credit decision; fallout orders create one BOBPM task.', url: 'https://align.example.test/stories/9302', parent_key: 'feature:705' },
+      { key: 'objective:88', title: 'Holiday peak readiness (HRP)', kind: 'objective', status: 'In Progress', description: 'Demonstrate 20% headroom above forecast holiday peak across PERFHYPER and T-stack journeys, including shared PERF TLG and PERF BSSe.', url: 'https://align.example.test/objectives/88' },
     ]
     const jira: WorkItem[] = [
       { key: 'PERF-240', title: '[Perf] BSSe create-order baseline drift', kind: 'bug', status: 'Done', description: 'Resolved baseline regression from the prior PI.', url: 'https://jira.example.test/browse/PERF-240', priority: 'Medium', labels: ['perf-test'] },
-      { key: 'PERF-241', title: '[Perf] MQ consumer scaling validation', kind: 'task', status: 'In Progress', description: 'Validate consumer scaling from two to four replicas.', url: 'https://jira.example.test/browse/PERF-241', priority: 'High', labels: ['perf-test', 'mq'], linked_keys: ['feature:583'] },
-      { key: 'PERF-242', title: '[Perf] APIM rate-limit headroom', kind: 'task', status: 'Open', description: 'Confirm peak headroom for add-a-line APIs.', url: 'https://jira.example.test/browse/PERF-242', priority: 'Medium', labels: ['perf-test', 'apim'] },
+      { key: 'PERF-241', title: '[Perf] IDP MQ consumer scaling validation', kind: 'task', status: 'In Progress', description: 'Validate IDP fulfillment consumer scaling from two to four on PERFHYPER2.', url: 'https://jira.example.test/browse/PERF-241', priority: 'High', labels: ['perf-test', 'mq'], linked_keys: ['feature:583'] },
+      { key: 'PERF-242', title: '[Perf] Mule API Manager rate-limit headroom', kind: 'task', status: 'Open', description: 'Confirm peak headroom for add-a-line and order-status API policies.', url: 'https://jira.example.test/browse/PERF-242', priority: 'Medium', labels: ['perf-test', 'mule'] },
       { key: 'PERF-243', title: '[Perf] BSSe eligibility read p95', kind: 'bug', status: 'Done', description: 'Track eligibility lookup latency.', url: 'https://jira.example.test/browse/PERF-243', priority: 'Low', labels: ['perf-test', 'bsse'] },
-      { key: 'PERF-244', title: '[Perf] HPA stabilization window', kind: 'task', status: 'Open', description: 'Tune HPA stabilization for ramp tests.', url: 'https://jira.example.test/browse/PERF-244', priority: 'Medium', labels: ['perf-test', 'aks'] },
+      { key: 'PERF-244', title: '[Perf] ACC HPA stabilization window', kind: 'task', status: 'Open', description: 'Tune ACC HPA stabilization on PERFHYPER2 for stepped-ramp tests.', url: 'https://jira.example.test/browse/PERF-244', priority: 'Medium', labels: ['perf-test', 'aks'] },
       { key: 'PERF-245', title: '[Perf] Synthetic device pool refresh', kind: 'task', status: 'In Progress', description: 'Refresh synthetic ACC add-a-line inventory.', url: 'https://jira.example.test/browse/PERF-245', priority: 'Medium', labels: ['perf-test', 'test-data'] },
-      { key: 'PERF-246', title: '[Perf] Mulesoft connection pool telemetry', kind: 'task', status: 'Open', description: 'Add pool saturation telemetry.', url: 'https://jira.example.test/browse/PERF-246', priority: 'Low', labels: ['perf-test', 'mulesoft'] },
+      { key: 'PERF-246', title: '[Perf] Mule to IDP connection pool telemetry', kind: 'task', status: 'Open', description: 'Add HTTP requester pool saturation telemetry for Mule process APIs calling IDP.', url: 'https://jira.example.test/browse/PERF-246', priority: 'Low', labels: ['perf-test', 'mule'] },
       { key: 'PERF-247', title: '[Perf] Nightly ACC add-a-line certification', kind: 'task', status: 'Open', description: 'Schedule the release-candidate certification.', url: 'https://jira.example.test/browse/PERF-247', priority: 'High', labels: ['perf-test', 'release'] },
     ]
     this.workItems = [...align, ...jira]
@@ -868,7 +869,7 @@ export class DevDataStore {
     }
     const body = method === 'PUT' ? await request.json() as { project_id?: string; name?: string } : null
     const projectId = body?.project_id ?? params.get('project')
-    if (projectId !== TELECOM_PROJECT_ID) return problemResponse(403, 'Forbidden', 'Project naming requires project-wide administrator access')
+    if (!projectId || !DEMO_PROJECTS.some((project) => project.id === projectId)) return problemResponse(403, 'Forbidden', 'Project naming requires project-wide administrator access')
     if (method === 'DELETE') { this.projectLabels = this.projectLabels.filter(row => row.project_id !== projectId); return new Response(null, { status: 204 }) }
     if (method === 'PUT' && typeof body?.name === 'string' && body.name.trim() && body.name.length <= 255) {
       const row = { project_id: projectId, name: body.name, updated_at: nowIso() }
@@ -880,6 +881,7 @@ export class DevDataStore {
 
   getFixtureStats(): Record<string, number> {
     return {
+      projects: this.projectLabels.length,
       applications: this.applications.length,
       environments: this.environments.length,
       connections: this.connections.length,
@@ -945,7 +947,9 @@ export class DevDataStore {
   createThread(payload?: { metadata?: Record<string, unknown> }): Thread<Record<string, unknown>> {
     const id = this.id('thread')
     const created = nowIso()
-    const detail = this.pipelineDetail(id, 'Untitled telecom certification', payload?.metadata?.['project_id'] as string | undefined, 'busy', 'story_analysis')
+    const detail = this.pipelineDetail(id, 'Untitled performance test', payload?.metadata?.['project_id'] as string | undefined, 'busy', 'story_analysis')
+    detail.test_scope = null
+    detail.values = { ...(detail.values ?? {}), run_config: undefined }
     this.initializeFreshPipeline(detail, 'story_analysis')
     this.pipelineDetails.set(id, detail)
     this.runs.set(id, [])
@@ -973,7 +977,7 @@ export class DevDataStore {
       ? (payload?.config?.configurable?.['phases'] as string[])[0]
       : this.pipelineDetails.get(tid)?.current_phase ?? 'story_analysis'
     const phase = PHASE_NAMES.includes(firstPhase as PhaseName) ? (firstPhase as PhaseName) : 'story_analysis'
-    const detail = this.pipelineDetails.get(tid) ?? this.pipelineDetail(tid, title, 'telecom-modernization', 'busy', phase)
+    const detail = this.pipelineDetails.get(tid) ?? this.pipelineDetail(tid, title, TELECOM_PROJECT_ID, 'busy', phase)
     detail.title = title
     detail.thread_status = 'busy'
     detail.current_phase = phase
@@ -1131,7 +1135,7 @@ export class DevDataStore {
       if (done) yield done
     } else if (stage === 'story_analysis') {
       for await (const event of phase('story_analysis')) yield event
-      this.setPhaseState(detail, 'story_analysis', 'succeeded', 1, 'Resolved the Jira Align hierarchy and peak-load scenarios.')
+      this.setPhaseState(detail, 'story_analysis', 'succeeded', 1, 'Resolved the Jira Align hierarchy (epic:310 > feature:583 > story:9012/9013) into five ACC > Mule > IDP > BSSe scenarios, including asynchronous activation and idempotent retry.')
       this.setPhaseState(detail, 'test_planning', 'awaiting_prompt_review')
       detail.current_phase = 'test_planning'
       detail.thread_status = 'interrupted'
@@ -1153,8 +1157,8 @@ export class DevDataStore {
         'awaiting_output_review',
         stage === 'env_revised' ? 2 : 1,
         stage === 'env_revised'
-          ? 'PERFHYPER2 rescan is green after correcting the BSSe endpoint and MQ consumer count.'
-          : 'non-PERFHYPER2 BSSe test target and insufficient MQ consumers require operator review.',
+          ? 'PERFHYPER2 rescan is green after correcting the Mule IDP target and restoring four IDP fulfillment consumers.'
+          : 'A non-PERFHYPER2 IDP target on mule-add-line-api and two of four IDP fulfillment consumers require operator review.',
       )
       detail.current_phase = 'env_triage'
       detail.thread_status = 'interrupted'
@@ -1162,9 +1166,9 @@ export class DevDataStore {
       const event = emit('env-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'env_triage', attempt: stage === 'env_triage' ? 1 : 2 })
       if (event) yield event
     } else if (stage === 'execution') {
-      this.setPhaseState(detail, 'env_triage', 'succeeded', 2, 'PERFHYPER2 configuration correction and rescan passed.')
+      this.setPhaseState(detail, 'env_triage', 'succeeded', 2, 'PERFHYPER2 rescan passed: Mule targets idp.perfhyper2 and four IDP fulfillment consumers are running.')
       for await (const event of phase('script_scenario')) yield event
-      this.setPhaseState(detail, 'script_scenario', 'succeeded', 1, 'Validated JMeter and VuGen scenarios are ready.')
+      this.setPhaseState(detail, 'script_scenario', 'succeeded', 1, 'acc-add-line.jmx validated: syntax, correlation (quoteId, orderId, lineId), idempotency headers and SLA assertions passed a one-user smoke run.')
       this.setPhaseState(detail, 'execution', 'running')
       const provision = emit('provision-tool', { type: 'tool_call', phase: 'execution', id: `${runId}-apex-load`, tool: 'apex_load.start', status: 'ok' })
       if (provision) yield provision
@@ -1174,7 +1178,7 @@ export class DevDataStore {
       for (const [index, sample] of samples.entries()) {
         if (options?.signal?.aborted) return
         if (sample.progress_pct <= committedProgress) continue
-        const event = emit(`engine-${index}`, { type: 'engine_poll', phase: 'execution', attempt: 1, engine: 'apexload', external_run_id: `AL-${tid}`, status: sample.status, progress_pct: sample.progress_pct, live_stats: { vusers: sample.vusers, tps: sample.tps, error_rate: sample.error_rate, p95_ms: sample.p95_ms }, mq_depth: index >= 3 ? 8_400 + index * 1_670 : 1_400, hpa_replicas: index < 3 ? 4 : index < 5 ? 6 : 8, note: index === 3 ? 'Ramp held while IBM MQ depth stabilizes.' : undefined })
+        const event = emit(`engine-${index}`, { type: 'engine_poll', phase: 'execution', attempt: 1, engine: 'apexload', external_run_id: `AL-${tid}`, status: sample.status, progress_pct: sample.progress_pct, live_stats: { vusers: sample.vusers, tps: sample.tps, error_rate: sample.error_rate, p95_ms: sample.p95_ms }, mq_depth: index >= 3 ? 8_400 + index * 1_670 : 1_400, hpa_replicas: index < 3 ? 4 : index < 5 ? 6 : 8, note: index === 3 ? 'Ramp held while IDP fulfillment MQ depth drains below 10,000.' : undefined })
         if (event) yield event
         detail.values = { ...(detail.values ?? {}), execution_progress: sample.progress_pct, live_metrics: sample }
         this.persistState()
@@ -1182,15 +1186,15 @@ export class DevDataStore {
       }
       const done = emit('execution-done', { type: 'phase_status', phase: 'execution', status: 'succeeded', attempt: 1 })
       if (done) yield done
-      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'BSSe p95 exceeded SLA while orchestration completed successfully.')
+      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'Reached 300 sessions and 84.7 TPS; ACC submit p95 3,650ms breached the 3,000ms gate, driven by BSSe create-order.')
       const execution = (detail.values as PipelineState).phase_results?.execution
       if (execution) {
         execution.test_summary = {
           engine: 'apexload',
           passed: false,
           kpis: { tps_avg: 82.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300 },
-          sla_breaches: ['oms_create_order_p95_ms', 'error_rate'],
-          notes: 'The simulated test failed its SLA checks.',
+          sla_breaches: ['acc_submit_p95_ms', 'error_rate'],
+          notes: 'Submit p95 and error-rate gates failed; throughput and order-integrity gates passed.',
         }
       }
       detail.current_phase = 'execution'
@@ -1218,7 +1222,7 @@ export class DevDataStore {
     } else if (stage === 'reporting') {
       this.setPhaseState(detail, 'execution', 'succeeded', 1)
       for await (const event of phase('reporting')) yield event
-      this.setPhaseState(detail, 'reporting', 'awaiting_output_review', 1, 'Executive and technical reports plus the Jira defect draft are ready.')
+      this.setPhaseState(detail, 'reporting', 'awaiting_output_review', 1, 'Not certified: executive and technical reports with per-tier attribution (BSSe create-order dominant) and the PERF-248 defect draft are ready.')
       detail.current_phase = 'reporting'
       detail.thread_status = 'interrupted'
       this.addPhaseGate(detail, 'reporting')
@@ -1230,12 +1234,12 @@ export class DevDataStore {
       if (jira) yield jira
       this.setPhaseState(detail, 'reporting', 'succeeded', 1)
       for await (const event of phase('postmortem')) yield event
-      this.setPhaseState(detail, 'postmortem', 'succeeded', 1, 'MQ consumer, HPA, and BSSe remediation actions were recorded.')
+      this.setPhaseState(detail, 'postmortem', 'succeeded', 1, 'Recorded three actions: restore four IDP fulfillment consumers, guard the Mule IDP target in env triage, and optimize BSSe create-order before the PERFHYPER2 retest.')
       detail.current_phase = 'postmortem'
       detail.thread_status = 'idle'
       detail.pending_gate = null
       detail.interrupts = []
-      detail.values = { ...(detail.values ?? {}), generated_ticket: ticket, postmortem_actions: ['Scale IBM MQ fulfillment consumers from two to four.', 'Tune the AKS HPA stabilization window.', 'Optimize the BSSe create-order dependency path.'] }
+      detail.values = { ...(detail.values ?? {}), generated_ticket: ticket, postmortem_actions: ['Restore four IDP fulfillment consumers on PERFHYPER2 (environment team).', 'Add an env-triage check that Mule targets the same-stack IDP (performance engineering).', 'Optimize the BSSe create-order path and retest on PERFHYPER2 (BSSe team).'] }
     } else if (stage === 'prompt_playground') {
       const promptPhase = PHASE_NAMES.includes(detail.current_phase as PhaseName)
         ? (detail.current_phase as PhaseName)
@@ -1314,7 +1318,7 @@ export class DevDataStore {
         const detail = this.pipelineDetails.get(thread.thread_id)!
         detail.test_scope = topology as unknown as Record<string, unknown>
         detail.project_id = body.project_id ?? TELECOM_PROJECT_ID
-        detail.app_id = body.app_id ?? 'app-digital-device'
+        detail.app_id = body.app_id ?? FLAGSHIP_APP_ID
         const state = detail.values as PipelineState
         state.context_packets = (body.context_packets ?? state.context_packets ?? []).map((packet, index) => ({
           ...packet,
@@ -1569,7 +1573,7 @@ export class DevDataStore {
         id: this.id('app'),
         name: body.name ?? 'New application',
         description: body.description ?? null,
-        project_id: body.project_id ?? 'telecom-modernization',
+        project_id: body.project_id ?? TELECOM_PROJECT_ID,
         archived_at: null,
         created_at: nowIso(),
         updated_at: nowIso(),
@@ -1616,7 +1620,7 @@ export class DevDataStore {
     }
     if (method === 'POST' && path === '/v1/catalog/environments') {
       const body = (await request.json()) as Partial<Environment>
-      const env = this.environment(this.id('env'), body.application_id ?? 'app-digital-device', body.name ?? 'new-env', body.kind ?? 'k8s', body.base_url ?? null, false)
+      const env = this.environment(this.id('env'), body.application_id ?? FLAGSHIP_APP_ID, body.name ?? 'new-env', body.kind ?? 'k8s', body.base_url ?? null, false)
       env.hosts = (body.hosts ?? []).map((host, index) => ({
         id: this.id(`host-${index}`),
         hostname: host.hostname,
@@ -1671,11 +1675,10 @@ export class DevDataStore {
         snapshot: {
           scanned_at: nowIso(),
           stale: false,
-          services: [
-            { name: 'acc-web', image: 'registry.example.test/acc-web:4.8.2', replicas: 4 },
-            { name: 'mulesoft-add-line-api', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
-            { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 4 },
-          ],
+          services: (() => {
+            const [, code, env] = this.environmentParts(environmentId)
+            return this.inventoryServices(code, env, null).map((service) => ({ ...service, replicas: Math.max(service.replicas, 1) }))
+          })(),
         },
       }
       this.inventories.set(environmentId, fresh)
@@ -1832,7 +1835,7 @@ export class DevDataStore {
       if (idempotencyKey) this.apexIdempotency.set(idempotencyKey, { status, body: clone(body) })
       return jsonResponse(body, status)
     }
-    const connection = { id: 'conn-apex-load', name: 'APEX Load PERFHYPER2 Pool', project_id: 'telecom-modernization' }
+    const connection = { id: 'conn-apex-load', name: 'APEX Load PERFHYPER Pool — ACC Perf', project_id: TELECOM_PROJECT_ID }
     if (method === 'GET' && path === '/v1/apex-load/connections') return jsonResponse({ items: [connection], truncated: false })
     if (method === 'GET' && path.endsWith('/capabilities')) {
       return jsonResponse({
@@ -1941,7 +1944,7 @@ export class DevDataStore {
       const name = file instanceof File ? file.name : 'uploaded-document.txt'
       const size = file instanceof File ? file.size : 0
       const doc = this.document(this.id('doc'), name, file instanceof File ? file.type || 'application/octet-stream' : 'text/plain', size, String(form.get('summary') ?? 'Uploaded in offline demo mode.'))
-      doc.project_id = String(form.get('project_id') ?? 'telecom-modernization')
+      doc.project_id = String(form.get('project_id') ?? TELECOM_PROJECT_ID)
       this.documents.unshift(doc)
       return jsonResponse(doc, 201)
     }
@@ -2194,7 +2197,7 @@ export class DevDataStore {
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
   }
 
-  private environment(id: string, applicationId: string, name: string, kind: string, baseUrl: string | null, stale: boolean): Environment {
+  private environment(id: string, applicationId: string, name: string, kind: string, baseUrl: string | null, stale: boolean, options: Record<string, unknown> = {}, hostnames: string[] = [`${name}-node-1`, `${name}-node-2`]): Environment {
     return {
       id,
       application_id: applicationId,
@@ -2203,15 +2206,60 @@ export class DevDataStore {
       base_url: baseUrl,
       target_approved: baseUrl !== null,
       target_version: baseUrl === null ? 0 : 1,
-      hosts: [
-        { id: `${id}-host-1`, hostname: `${name}-node-1`, role: 'worker' },
-        { id: `${id}-host-2`, hostname: `${name}-node-2`, role: name === 'production' ? 'api' : null },
-      ],
-      options: { namespace: `${applicationId}-${name}`, demo_assumptions: true, ...(id === 'env-perf' ? { dependencies: ACC_DEMO_DEPENDENCIES } : {}) },
+      hosts: hostnames.map((hostname, index) => ({ id: `${id}-host-${index + 1}`, hostname, role: index === 0 ? 'worker' : 'api' })),
+      options: { namespace: `${applicationId}-${name}`, demo_assumptions: true, ...options },
       created_at: isoMinutesAgo(12_000, this.activationTime),
       updated_at: isoMinutesAgo(30, this.activationTime),
       last_snapshot: { scanned_at: isoMinutesAgo(stale ? 2_400 : 15, this.activationTime), service_count: stale ? 2 : 4 },
     }
+  }
+
+  private catalogEnvironment(projectId: string, code: DemoAppCode, env: DemoEnvCode): Environment {
+    const definition = DEMO_ENVIRONMENTS[env]
+    const host = new URL(demoBaseUrl(code, env)).hostname
+    const environment = this.environment(
+      demoEnvId(projectId, code, env),
+      demoAppId(projectId, code),
+      definition.name,
+      definition.kind,
+      demoBaseUrl(code, env),
+      definition.stale,
+      {
+        namespace: definition.kind === 'k8s' ? `${code}-${env}` : `${env}-${code}`,
+        stack: env,
+        dependencies: demoDependencies(code, env),
+      },
+      definition.kind === 'k8s' ? [`aks-${env}-pool-1`, `aks-${env}-pool-2`] : [`${code}01.${host}`, `${code}02.${host}`],
+    )
+    return environment
+  }
+
+  private environmentParts(environmentId: string): [string, DemoAppCode, DemoEnvCode] {
+    for (const project of DEMO_PROJECTS) {
+      for (const code of project.apps) {
+        for (const env of DEMO_APPS[code].environments) {
+          if (demoEnvId(project.id, code, env) === environmentId) return [project.id, code, env]
+        }
+      }
+    }
+    return [TELECOM_PROJECT_ID, 'acc', 'perfhyper2']
+  }
+
+  private inventoryServices(code: DemoAppCode, env: DemoEnvCode, consumerOverride: number | null): Array<{ name: string; image: string; replicas: number }> {
+    const train = env === 'perfhyper1' || env === 't5' ? '26.2' : env === 'perfhyper3' ? '26.4-npi2' : '26.3'
+    const catalog: Record<DemoAppCode, Array<[string, number]>> = {
+      acc: [['acc-web', 4], ['acc-bff', 3]],
+      opus: [['opus-store-web', 4], ['opus-session-svc', 2]],
+      mule: [['mule-add-line-api', 3], ['mule-account-exp-api', 3], ['mule-order-status-api', 2]],
+      idp: [['idp-order-orchestrator', 3], ['idp-fulfillment-consumer', consumerOverride ?? 4]],
+      csi: [['csi-order-services', 4], ['csi-customer-services', 2]],
+      cas: [['cas-credit-decision', 2], ['credit-bureau-stub', 1]],
+      crm: [['crm-profile-api', 2], ['crm-interaction-writer', 2]],
+      bobpm: [['bobpm-engine', 3], ['bobpm-fallout-worker', 2]],
+      bsse: [['bsse-order-api', 6], ['bsse-account-api', 4], ['bsse-rating-engine', 3]],
+      tlg: [['tlg-transaction-monitor', 2], ['tlg-db2', 1], ['tlg-batch-driver', 1]],
+    }
+    return catalog[code].map(([name, replicas]) => ({ name, image: `registry.example.test/${name}:${train}`, replicas: DEMO_ENVIRONMENTS[env].stale ? Math.max(1, replicas - 1) : replicas }))
   }
 
   private connection(id: string, kind: PortKind, provider: string, name: string, projectId: string | null, baseUrl: string | null, enabled: boolean, options: Record<string, unknown>, secretRef: string | null): Connection {
@@ -2219,15 +2267,15 @@ export class DevDataStore {
   }
 
   private consumer(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): Consumer {
-    return { id, name, role, consumer_type: consumerType, enabled, scopes: [{ project_id: 'telecom-modernization', app_id: null }], created_at: isoMinutesAgo(9_000, this.activationTime), last_used_at: enabled ? isoMinutesAgo(12, this.activationTime) : null, key_fingerprint: fingerprint, rotation_count: 0 }
+    return { id, name, role, consumer_type: consumerType, enabled, scopes: DEMO_PROJECTS.map((project) => ({ project_id: project.id, app_id: null })), created_at: isoMinutesAgo(9_000, this.activationTime), last_used_at: enabled ? isoMinutesAgo(12, this.activationTime) : null, key_fingerprint: fingerprint, rotation_count: 0 }
   }
 
   private consumerCreated(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): ConsumerCreated {
     return { ...this.consumer(id, name, role, consumerType, enabled, fingerprint), api_key: `apex_demo_${fingerprint}` }
   }
 
-  private document(id: string, name: string, mediaType: string, sizeBytes: number, summary: string): DocumentOut {
-    return { id, name, media_type: mediaType, size_bytes: sizeBytes, artifact_key: `documents/${id}`, project_id: 'telecom-modernization', app_id: null, summary, uploaded_by: 'Demo Presenter', created_at: isoMinutesAgo(1_000, this.activationTime) }
+  private document(id: string, name: string, mediaType: string, sizeBytes: number, summary: string, projectId = TELECOM_PROJECT_ID): DocumentOut {
+    return { id, name, media_type: mediaType, size_bytes: sizeBytes, artifact_key: `documents/${id}`, project_id: projectId, app_id: null, summary, uploaded_by: 'Demo Presenter', created_at: isoMinutesAgo(1_000, this.activationTime) }
   }
 
   private draft(id: string, title: string, projectId: string | null, payload: Record<string, unknown>): DraftRead {
@@ -2238,16 +2286,45 @@ export class DevDataStore {
     const phase = [...TELECOM_PHASE_PROMPTS, ...SCRIPT_VARIANT_PROMPTS].map((seed, index) =>
       this.prompt(`prompt-phase-${index + 1}`, 'phase', seed.key, seed.description, seed.content, created, updated, false, `adapted from ${seed.source}`),
     )
+    const system = DEMO_SYSTEM_PROMPTS.map((seed) => ({ ...this.prompt(seed.id, 'system', seed.key, seed.description, seed.content, created, updated, false, 'Telecom Performance Engineering CoE'), is_default: seed.is_default }))
+    const alternatives = DEMO_PHASE_ALTERNATIVES.map((seed) => ({ ...this.prompt(seed.id, 'phase', seed.key, seed.description, seed.content, created, updated, false, 'Telecom Performance Engineering CoE phase variant'), phase: seed.phase, is_default: false, selection_enabled: true }))
+    const applications = demoApplicationPrompts().map((seed) => ({ ...this.prompt(seed.id, 'application', seed.key, seed.description, seed.content, created, updated, false, 'project application context'), application_id: seed.application_id ?? null, is_shared: seed.is_shared ?? false }))
+    const environments = demoEnvironmentPrompts().map((seed) => ({ ...this.prompt(seed.id, 'environment', seed.key, seed.description, seed.content, created, updated, false, 'environment team context'), application_id: null, environment_id: seed.environment_id ?? null, selection_enabled: true }))
     return [
       ...phase,
-      this.prompt('prompt-system-default', 'system', 'default', 'Shared pipeline guidance', SHARED_SYSTEM_PROMPT, created, updated, false),
-      { ...this.prompt('prompt-shared-evidence', 'application', 'evidence', 'Shared evidence requirements', 'Cite evidence and mark unknown requirements.', created, updated, false), application_id: null, is_shared: true },
-      { ...this.prompt('prompt-environment-perf', 'environment', 'performance-safety', 'Performance environment context', 'Use only the approved performance environment and synthetic test data.', created, updated, false), environment_id: 'env-perf', selection_enabled: true },
-      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'ACC add-a-line requirements', APPLICATION_PROMPT_TEMPLATE + '\n' + ACC_DEMO_CONTEXT, created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate BSSe submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate existing account eligibility, line limits, resulting line counts, and charges in BSSe TEST without production account data.', created, updated, false, 'telecom demo application context'),
+      ...system,
+      { ...this.prompt('prompt-system-default', 'system', 'default', 'APEX canonical shared guidance', SHARED_SYSTEM_PROMPT, created, updated, false, 'APEX canonical catalog'), is_default: false },
+      ...alternatives,
+      { ...this.prompt('prompt-shared-evidence', 'application', 'evidence', 'Shared evidence requirements', 'Cite the work item, document, or telemetry source for every requirement and threshold. Mark anything without a source UNKNOWN and say which phase it blocks.', created, updated, false), application_id: null, is_shared: true },
+      ...applications,
+      { ...this.prompt('prompt-app-template', 'application', 'template', 'Blank application requirements template', APPLICATION_PROMPT_TEMPLATE, created, updated, false, 'APEX canonical template'), application_id: null, selection_enabled: false },
+      ...environments,
       this.prompt('prompt-old', 'experimental', 'legacy/release-report', 'Archived pre-telecom prompt', 'Legacy release report instructions retained only to demonstrate prompt archival.', created, updated, true, 'archived demo history'),
     ]
+  }
+
+  /** Historical (pre-selection) prompt review for a seeded run, composed from the seeded catalog. */
+  private seededPromptReviews(profile: DemoRunProfile, title: string, request: string): PipelineState['prompt_reviews'] {
+    const active = (id: string) => this.prompts.find((prompt) => prompt.id === id)
+    const appIds = new Set(profile.participants.map((item) => demoAppId(profile.project, item.app)))
+    const envIds = new Set(profile.participants.map((item) => demoEnvId(profile.project, item.app, item.env)))
+    const contexts = this.prompts.filter((prompt) => !prompt.archived_at && ((prompt.namespace === 'application' && (prompt.is_shared ? prompt.key === 'order-integrity' : appIds.has(prompt.application_id ?? ''))) || (prompt.namespace === 'environment' && envIds.has(prompt.environment_id ?? ''))))
+    const application = contexts.map((prompt) => `=== ${prompt.namespace.toUpperCase()} CONTEXT: ${prompt.description ?? prompt.key} ===\n${prompt.content}`).join('\n\n')
+    const system = this.prompts.find((prompt) => prompt.namespace === 'system' && prompt.is_default)?.content ?? SHARED_SYSTEM_PROMPT
+    const refs = [...contexts.map((prompt) => `${prompt.namespace}/${prompt.key}@v${prompt.active_version?.version ?? 1}`)]
+    return Object.fromEntries(PHASE_NAMES.map((phase) => {
+      const phasePrompt = this.prompts.find((prompt) => prompt.namespace === 'phase' && prompt.key === `${phase}/system`)
+      const user = active(this.prompts.find((prompt) => prompt.namespace === 'phase' && prompt.key === `${phase}/user`)?.id ?? '')?.content ?? 'Title: {title}\nRequest: {request}'
+      return [phase, {
+        system: `${system}\n${phasePrompt?.content ?? ''}`.replace(/\n\s*\n/g, '\n').trim(),
+        phase_prompt: user.replace('{title}', title).replace('{request}', request),
+        application,
+        additional_context: `${profile.contextPacket.title}: ${profile.contextPacket.summary}`,
+        source: { origin: 'catalog', ref: [`phase/${phase}/system@v${phasePrompt?.active_version?.version ?? 1}`, ...refs].join(',') },
+        updated_at: isoMinutesAgo(PHASE_WINDOWS[phase][0] + 2, this.activationTime),
+        updated_by: 'system',
+      }]
+    })) as PipelineState['prompt_reviews']
   }
 
   private freezePromptSelections(body: StartPipelineRequest, configurable: Record<string, unknown>): PipelineState['prompt_reviews'] | undefined {
@@ -2300,29 +2377,24 @@ export class DevDataStore {
   }
 
   private makeLogs(): LogEntry[] {
-    const services = ['acc-web', 'mulesoft-add-line-api', 'mq-fulfillment-consumer', 'mulesoft-esb', 'apim-gateway', 'bsse-account-api', 'apex-worker']
-    return Array.from({ length: 40 }, (_, index) => {
-      const mqIncident = index >= 4 && index <= 9
-      const omsIncident = index >= 10 && index <= 15
-      return {
-        at: isoMinutesAgo(2 + index * 3, this.activationTime),
-        level: mqIncident ? 'WARN' : omsIncident ? 'ERROR' : index % 7 === 0 ? 'DEBUG' : 'INFO',
-        service: services[index % services.length]!,
-        message: mqIncident
-          ? `IBM MQ fulfillment depth ${4_200 + index * 920}; ramp hold checkpoint`
-          : omsIncident
-            ? `BSSe create-order p95 ${3_100 + index * 55}ms exceeded 3000ms SLA`
-            : `telecom demo checkpoint ${index + 1} correlated successfully`,
-        fields: { thread_id: index < 20 ? 'run-conditional' : 'run-active', checkpoint: index + 1 },
-      }
-    })
+    const entry = (index: number): Omit<LogEntry, 'at'> => {
+      const correlation = `acc-${(48_200 + index * 37).toString(16)}`
+      if (index < 4) return { level: 'INFO', service: ['acc-web', 'mule-add-line-api', 'idp-order-orchestrator', 'bsse-order-api'][index]!, message: `POST /add-line correlated end to end x-correlation-id=${correlation} status=201`, fields: { thread_id: 'run-active', environment: 'PERFHYPER2', correlation_id: correlation } }
+      if (index < 10) return { level: 'WARN', service: 'idp-fulfillment-consumer', message: `IBM MQ queue IDP.FULFILLMENT.Q depth=${4_200 + index * 1_920} oldest_msg_age_s=${index * 14} consumers=2/4; ramp hold checkpoint`, fields: { thread_id: 'run-active', environment: 'PERFHYPER2', queue: 'IDP.FULFILLMENT.Q' } }
+      if (index < 16) return { level: 'ERROR', service: index % 2 ? 'idp-order-orchestrator' : 'bsse-order-api', message: index % 2 ? `BSSe create-order call exceeded client timeout 3000ms (attempt 1 of 2) orderId=SYN-ORD-${71_000 + index}` : `create-order p95=${3_100 + index * 55}ms over 60s window exceeds 3000ms gate; db lock_wait_ms p95=${410 + index * 12}`, fields: { thread_id: 'run-active', environment: index % 2 ? 'PERFHYPER2' : 'PERF BSSe' } }
+      if (index < 20) return { level: index === 16 ? 'DEBUG' : 'INFO', service: ['acc-web', 'mule-add-line-api', 'crm-interaction-writer', 'apex-worker'][index - 16]!, message: ['HPA scaled acc-web 6 -> 8 replicas (cpu 78%)', 'API Manager policy add-line-rate-limit: 0 throttled requests in last 60s', 'interaction-note write lag 1.2s (async, non-blocking)', 'APEX Load step 300 sessions reached; steady state started'][index - 16]!, fields: { thread_id: 'run-active', environment: 'PERFHYPER2' } }
+      if (index < 30) return { level: index >= 24 ? 'ERROR' : 'WARN', service: ['tlg-transaction-monitor', 'tlg-db2', 'csi-order-services', 'tlg-batch-driver'][index % 4]!, message: index === 23 ? 'T5 batch job USAGE-RATE-NIGHTLY started against PERF TLG (unscheduled window)' : index >= 24 ? `CSI submitOrder SOAP fault rate ${(5.2 + (index - 24) * 0.4).toFixed(1)}%: TLG service-order commit timeout` : `PERF TLG lock wait avg ${(1.1 + (index - 20) * 0.9).toFixed(1)}s, transaction monitor queue depth ${180 + index * 35}`, fields: { thread_id: 'run-aborted', environment: index % 4 === 2 ? 'T3' : 'PERF TLG' } }
+      return { level: index >= 34 && index <= 36 ? 'WARN' : 'INFO', service: ['mule-account-exp-api', 'idp-order-orchestrator', 'bsse-account-api', 'bsse-rating-engine'][index % 4]!, message: index >= 34 && index <= 36 ? `catalog lookup offer=UNL-PREMIUM p95=${1_180 + (index - 34) * 80}ms over 800ms gate (PERF BSSe shared with PERFHYPER1 window)` : `plan-change to UNL-PREMIUM accepted orderId=SYN-NPI-${9_100 + index} promo=LAUNCH25`, fields: { thread_id: 'run-conditional', environment: index % 4 >= 2 ? 'PERF BSSe' : 'PERFHYPER3' } }
+    }
+    return Array.from({ length: 40 }, (_, index) => ({ at: isoMinutesAgo(2 + index * 3, this.activationTime), ...entry(index), fields: { ...entry(index).fields, checkpoint: index + 1 } }))
   }
 
   private makeAssistants(created: string, updated: string): Assistant[] {
     return [
-      this.assistant('pipeline', 'pipeline', 'Telecom system default', 'All seven phases with deterministic offline agents.', { project_id: 'telecom-modernization' }, { created_by: 'Demo Curator' }, 1, created, updated),
-      this.assistant('asst-release', 'pipeline', 'ACC add-a-line Release Certification', 'Full gated release-candidate certification profile.', { project_id: 'telecom-modernization', app_id: 'app-digital-device', environment_id: 'env-perf', engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
-      this.assistant('asst-fast', 'pipeline', 'Telecom Fast Smoke', 'Short story, execution, and reporting path.', { project_id: 'telecom-modernization', phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'Demo Curator' }, 2, created, updated),
+      this.assistant('pipeline', 'pipeline', 'Performance CoE default', 'All seven phases with deterministic offline agents.', { project_id: TELECOM_PROJECT_ID }, { created_by: 'Demo Curator' }, 1, created, updated),
+      this.assistant('asst-release', 'pipeline', 'ACC add-a-line Release Certification', 'Full gated release-candidate certification on PERFHYPER2 (ACC Perf).', { project_id: TELECOM_PROJECT_ID, app_id: FLAGSHIP_APP_ID, environment_id: FLAGSHIP_ENV_ID, engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
+      this.assistant('asst-legacy-cert', 'pipeline', 'OPUS T4 Store-Peak Certification', 'Gated certification of OPUS to TLG journeys on T4 with an exclusive PERF TLG window (Legacy Perf).', { project_id: 'legacy-perf', app_id: demoAppId('legacy-perf', 'opus'), environment_id: demoEnvId('legacy-perf', 'opus', 't4'), engine: 'apexload' }, { created_by: 'Demo Curator' }, 2, created, updated),
+      this.assistant('asst-fast', 'pipeline', 'PERFHYPER Fast Smoke', 'Story analysis, execution, and reporting only, for a quick post-deploy smoke check.', { project_id: TELECOM_PROJECT_ID, phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'Demo Curator' }, 2, created, updated),
     ]
   }
 
@@ -2331,38 +2403,28 @@ export class DevDataStore {
   }
 
   private seedPipelines(): void {
-    const rows: Array<[string, string, string, 'busy' | 'interrupted' | 'idle' | 'error', PhaseName, 'prompt' | 'phase' | null]> = [
-      ['run-active', 'ACC add-a-line active ramp', 'telecom-modernization', 'busy', 'execution', null],
-      ['run-prompt-review', 'PI 26.3 workload prompt review', 'telecom-modernization', 'interrupted', 'test_planning', 'prompt'],
-      ['run-report-review', 'ACC add-a-line release approval', 'telecom-modernization', 'interrupted', 'reporting', 'phase'],
-      ['run-baseline-a', 'ACC add-a-line baseline 26.2.1', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-baseline-b', 'ACC add-a-line baseline 26.2.2', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-conditional', 'BSSe and MQ release rehearsal', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-aborted', 'Shared environment contention rehearsal', 'telecom-modernization', 'error', 'execution', null],
-      ['run-engine-recovery', 'APEX Load provisioning recovery', 'telecom-modernization', 'interrupted', 'execution', null],
+    const rows: Array<[string, string, DemoRunProfile['key'], 'busy' | 'interrupted' | 'idle' | 'error', PhaseName, 'prompt' | 'phase' | null]> = [
+      ['run-active', 'ACC add-a-line active ramp — PERFHYPER2', 'acc-flagship', 'busy', 'execution', null],
+      ['run-prompt-review', 'OPUS upgrade orders PI 26.4 — T4 workload review', 'legacy-opus', 'interrupted', 'test_planning', 'prompt'],
+      ['run-report-review', 'ACC add-a-line release approval — PERFHYPER2', 'acc-flagship', 'interrupted', 'reporting', 'phase'],
+      ['run-baseline-a', 'ACC add-a-line baseline 26.2.1 — PERFHYPER2', 'acc-baseline', 'idle', 'postmortem', null],
+      ['run-baseline-b', 'ACC add-a-line baseline 26.2.2 — PERFHYPER2', 'acc-baseline', 'idle', 'postmortem', null],
+      ['run-conditional', 'NPI Unlimited Premium launch rehearsal — PERFHYPER3', 'npi-launch', 'idle', 'postmortem', null],
+      ['run-aborted', 'HRP holiday peak — OPUS on T3 vs shared PERF TLG', 'hrp-contention', 'error', 'execution', null],
+      ['run-engine-recovery', 'Digital Perf Mule order-status soak — PERFHYPER1', 'digital-soak', 'interrupted', 'execution', null],
     ]
-    for (const [id, title, project, status, phase, gate] of rows) {
-      const detail = this.pipelineDetail(id, title, project, status, phase)
+    for (const [id, title, profileKey, status, phase, gate] of rows) {
+      const detail = this.pipelineDetail(id, title, undefined, status, phase, profileKey)
       const state = detail.values as PipelineState
-      if (id === 'run-baseline-a' || id === 'run-baseline-b') {
-        const result = state.phase_results?.execution
-        if (result?.test_summary) {
-          result.test_summary.passed = true
-          result.test_summary.kpis = { tps_avg: id === 'run-baseline-a' ? 81.2 : 82.4, p95_ms: id === 'run-baseline-a' ? 2410 : 2520, error_rate: id === 'run-baseline-a' ? 0.006 : 0.007, vusers_peak: 300 }
-          result.test_summary.sla_breaches = []
-          result.test_summary.notes = 'Comparable ACC add-a-line baseline passed all release thresholds.'
-        }
+      if (id === 'run-baseline-b') {
+        const summary = state.phase_results?.execution?.test_summary
+        if (summary) summary.kpis = { tps_avg: 82.4, p95_ms: 2_520, error_rate: 0.007, vusers_peak: 300 }
       }
-      if (status === 'idle' && state.phase_results) state.phase_results.postmortem = { status: 'succeeded', attempt: 1, summary: 'Test review completed. See execution results and reports for release risks.' }
-      if (id === 'run-aborted') {
-        state.run_aborted = true
-        state.phase_results!.reporting = { phase: 'reporting', status: 'pending' }
-        state.phase_results!.postmortem = { phase: 'postmortem', status: 'pending' }
-      }
+      if (id === 'run-aborted') state.run_aborted = true
       if (gate === 'prompt') this.addPromptGate(detail)
       if (gate === 'phase') this.addPhaseGate(detail)
       if (id === 'run-engine-recovery') this.addEngineRetryGate(detail)
-      this.pipelineDetails.set(id, detail)
+      this.pipelineDetails.set(id, this.syncSummary(detail))
       this.runs.set(id, [
         {
           run_id: `${id}-active`,
@@ -2428,31 +2490,33 @@ export class DevDataStore {
     detail.values = state as Record<string, unknown>
   }
 
-  private pipelineDetail(id: string, title: string, projectId: string | undefined, status: 'busy' | 'interrupted' | 'idle' | 'error', phase: PhaseName): PipelineDetail {
-    const state = makePipelineState(title, phase, status, this.activationTime)
-    return {
+  private pipelineDetail(id: string, title: string, projectId: string | undefined, status: 'busy' | 'interrupted' | 'idle' | 'error', phase: PhaseName, profileKey: DemoRunProfile['key'] = 'acc-flagship'): PipelineDetail {
+    const profile = DEMO_RUN_PROFILES[profileKey]
+    const request = profile.request || ACC_DEMO_CONTEXT
+    const state = makePipelineState(title, phase, status, this.activationTime, profile, this.seededPromptReviews(profile, title, request))
+    const primary = profile.participants.find((item) => item.id === profile.primary)!
+    const detail: PipelineDetail = {
       thread_id: id,
       title,
-      project_id: projectId ?? 'telecom-modernization',
-      app_id: 'app-digital-device',
+      project_id: projectId ?? profile.project,
+      app_id: demoAppId(profile.project, primary.app),
       thread_status: status,
       current_phase: phase,
-      phase_strip: makeStrip({
-        story_analysis: { status: 'succeeded', attempt: 1 },
-        test_planning: { status: phase === 'test_planning' && status === 'interrupted' ? 'awaiting_prompt_review' : 'succeeded', attempt: 1 },
-        env_triage: { status: 'succeeded', attempt: 1 },
-        script_scenario: { status: 'succeeded', attempt: 1 },
-        execution: { status: status === 'busy' ? 'running' : status === 'error' ? 'failed' : 'succeeded', attempt: status === 'error' ? 2 : 1 },
-        reporting: { status: phase === 'reporting' && status === 'interrupted' ? 'awaiting_output_review' : status === 'busy' ? 'pending' : 'succeeded', attempt: status === 'busy' ? null : 1 },
-        postmortem: { status: status === 'error' ? 'running' : status === 'idle' ? 'succeeded' : 'pending', attempt: status === 'error' || status === 'idle' ? 1 : null },
-      }),
-      engine: { engine: 'apexload', external_run_id: `AL-${id.toUpperCase()}` },
+      phase_strip: makeStrip(),
+      engine: { engine: 'apexload', external_run_id: state.engine_handle?.external_run_id ?? `AL-${id.toUpperCase()}` },
       created_at: isoMinutesAgo(180, this.activationTime),
       updated_at: status === 'interrupted' ? isoMinutesAgo(24, this.activationTime) : isoMinutesAgo(status === 'busy' ? 2 : 45, this.activationTime),
       pending_gate: null,
-      values: state as Record<string, unknown>,
+      test_scope: demoTestScope(profile) as unknown as Record<string, unknown>,
+      values: { ...state, demo_profile: profileKey, run_config: { test_scope: demoTestScope(profile), project_id: profile.project, app_id: demoAppId(profile.project, primary.app), environment_id: profile.traffic ? demoEnvIdFor(profile, profile.traffic) : null, engine: 'apexload' } } as Record<string, unknown>,
       interrupts: [],
     }
+    return this.syncSummary(detail)
+  }
+
+  private profileOf(detail: PipelineDetail): DemoRunProfile {
+    const key = detail.values?.['demo_profile'] as DemoRunProfile['key'] | undefined
+    return DEMO_RUN_PROFILES[key && key in DEMO_RUN_PROFILES ? key : 'acc-flagship']
   }
 
   private addPromptGate(detail: PipelineDetail, revised = false): void {
@@ -2469,13 +2533,14 @@ export class DevDataStore {
           kind: 'prompt_review',
           phase: 'test_planning',
           prompt: selectedReview?.system_locked ? { ...selectedReview, user: selectedReview.phase_prompt } : {
-            system: 'You are the test planning phase operator.',
+            system: selectedReview?.system ?? 'You are the APEX test_planning agent.',
             user: revised
-              ? ACC_DEMO_TEST_PLAN + '\nReview emphasis: eligibility rejection and delayed activation.'
-              : ACC_DEMO_TEST_PLAN,
-            source: { origin: revised ? 'run_override' : 'catalog', ref: 'phase/test_planning/system@v2' },
+              ? this.testPlanFor(detail) + '\nReview emphasis: eligibility rejection and delayed activation.'
+              : this.testPlanFor(detail),
+            application: selectedReview?.application ?? null,
+            source: { origin: revised ? 'run_override' : 'catalog', ref: selectedReview?.source?.ref ?? 'phase/test_planning/system@v2' },
           },
-          context_packets: [{ id: 'ctx-1', source: 'jira_align', title: 'story:9012 acceptance criteria', summary: 'employee add-a-line, resilient BSSe fulfillment, and retry behavior under load.' }],
+          context_packets: [{ id: 'ctx-1', ...this.profileOf(detail).contextPacket }],
           tools: ['jira_align.query', 'documents.search'],
           editable: true,
           actions: ['approve', 'modify', 'skip_phase', 'abort'],
@@ -2484,13 +2549,28 @@ export class DevDataStore {
     ]
   }
 
+  private testPlanFor(detail: PipelineDetail): string {
+    const profile = this.profileOf(detail)
+    if (profile.key === 'acc-flagship') return ACC_DEMO_TEST_PLAN
+    const scopeLine = profile.participants.map((item) => `${DEMO_APPS[item.app].name} (${DEMO_ENVIRONMENTS[item.env].name}, ${DEMO_APPS[item.app].layer === 'middle' ? 'middle tier' : DEMO_APPS[item.app].layer}${item.id === profile.primary ? ', primary' : ''}${item.id === profile.traffic ? ', traffic entry' : ''})`).join(' > ')
+    return `# ${detail.title ?? 'Performance test plan'}\n\n${profile.request}\n\n## Topology\n${scopeLine}\n\n## Scenarios\n${profile.stories}\n\n## Workload and acceptance\n${profile.plan}${profile.planWarnings.length ? `\n\n## Open items\n${profile.planWarnings.map((item) => `- ${item}`).join('\n')}` : ''}`
+  }
+
   private addPhaseGate(detail: PipelineDetail, phase: PhaseName = 'reporting', revised = false): void {
     const interruptId = this.id(`int-${phase}`)
-    const envSummary = revised
-      ? 'PERFHYPER2 rescan is green: mulesoft-add-line-api now targets the PERFHYPER2 service endpoint and four IBM MQ consumers are available.'
-      : 'Environment triage found mulesoft-add-line-api targeting a non-PERFHYPER2 BSSe test endpoint and only two IBM MQ consumers instead of four.'
-    const executionSummary = 'Execution completed successfully. BSSe create-order p95 was 3,650ms against a 3,000ms SLA; IBM MQ depth peaked at 18,420 while AKS HPA scaled from four to eight pods.'
-    const reportSummary = 'Executive and technical reports are ready. Release certification is conditional, and Jira Cloud defect PERF-248 will be created on approval.'
+    const profile = this.profileOf(detail)
+    const flagship = profile.key === 'acc-flagship'
+    const envSummary = !flagship
+      ? profile.envSummary
+      : revised
+        ? 'PERFHYPER2 rescan is green: mule-add-line-api now targets idp.perfhyper2 and four IDP fulfillment MQ consumers are running.'
+        : 'Environment triage found mule-add-line-api on PERFHYPER2 routing to a non-PERFHYPER2 IDP endpoint (idp.perfhyper3) and only two of four IDP fulfillment MQ consumers running.'
+    const executionSummary = flagship
+      ? 'Execution completed successfully. BSSe create-order p95 was 3,650ms against a 3,000ms SLA; IDP MQ depth peaked at 18,420 while ACC HPA scaled from four to eight pods on PERFHYPER2.'
+      : profile.executionSummary
+    const reportSummary = flagship
+      ? 'Executive and technical reports are ready. The release candidate is not certified on PERFHYPER2: ACC submit p95 failed its gate, attributed mainly to BSSe create-order. Jira Cloud defect PERF-248 will be created on approval.'
+      : profile.reporting
     const genericSummary = `The offline ${phase.replaceAll('_', ' ')} rerun completed and is ready for operator review.`
     const summary = phase === 'env_triage'
       ? envSummary
@@ -2511,15 +2591,17 @@ export class DevDataStore {
           phase,
           summary,
           evidence: (detail.values?.['phase_results'] as Record<string, unknown> | undefined)?.[phase],
-          result_preview: { summary, reasoning_digest: phase === 'env_triage' ? (revised ? 'Configuration correction and rescan passed.' : 'BSSe target and MQ consumer count require correction.') : 'Orchestration succeeded; the BSSe SLA is the release risk.' },
+          result_preview: { summary, reasoning_digest: !flagship ? `${profile.contextPacket.title}: ${profile.contextPacket.summary}` : phase === 'env_triage' ? (revised ? 'Mule target correction and IDP consumer scale-up verified by rescan.' : 'Mule IDP target and IDP MQ consumer count require correction before load.') : 'Orchestration succeeded; BSSe create-order latency is the release risk.' },
           artifacts: [{ id: phase === 'reporting' ? 'executive-report' : 'exec-report', kind: 'report', name: phase === 'reporting' ? 'ACC add-a-line-executive-report.md' : `${phase}-result.json` }],
           warnings: revised
             ? []
-            : phase === 'env_triage'
-              ? ['non-PERFHYPER2 BSSe test target detected.', 'Only two of four MQ consumers are active.']
-              : phase === 'execution' || phase === 'reporting'
-                ? ['BSSe p95 exceeds the 3,000ms release SLA.']
-                : [],
+            : !flagship
+              ? phase === 'env_triage' ? profile.envWarnings : phase === 'execution' ? profile.executionWarnings : []
+              : phase === 'env_triage'
+                ? ['Mule targets a non-PERFHYPER2 IDP endpoint.', 'Only two of four IDP fulfillment MQ consumers are active.']
+                : phase === 'execution' || phase === 'reporting'
+                  ? ['ACC submit p95 exceeds the 3,000ms release gate; BSSe create-order is the dominant contributor.']
+                  : [],
           dialogue_tail: (detail.values?.['dialogue'] as unknown[]) ?? [],
           actions: ['approve', 'revise', 'discuss', 'abort'],
         },
@@ -2549,14 +2631,14 @@ export class DevDataStore {
     }
     const ticket: WorkItem = {
       key: ticketKey,
-      title: '[Perf] BSSe p95 exceeds SLA during ACC add-a-line peak certification',
+      title: '[Perf] BSSe create-order drives ACC add-a-line submit p95 over gate on PERFHYPER2',
       kind: 'bug',
       status: 'Open',
-      description: 'BSSe create-order p95 reached 3,650ms against the 3,000ms SLA. IBM MQ fulfillment depth peaked at 18,420 while AKS HPA scaled from four to eight pods. Orchestration completed successfully.',
+      description: 'ACC add-a-line submit p95 reached 3,650ms against the 3,000ms gate at 300 sessions on PERFHYPER2 (ACC > Mule > IDP > PERF BSSe). BSSe create-order contributed 2,980ms of the p95. IDP fulfillment MQ depth peaked at 18,420 and ACC HPA scaled from four to eight pods. Orchestration completed successfully; no duplicate orders or charges.',
       url: 'https://jira.example.test/browse/PERF-248',
       priority: 'Highest',
       severity: 'High',
-      labels: ['perf-test', 'acc', 'add-line', 'bsse', 'release-blocker'],
+      labels: ['perf-test', 'acc-perf', 'perfhyper2', 'bsse', 'release-blocker'],
       linked_keys: ['feature:583', 'story:9012'],
     }
     this.workItems.unshift(ticket)
@@ -2601,46 +2683,65 @@ export class DevDataStore {
 
   private seedArtifacts(): void {
     const rows: Array<[string, string, string, string]> = [
-      ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apexload', orchestration_status: 'succeeded', release_result: 'conditional_fail', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 } }, null, 2)],
-      ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned\nStepped ramp started\nRamp held for MQ backlog\nAKS HPA scaled 4 -> 8\nBSSe SLA finding recorded\n'],
-      ['story-hierarchy', 'jira-align-hierarchy.json', 'application/json', JSON.stringify({ epic: 'epic:310', capability: 'capability:420', feature: 'feature:583', story: 'story:9012' }, null, 2)],
-      ['scope-analysis', 'story-analysis.md', 'text/markdown', ACC_DEMO_CONTEXT],
+      ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apexload', project: 'ACC Perf', environment: 'PERFHYPER2', orchestration_status: 'succeeded', release_result: 'not_certified', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 }, tiers: { acc_p95_ms: 410, mule_p95_ms: 160, idp_p95_ms: 100, bsse_create_order_p95_ms: 2980 } }, null, 2)],
+      ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned 3 generators (pool perfhyper-acc)\nSmoke: 1 session, 7/7 transactions passed\nStep 100 sessions: submit p95 680ms\nStep 200 sessions: submit p95 1,820ms; IDP MQ depth 8,400\nRamp held: IDP.FULFILLMENT.Q depth 12,100 > 10,000\nResumed after drain to 1,900\nStep 300 sessions: submit p95 3,650ms; ACC HPA 4 -> 8\nBSSe create-order gate breach recorded\nDrain complete; 0 duplicate orders, 0 duplicate charges\n'],
+      ['story-hierarchy', 'jira-align-hierarchy.json', 'application/json', JSON.stringify({ epic: 'epic:310', capability: 'capability:420', feature: 'feature:583', stories: ['story:9012', 'story:9013'] }, null, 2)],
+      ['scope-analysis', 'story-analysis.md', 'text/markdown', `# Story analysis — ACC add-a-line (ACC Perf)\n\n${DEMO_RUN_PROFILES['acc-flagship'].stories}\n\n${ACC_DEMO_CONTEXT}`],
       ['test-plan', 'test-plan.md', 'text/markdown', ACC_DEMO_TEST_PLAN],
-      ['traffic-profile', 'traffic-profile.csv', 'text/csv', 'minute,vusers,target_tps\n0,0,0\n5,100,30\n10,200,60\n15,300,85\n'],
-      ['env-scan-before', 'environment-before.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'bsse-other-test.example.test', mq_consumers: 2, status: 'warning' }, null, 2)],
-      ['env-scan-after', 'environment-after.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'bsse.perfhyper2.example.test', mq_consumers: 4, status: 'green' }, null, 2)],
-      ['config-diff', 'perf-configuration.diff', 'text/plain', '- BSSE_BASE_URL=https://bsse-other-test.example.test\n+ BSSE_BASE_URL=https://bsse.perfhyper2.example.test\n- MQ_CONSUMERS=2\n+ MQ_CONSUMERS=4\n'],
-      ['jmeter-script', 'acc-add-line.jmx', 'application/xml', '<jmeterTestPlan version="1.2"><hashTree><TestPlan testname="ACC Add-a-Line"/><HeaderManager testname="Correlation and idempotency"/></hashTree></jmeterTestPlan>'],
-      ['vugen-script', 'acc_add_line.c', 'text/x-c', 'Action(){ web_reg_save_param_json("ParamName=orderId", "QueryString=$.orderId", LAST); web_custom_request("add-line", "URL=https://acc.perfhyper2.example.test/add-line", LAST); return 0; }'],
-      ['jmeter-validation', 'jmeter-validation.json', 'application/json', JSON.stringify({ valid: true, checks: ['correlation', 'synthetic-data', 'stepped-ramp', 'sla-assertions'] }, null, 2)],
-      ['vugen-validation', 'vugen-validation.json', 'application/json', JSON.stringify({ valid: true, correlations: ['orderId', 'activationId'], transactions: 6 }, null, 2)],
+      ['traffic-profile', 'traffic-profile.csv', 'text/csv', 'minute,sessions,target_api_tps\n0,0,0\n5,100,30\n15,200,60\n25,300,85\n'],
+      ['env-scan-before', 'environment-before.json', 'application/json', JSON.stringify({ environment: 'PERFHYPER2', mule_idp_target: 'https://idp.perfhyper3.perf.example.test', idp_fulfillment_consumers: 2, status: 'warning' }, null, 2)],
+      ['env-scan-after', 'environment-after.json', 'application/json', JSON.stringify({ environment: 'PERFHYPER2', mule_idp_target: 'https://idp.perfhyper2.perf.example.test', idp_fulfillment_consumers: 4, status: 'green' }, null, 2)],
+      ['config-diff', 'perfhyper2-configuration.diff', 'text/plain', '--- mule-add-line-api (PERFHYPER2)\n- IDP_BASE_URL=https://idp.perfhyper3.perf.example.test\n+ IDP_BASE_URL=https://idp.perfhyper2.perf.example.test\n--- idp-fulfillment-consumer (PERFHYPER2)\n- replicas: 2\n+ replicas: 4\n'],
+      ['jmeter-script', 'acc-add-line.jmx', 'application/xml', '<jmeterTestPlan version="1.2"><hashTree><TestPlan testname="ACC Add-a-Line — PERFHYPER2"/><hashTree><HeaderManager testname="x-correlation-id and Idempotency-Key"/><TransactionController testname="T05_Submit_AddLine"/></hashTree></hashTree></jmeterTestPlan>'],
+      ['vugen-script', 'acc_add_line.c', 'text/x-c', 'Action(){ lr_start_transaction("T05_Submit_AddLine"); web_reg_save_param_json("ParamName=orderId", "QueryString=$.orderId", LAST); web_custom_request("add-line", "URL=https://acc.perfhyper2.perf.example.test/api/add-line", "Method=POST", LAST); lr_end_transaction("T05_Submit_AddLine", LR_AUTO); return 0; }'],
+      ['jmeter-validation', 'jmeter-validation.json', 'application/json', JSON.stringify({ valid: true, checks: { syntax: 'passed', correlation: 'passed', assertions: 'passed', provider_preflight: 'passed' }, transactions: ['T01_Login', 'T02_AccountLookup', 'T03_Eligibility', 'T04_Quote', 'T05_Submit_AddLine', 'T06_Confirm', 'T07_Status'] }, null, 2)],
+      ['vugen-validation', 'vugen-validation.json', 'application/json', JSON.stringify({ valid: true, correlations: ['quoteId', 'orderId', 'lineId'], transactions: 7 }, null, 2)],
       ['synthetic-data', 'synthetic-acc-add-line-data.csv', 'text/csv', ACC_DEMO_TEST_DATA],
-      ['provision-request', 'apex-load-provision.json', 'application/json', JSON.stringify({ scenario: 'scenario-esim-peak', generators: 3, idempotency_key: 'demo-esim-2603' }, null, 2)],
-      ['ramp-timeline', 'ramp-timeline.csv', 'text/csv', 'elapsed_s,event,mq_depth,hpa_pods\n0,provisioned,900,4\n420,ramp_hold,12100,6\n600,resume,8400,8\n1500,complete,2100,8\n'],
-      ['mq-monitoring', 'mq-monitoring.md', 'text/markdown', '# IBM MQ timeline\n\nDepth peaked at 18,420. The bounded ramp hold allowed consumers to recover without aborting orchestration.'],
-      ['hpa-monitoring', 'aks-hpa-timeline.json', 'application/json', JSON.stringify({ replicas: [{ at_s: 0, value: 4 }, { at_s: 390, value: 6 }, { at_s: 560, value: 8 }] }, null, 2)],
-      ['oms-kpis', 'oms-kpis.csv', 'text/csv', 'metric,value,sla,result\ncreate_order_p95_ms,3650,3000,fail\nerror_rate,0.028,0.02,fail\ntps_avg,84.7,80,pass\n'],
-      ['technical-report', 'ACC add-a-line-technical-report.md', 'text/markdown', '# Technical report\n\nOrchestration succeeded. BSSe latency and MQ backlog require remediation before production promotion.'],
-      ['executive-report', 'ACC add-a-line-executive-report.md', 'text/markdown', '# Executive result\n\nConditional certification: target throughput achieved; BSSe p95 exceeded the release SLA.'],
-      ['trend-comparison', 'baseline-comparison.csv', 'text/csv', 'run,p95_ms,error_rate,tps\n26.2.1,2410,0.006,81.2\n26.2.2,2520,0.007,82.4\n26.3,3650,0.028,84.7\n'],
-      ['jira-draft', 'PERF-248-draft.json', 'application/json', JSON.stringify({ project: 'PERF', type: 'Bug', links: ['feature:583', 'story:9012'], finding: 'BSSe p95 SLA breach' }, null, 2)],
+      ['provision-request', 'apex-load-provision.json', 'application/json', JSON.stringify({ scenario: 'scenario-esim-peak', connection: 'conn-apex-load', pool: 'perfhyper-acc', generators: 3, target_environment: FLAGSHIP_ENV_ID, idempotency_key: 'demo-esim-2603' }, null, 2)],
+      ['ramp-timeline', 'ramp-timeline.csv', 'text/csv', 'elapsed_s,event,idp_mq_depth,acc_hpa_pods\n0,provisioned,900,4\n420,ramp_hold,12100,6\n600,resume,1900,8\n1500,complete,2100,8\n'],
+      ['mq-monitoring', 'idp-mq-monitoring.md', 'text/markdown', '# IDP fulfillment queue (IBM MQ) — PERFHYPER2\n\nDepth peaked at 18,420 with two of four consumers running. The bounded ramp hold let consumers drain to 1,900 without aborting the run. Oldest-message age peaked at 140s.'],
+      ['hpa-monitoring', 'acc-hpa-timeline.json', 'application/json', JSON.stringify({ deployment: 'acc-web', environment: 'PERFHYPER2', replicas: [{ at_s: 0, value: 4 }, { at_s: 390, value: 6 }, { at_s: 560, value: 8 }] }, null, 2)],
+      ['oms-kpis', 'acc-add-line-kpis.csv', 'text/csv', 'metric,value,gate,result\nacc_submit_p95_ms,3650,3000,fail\nbsse_create_order_p95_ms,2980,,attribution\nerror_rate,0.028,0.02,fail\ntps_avg,84.7,80,pass\nduplicate_orders,0,0,pass\n'],
+      ['technical-report', 'ACC add-a-line-technical-report.md', 'text/markdown', '# Technical report — ACC add-a-line, PERFHYPER2\n\n| Tier | Environment | Submit p95 contribution |\n| --- | --- | --- |\n| ACC | PERFHYPER2 | 410ms |\n| Mule | PERFHYPER2 | 160ms |\n| IDP | PERFHYPER2 | 100ms |\n| BSSe | PERF BSSe | 2,980ms |\n\nBSSe create-order dominates submit latency at 300 sessions. IDP MQ backlog contributed to activation delay but not to submit latency. Orchestration completed; no duplicate orders or charges.'],
+      ['executive-report', 'ACC add-a-line-executive-report.md', 'text/markdown', '# Executive result — ACC add-a-line release candidate\n\nNot certified. Throughput target met (84.7 TPS), but submit p95 (3,650ms) and error rate (2.8%) missed their gates, driven by BSSe create-order. Retest on PERFHYPER2 after BSSe and IDP consumer remediation (PERF-248).'],
+      ['trend-comparison', 'baseline-comparison.csv', 'text/csv', 'run,environment,submit_p95_ms,error_rate,tps\n26.2.1,PERFHYPER2,2410,0.006,81.2\n26.2.2,PERFHYPER2,2520,0.007,82.4\n26.3.0-rc4,PERFHYPER2,3650,0.028,84.7\n'],
+      ['jira-draft', 'PERF-248-draft.json', 'application/json', JSON.stringify({ project: 'PERF', type: 'Bug', links: ['feature:583', 'story:9012'], environment: 'PERFHYPER2 / PERF BSSe', finding: 'BSSe create-order drives ACC submit p95 over gate' }, null, 2)],
       ['evidence-manifest', 'evidence-manifest.json', 'application/json', JSON.stringify({ packets: 12, signed: true, source_types: ['jira_align', 'observability', 'documents'] }, null, 2)],
-      ['postmortem', 'postmortem.md', 'text/markdown', '# Postmortem\n\nScale MQ consumers, tune AKS HPA stabilization, and optimize the BSSe create-order dependency path.'],
-      ['remediation-plan', 'remediation-plan.csv', 'text/csv', 'owner,action,due\nBSSe team,Optimize create-order path,PI 26.3 I3\nPlatform,Scale MQ consumers to four,Before retest\nSRE,Tune HPA stabilization,Before retest\n'],
-      ['agent-dialogue', 'agent-dialogue.txt', 'text/plain', 'Operator: Why did the queue grow?\nAgent: Only two fulfillment consumers were active; use four and a bounded ramp hold.\n'],
-      ['prompt-history', 'prompt-edit-history.json', 'application/json', JSON.stringify({ versions: 2, edit: 'Added line-limit and ineligible-account and asynchronous fulfillment coverage.' }, null, 2)],
+      ['postmortem', 'postmortem.md', 'text/markdown', `# Postmortem — ACC add-a-line, PERFHYPER2\n\n${DEMO_RUN_PROFILES['acc-flagship'].postmortem}`],
+      ['remediation-plan', 'remediation-plan.csv', 'text/csv', 'action_id,owner_role,action,verification\nA1,Environment team,Restore four IDP fulfillment consumers on PERFHYPER2,Inventory rescan shows 4/4\nA2,Performance engineering,Add same-stack Mule>IDP target check to env triage,Env triage flags a cross-stack target\nA3,BSSe team,Optimize create-order path,Create-order p95 under 2,400ms at 300 sessions\n'],
+      ['agent-dialogue', 'agent-dialogue.txt', 'text/plain', 'Operator: Why did the queue grow?\nAgent: Only two of four IDP fulfillment consumers were running on PERFHYPER2; restore four and keep the ramp hold at a depth of 10,000.\n'],
+      ['prompt-history', 'prompt-edit-history.json', 'application/json', JSON.stringify({ versions: 2, edit: 'Added line-limit and ineligible-account rejection and asynchronous IDP fulfillment coverage.' }, null, 2)],
       ['tool-calls', 'tool-calls.json', 'application/json', JSON.stringify({ calls: ['jira_align.query', 'inventory.scan', 'apex_load.start', 'jira.create'] }, null, 2)],
       ['error-recovery', 'engine-recovery.md', 'text/markdown', '# Engine recovery\n\nThe native reservation was accepted; checkpoint reconciliation reused the idempotency key and avoided duplicate execution.'],
-      ['release-decision', 'release-decision.json', 'application/json', JSON.stringify({ decision: 'conditional', blockers: ['PERF-248'], approvals: ['performance-lead'] }, null, 2)],
+      ['release-decision', 'release-decision.json', 'application/json', JSON.stringify({ decision: 'not_certified', environment: 'PERFHYPER2', blockers: ['PERF-248'], approvals: ['performance-lead'] }, null, 2)],
       ['results-archive', 'results.zip', 'application/octet-stream', 'PK\u0003\u0004offline-demo-results'],
     ]
     for (const [id, , mediaType, body] of rows) this.artifacts.set(`reports/${id}`, { mediaType, body })
-    const refs = rows.map(([id, name, mediaType]) => artifactRef(id, name, id.includes('report') ? 'report' : 'evidence', mediaType, `Offline telecom demo artifact: ${name}`))
+    const flagshipRefs = rows.map(([id, name, mediaType]) => artifactRef(id, name, id.includes('report') ? 'report' : 'evidence', mediaType, `ACC add-a-line (PERFHYPER2) artifact: ${name}`, this.activationTime))
     for (const detail of this.pipelineDetails.values()) {
       const values = detail.values as PipelineState
-      values.artifacts = refs
+      const profile = this.profileOf(detail)
+      values.artifacts = profile.key === 'acc-flagship' ? flagshipRefs : this.profileArtifacts(detail, profile)
       detail.values = values as Record<string, unknown>
     }
+  }
+
+  private profileArtifacts(detail: PipelineDetail, profile: DemoRunProfile): ReturnType<typeof artifactRef>[] {
+    const state = detail.values as PipelineState
+    const prefix = detail.thread_id
+    const rows: Array<[string, string, string, string, string]> = [
+      [`${prefix}-story-analysis`, 'story-analysis.md', 'text/markdown', 'evidence', `# Story analysis — ${detail.title}\n\n${profile.stories}`],
+      [`${prefix}-test-plan`, 'test-plan.md', 'text/markdown', 'evidence', this.testPlanFor(detail)],
+    ]
+    const execution = state.phase_results?.execution
+    if (execution?.test_summary) {
+      rows.push([`${prefix}-load-report`, 'load-report.json', 'application/json', 'report', JSON.stringify({ engine: 'apexload', project: DEMO_PROJECTS.find((item) => item.id === profile.project)?.name, environment: DEMO_ENVIRONMENTS[profile.participants.find((item) => item.id === profile.traffic)?.env ?? 'perfhyper2'].name, passed: execution.test_summary.passed, kpis: execution.test_summary.kpis, sla_breaches: execution.test_summary.sla_breaches, notes: execution.test_summary.notes }, null, 2)])
+      execution.artifact_ids = [`${prefix}-load-report`]
+      delete execution.transcript_ref
+    }
+    if (state.phase_results?.reporting?.status === 'succeeded') rows.push([`${prefix}-executive-report`, 'executive-report.md', 'text/markdown', 'report', `# Executive result — ${detail.title}\n\n${profile.reporting}\n\n## Follow-up\n${profile.postmortem}`])
+    for (const [id, , mediaType, , body] of rows) this.artifacts.set(`reports/${id}`, { mediaType, body })
+    return rows.map(([id, name, mediaType, kind]) => artifactRef(id, name, kind, mediaType, `${detail.title}: ${name}`, this.activationTime))
   }
 
   private syncSummary(detail: PipelineDetail): PipelineDetail {
