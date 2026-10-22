@@ -813,11 +813,16 @@ class PipelineReadService:
         context_packets: list[JsonDict] | None = None,
         principal_id: str | None = None,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None = None,
+        prepare_configurable: Callable[[JsonDict, JsonDict], Awaitable[None]] | None = None,
         reuse_existing_thread: bool = False,
         recovery_only: bool = False,
         request_intent: str | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
+
+        ``prepare_configurable`` adds server-owned fields (the frozen prompt
+        manifest) to a new run's configurable. In-process SDK calls bypass the
+        native run-create auth hook, so the facade must prepare them itself.
 
         Convenience entrypoint for external clients (e.g. a results-analysis dashboard):
         wraps thread-create + run-start over the loopback API so callers don't drive the
@@ -878,6 +883,18 @@ class PipelineReadService:
             run_configurable = dict(configurable)
             if run_configurable.get("rerun_phases") is not None:
                 raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
+            if run_configurable.get("prompt_manifest") is not None:
+                raise ValueError("prompt_manifest is server-owned")
+            if RUNTIME_ACTOR_ID_KEY in run_configurable:
+                raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
+            if (
+                run_configurable.get("prompt_selections") is not None
+                and prepare_configurable is None
+                and not recovery_only
+            ):
+                # The plan resolver refuses selections without a manifest. Reject
+                # here instead of starting a run that can only fail.
+                raise LaunchValidationError("prompt selections require a prepared manifest")
         if phases is not None and (
             type(phases) is not list
             or len(phases) > len(PHASE_ORDER)
@@ -1102,6 +1119,7 @@ class PipelineReadService:
                     run_configurable=run_configurable,
                     recursion_limit=recursion_limit,
                     before_run_start=before_run_start,
+                    prepare_configurable=prepare_configurable,
                     reuse_existing_thread=reuse_existing_thread,
                     recovery_only=recovery_only,
                 )
@@ -1115,6 +1133,7 @@ class PipelineReadService:
             run_configurable=run_configurable,
             recursion_limit=recursion_limit,
             before_run_start=before_run_start,
+            prepare_configurable=prepare_configurable,
             reuse_existing_thread=reuse_existing_thread,
             recovery_only=recovery_only,
         )
@@ -1133,6 +1152,7 @@ class PipelineReadService:
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None,
         reuse_existing_thread: bool,
         recovery_only: bool = False,
+        prepare_configurable: Callable[[JsonDict, JsonDict], Awaitable[None]] | None = None,
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
@@ -1217,9 +1237,15 @@ class PipelineReadService:
         if recovery_only:
             raise LaunchValidationError("No submitted legacy run; complete test_scope")
 
-        if before_run_start is not None:
+        if before_run_start is not None or prepare_configurable is not None:
             try:
-                generated_context_packets = await before_run_start(thread_id)
+                # Prepare only a run that will be submitted; an adopted replay
+                # above keeps the configuration it was created with.
+                if prepare_configurable is not None:
+                    await prepare_configurable(run_configurable, run_input)
+                generated_context_packets = (
+                    await before_run_start(thread_id) if before_run_start is not None else None
+                )
             except LaunchReadinessError:
                 # No run has been submitted. Preserve deterministic claims, but
                 # remove a fresh random thread rejected by this metadata check.

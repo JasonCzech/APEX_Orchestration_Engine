@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
 from apex.auth.handlers import ensure_thread_scope
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
@@ -105,6 +105,15 @@ PhaseParam = Annotated[NoNulStr, Path(min_length=1, max_length=64)]
 
 def _pipeline_runtime_unavailable() -> HTTPException:
     return HTTPException(status_code=502, detail="pipeline runtime unavailable")
+
+
+def _prompt_selection_error(detail: Any) -> str:
+    """Flatten a manifest-preparation 422 into one launch message naming the prompt."""
+    if isinstance(detail, list) and detail and isinstance(detail[0], dict):
+        loc = [str(part) for part in detail[0].get("loc", []) if part != "prompt_selections"]
+        message = str(detail[0].get("msg") or "Selected prompt is unavailable")
+        return f"{message} (prompt_selections.{'.'.join(loc)})" if loc else message
+    return "Selected prompts could not be prepared for this test"
 
 
 def get_pipeline_read_service(request: Request) -> PipelineReadService:
@@ -287,6 +296,8 @@ class StartPipelineRequest(BaseModel):
             raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
         if value.get("prompt_manifest") is not None:
             raise ValueError("prompt_manifest is server-owned")
+        if RUNTIME_ACTOR_ID_KEY in value:
+            raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
         return validate_json_object(value, label="pipeline configurable")
 
     @field_validator("gates")
@@ -787,6 +798,18 @@ async def create_pipeline_run(
             await require_analysis_readiness(checked)
             await require_execution_readiness(checked)
 
+    async def prepare_server_owned_config(
+        configurable: dict[str, Any], run_input: dict[str, Any]
+    ) -> None:
+        from apex.services.prompt_selections import prepare_prompt_manifest
+
+        try:
+            await prepare_prompt_manifest(configurable, identity, run_input)
+        except HTTPException as exc:
+            raise LaunchReadinessError(_prompt_selection_error(exc.detail)) from None
+        except ValueError:
+            raise LaunchReadinessError(_prompt_selection_error(None)) from None
+
     result = None
     launch_error: HTTPException | None = None
     try:
@@ -809,6 +832,7 @@ async def create_pipeline_run(
             principal_id=identity.consumer_id,
             request_intent=request_intent if body.idempotency_key else None,
             before_run_start=(check_execution_before_start),
+            prepare_configurable=prepare_server_owned_config,
         )
     except LaunchIdempotencyConflictError:
         launch_error = HTTPException(status_code=409, detail="pipeline launch conflict")
