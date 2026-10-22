@@ -17,6 +17,12 @@ export type AgentOrder =
   NonNullable<NonNullable<operations['getAgentAnalytics']['parameters']['query']>['order']>
 
 export interface AgentAnalyticsQuery {
+  view?: "mine" | "authorized"
+  app?: string
+  consumer_id?: string
+  model_id?: string
+  provider?: string
+  cost_basis?: "original" | "corrected"
   from?: string
   to?: string
   bucket?: 'day' | 'hour'
@@ -35,6 +41,7 @@ export interface AgentAnalyticsQuery {
 
 function normalizeQuery(params: AgentAnalyticsQuery): AgentAnalyticsQuery {
   return {
+    view: params.view, app: params.app, consumer_id: params.consumer_id, model_id: params.model_id, provider: params.provider, cost_basis: params.cost_basis,
     ...(params.from ? { from: params.from } : {}),
     ...(params.to ? { to: params.to } : {}),
     ...(params.bucket ? { bucket: params.bucket } : {}),

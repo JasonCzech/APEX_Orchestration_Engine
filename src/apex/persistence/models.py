@@ -14,6 +14,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -805,6 +806,131 @@ class ApexLoadNativeRun(Base):
 # ── Usage analytics (M6) ─────────────────────────────────────────────────────
 
 
+class ModelCatalogEntry(Base):
+    """Retained model identity; registry membership never grants execution access."""
+
+    __tablename__ = "model_catalog"
+    __table_args__ = (UniqueConstraint("provider", "model_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    provider: Mapped[str] = mapped_column(String(64))
+    model_key: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(255))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[str | None] = mapped_column(String(255))
+    archive_reason: Mapped[str | None] = mapped_column(String(1000))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    active_pricing_generation_id: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ModelPricingGeneration(Base):
+    __tablename__ = "model_pricing_generations"
+    __table_args__ = (UniqueConstraint("model_id", "number"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    model_id: Mapped[str] = mapped_column(ForeignKey("model_catalog.id", ondelete="RESTRICT"))
+    number: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    creator_name: Mapped[str | None] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(String(1000))
+    source: Mapped[str] = mapped_column(String(32))
+    job_id: Mapped[str | None] = mapped_column(String(32))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelPriceInterval(Base):
+    __tablename__ = "model_price_intervals"
+    __table_args__ = (
+        CheckConstraint(
+            "input >= 0 AND output >= 0 AND cache_read >= 0 AND cache_creation >= 0",
+            name="nonnegative_rates",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to > effective_from", name="positive_interval"
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    generation_id: Mapped[str] = mapped_column(
+        ForeignKey("model_pricing_generations.id", ondelete="RESTRICT"), index=True
+    )
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    input: Mapped[Decimal] = mapped_column(Numeric(18, 9))
+    output: Mapped[Decimal] = mapped_column(Numeric(18, 9))
+    cache_read: Mapped[Decimal] = mapped_column(Numeric(18, 9))
+    cache_creation: Mapped[Decimal] = mapped_column(Numeric(18, 9))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    unit: Mapped[str] = mapped_column(String(32), default="million_tokens")
+
+
+class PricingCorrectionJob(Base):
+    __tablename__ = "pricing_correction_jobs"
+    __table_args__ = (UniqueConstraint("model_id", "idempotency_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    model_id: Mapped[str] = mapped_column(ForeignKey("model_catalog.id", ondelete="RESTRICT"))
+    generation_id: Mapped[str] = mapped_column(String(32))
+    base_generation_id: Mapped[str | None] = mapped_column(String(32))
+    expected_version: Mapped[int] = mapped_column(Integer)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    actor_id: Mapped[str] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(String(1000))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(32))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    progress_cursor: Mapped[str | None] = mapped_column(String(32))
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    preview_totals: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    final_totals: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UsageCostAdjustment(Base):
+    __tablename__ = "usage_cost_adjustments"
+    __table_args__ = (UniqueConstraint("event_id", "generation_id"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_events.id", ondelete="RESTRICT"), index=True
+    )
+    generation_id: Mapped[str] = mapped_column(
+        ForeignKey("model_pricing_generations.id", ondelete="RESTRICT")
+    )
+    interval_id: Mapped[str] = mapped_column(
+        ForeignKey("model_price_intervals.id", ondelete="RESTRICT")
+    )
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("pricing_correction_jobs.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelAdminAction(Base):
+    """Transactional, retained administrative history and idempotency receipt."""
+
+    __tablename__ = "model_admin_actions"
+    __table_args__ = (UniqueConstraint("model_id", "idempotency_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    model_id: Mapped[str] = mapped_column(ForeignKey("model_catalog.id", ondelete="RESTRICT"))
+    actor_id: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(1000))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UsageEvent(Base):
     """One usage-analytics event: a /v1 request or a graph phase terminal status.
 
@@ -817,11 +943,18 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
     __table_args__ = (
         UniqueConstraint("event_key"),
+        Index("ix_usageevent_consumer_at", "consumer_id", "at"),
+        Index("ix_usageevent_scope_consumer_at", "project_id", "app_id", "consumer_id", "at"),
+        Index("ix_usageevent_at_id", "at", "id"),
         Index("ix_usage_events_project_id_at", "project_id", "at"),
         Index("ix_usage_events_project_app_at", "project_id", "app_id", "at"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    consumer_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     event_key: Mapped[str | None] = mapped_column(String(512))
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
@@ -847,6 +980,10 @@ class AgentEvent(Base):
     __tablename__ = "agent_events"
     __table_args__ = (
         UniqueConstraint("event_key"),
+        Index("ix_agentevent_consumer_at", "consumer_id", "at"),
+        Index("ix_agentevent_scope_consumer_at", "project_id", "app_id", "consumer_id", "at"),
+        Index("ix_agentevent_at_id", "at", "id"),
+        Index("ix_agentevent_model_catalog_at", "model_catalog_id", "at"),
         Index("ix_agent_events_project_id_at", "project_id", "at"),
         Index("ix_agent_events_project_app_at", "project_id", "app_id", "at"),
         Index("ix_agent_events_phase_at", "phase", "at"),
@@ -855,6 +992,17 @@ class AgentEvent(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    consumer_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    model_catalog_id: Mapped[str | None] = mapped_column(
+        ForeignKey("model_catalog.id", ondelete="RESTRICT"), index=True
+    )
+    consumer_name_snapshot: Mapped[str | None] = mapped_column(String(255))
+    pricing_interval_id: Mapped[str | None] = mapped_column(
+        ForeignKey("model_price_intervals.id", ondelete="RESTRICT")
+    )
     event_key: Mapped[str | None] = mapped_column(String(512))
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
@@ -874,7 +1022,7 @@ class AgentEvent(Base):
     cache_read_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     cache_creation_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     reasoning_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
-    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
 
@@ -1051,5 +1199,18 @@ class CycleProviderScriptImport(Base):
     source_checksum: Mapped[str] = mapped_column(String(64))
     imported_by: Mapped[str] = mapped_column(String(255))
     imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ModelRunAdmission(Base):
+    """Server-owned resolved model choices for continuing an admitted thread."""
+
+    __tablename__ = "model_run_admissions"
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    models_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    models: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
+    actor_id: Mapped[str] = mapped_column(String(255))
+    admitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

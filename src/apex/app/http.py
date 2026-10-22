@@ -41,9 +41,11 @@ from apex.routers.drafts import router as drafts_router
 from apex.routers.engines import router as engines_router
 from apex.routers.inventory import router as inventory_router
 from apex.routers.logs import router as logs_router
+from apex.routers.model_pricing import router as model_pricing_router
 from apex.routers.pipelines import router as pipelines_router
 from apex.routers.prompts import router as prompts_router
 from apex.routers.system import router as system_router
+from apex.routers.usage_history import router as usage_history_router
 from apex.routers.work_tracking import router as work_tracking_router
 from apex.services.usage import UsageTrackingMiddleware
 from apex.settings import get_settings
@@ -144,6 +146,8 @@ app.include_router(consumers_router, prefix="/v1")
 app.include_router(connections_router, prefix="/v1")
 app.include_router(compliance_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")
+app.include_router(model_pricing_router, prefix="/v1")
+app.include_router(usage_history_router, prefix="/v1")
 app.include_router(apex_load_index_router, prefix="/v1")
 app.include_router(apex_load_router, prefix="/v1")
 

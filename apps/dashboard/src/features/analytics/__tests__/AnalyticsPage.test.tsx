@@ -2,7 +2,7 @@ import { cloneElement, isValidElement, type ReactNode } from 'react'
 
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 
 import { DAY_MS } from '@/components/controls/timeWindow'
@@ -36,6 +36,8 @@ function renderAnalytics(search = '') {
     authState: authenticatedState(),
   })
 }
+
+beforeEach(() => { server.use(http.get('*/v1/analytics/agents/facets', () => HttpResponse.json({ applications: [], users: [], truncated: false })), http.get('*/v1/analytics/agents/events', () => HttpResponse.json({ items: [], next_cursor: null, cost_visible: true }))) })
 
 describe('AnalyticsPage', () => {
   it.each([

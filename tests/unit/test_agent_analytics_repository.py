@@ -11,12 +11,12 @@ from decimal import Decimal
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import Table, create_engine, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from apex.auth.identity import ScopeRef
-from apex.persistence.models import AgentEvent
+from apex.persistence.models import AgentEvent, Base
 from apex.services.agent_analytics import (
     MAX_ANALYTICS_KEY_CHARS,
     SERIES_KEY_CAP,
@@ -28,7 +28,7 @@ from apex.services.agent_analytics import (
     _key_string,
 )
 
-METRICS = (11, 2, 100, 40, 140, 5, 6, 7, Decimal("1.25"), 12.5, 18.75, 3, 4)
+METRICS = (11, 2, 100, 40, 140, 5, 6, 7, Decimal("1.25"), 12.5, 18.75, 3, 4, 11, 0)
 
 
 class _Rows:
@@ -98,6 +98,9 @@ async def test_aggregate_shapes_filtered_test_breakdown_and_bounded_series() -> 
 
     assert result["totals"] == {
         "events": 11,
+        "priced_events": 11,
+        "unpriced_events": 0,
+        "cost_complete": True,
         "errors": 2,
         "input_tokens": 100,
         "output_tokens": 40,
@@ -141,7 +144,7 @@ async def test_aggregate_shapes_filtered_test_breakdown_and_bounded_series() -> 
 @pytest.mark.asyncio
 async def test_date_aggregate_skips_key_prefetch_and_handles_empty_nullable_metrics() -> None:
     start = datetime(2026, 7, 1, tzinfo=UTC)
-    empty_metrics = (0, None, None, 0, 0, 0, 0, 0, None, None, float("inf"), None, 0)
+    empty_metrics = (0, None, None, 0, 0, 0, 0, 0, None, None, float("inf"), None, 0, 0, 0)
     session = _Session(
         executes=[
             [empty_metrics],
@@ -215,7 +218,7 @@ def test_latency_sample_count_uses_the_same_non_null_observations_as_average(
 ) -> None:
     engine = create_engine("sqlite://").execution_options(schema_translate_map={"apex": None})
     try:
-        cast(Table, AgentEvent.__table__).create(engine)
+        Base.metadata.create_all(engine)
         with Session(engine) as session:
             session.add_all(
                 [
@@ -256,7 +259,7 @@ async def test_bounded_series_keeps_measured_zero_before_missing_groups(
     key_query = captured.statements[-2]
     engine = create_engine("sqlite://").execution_options(schema_translate_map={"apex": None})
     try:
-        cast(Table, AgentEvent.__table__).create(engine)
+        Base.metadata.create_all(engine)
         with Session(engine) as session:
             session.add_all(
                 [
@@ -292,9 +295,8 @@ async def test_bounded_series_keeps_measured_zero_before_missing_groups(
             )
             session.flush()
             keys = list(session.scalars(key_query))
-            assert keys[:2] == (
-                ["z-zero", "z-positive"] if order == "asc" else ["z-positive", "z-zero"]
-            )
+            names = ["z-zero", "z-positive"] if order == "asc" else ["z-positive", "z-zero"]
+            assert keys[:2] == [f"legacy:0:{len(name)}:{name}" for name in names]
             assert len(keys) == SERIES_KEY_CAP
     finally:
         engine.dispose()

@@ -888,6 +888,7 @@ async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
         RUNTIME_ACTOR_ID_KEY: "c1",
+        "model_by_phase": {},
     }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
@@ -949,6 +950,7 @@ async def test_threads_create_run_stamps_single_app_scope_stateless() -> None:
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
         RUNTIME_ACTOR_ID_KEY: "c1",
+        "model_by_phase": {},
     }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
@@ -1199,6 +1201,7 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
     }
     assert config["metadata"] == {"project_id": "p1", "app_id": "a1"}
     assert config["configurable"] == {
+        "model_by_phase": {},
         "connections": {"execution_engine": "engine-a"},
         "__after_seconds__": 0,
         "__request_start_time_ms__": 1_751_234_567_890.5,
@@ -3105,3 +3108,11 @@ async def test_simulated_environment_retains_authoritative_scope_without_target_
     assert configurable.get("environment_target") is None
     assert configurable.get("environment_target_version") is None
     assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "app-a"}}
+
+
+@pytest.fixture(autouse=True)
+def model_admission_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Authorization tests isolate the pricing store; admission has DB coverage."""
+    async def admit(configurable, **kwargs):
+        return configurable.get("model_by_phase", {})
+    monkeypatch.setattr("apex.services.model_pricing.admit_models", admit)

@@ -2054,6 +2054,27 @@ async def on_threads_create_run(
     # this hook; both captured mappings need the same server-owned scalar.
     run_args = _run_arguments(payload)
     run_config = run_args.setdefault("config", {})
+    from fastapi import HTTPException
+
+    from apex.services.model_pricing import admit_models
+
+    runtime_config = run_config.setdefault("configurable", {})
+    command = run_args.get("command")
+    continuing = isinstance(command, dict) and "resume" in command and run_args.get("input") is None
+    try:
+        resolved_models = await admit_models(
+            runtime_config,
+            thread_id=str(payload["thread_id"]) if payload.get("thread_id") else None,
+            actor_id=identity.consumer_id,
+            resume=continuing,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Model availability cannot be checked; retry later") from None
+    runtime_config["model_by_phase"] = resolved_models
+    if isinstance(run_args.get("context"), dict):
+        run_args["context"]["model_by_phase"] = resolved_models
     run_config.setdefault("configurable", {})["langgraph_auth_user_id"] = identity.consumer_id
     run_config["configurable"][RUNTIME_ACTOR_ID_KEY] = identity.consumer_id
     run_context = run_args.get("context")

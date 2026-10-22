@@ -1,0 +1,41 @@
+.pricing-page { display: grid; gap: 1.25rem; }
+.pricing-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.pricing-heading h1, .pricing-heading h2 { margin: .4rem 0; }
+.pricing-heading p { margin: .5rem 0; opacity: .75; }
+.pricing-unit, .pricing-badge { display: inline-block; border: 1px solid var(--border-color, #8885); border-radius: .5rem; padding: .35rem .65rem; font-size: .8rem; text-transform: capitalize; white-space: nowrap; }
+.pricing-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; padding: 1rem; }
+.pricing-toolbar label, .pricing-dialog form > label, .pricing-rate-grid label { display: grid; gap: .5rem; font-size: .85rem; }
+.pricing-checkbox { display: flex !important; align-items: center; padding-bottom: .65rem; }
+.pricing-toolbar input, .pricing-dialog input, .pricing-dialog textarea, .pricing-dialog select { background: var(--bg-input, transparent); color: inherit; border: 1px solid var(--border-color, #8887); border-radius: .4rem; padding: .65rem; font: inherit; }
+.pricing-table-wrap { overflow-x: auto; }
+.pricing-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.pricing-table th { position: sticky; top: 0; text-align: left; background: var(--bg-secondary, #252b36); color: var(--text-primary, inherit); }
+.pricing-table td, .pricing-table th { padding: 1rem; border-bottom: 1px solid var(--border-color, #8883); vertical-align: middle; }
+.pricing-table small { display: block; margin-top: .35rem; opacity: .7; }
+.pricing-table .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pricing-pagination, .pricing-actions { display: flex; justify-content: flex-end; gap: .75rem; align-items: center; padding: 1rem; }
+.pricing-pagination span { margin-right: auto; }
+.pricing-dialog { width: min(960px, 94vw); max-height: 90vh; overflow: auto; border-radius: 1rem; padding: 1.5rem; border: 1px solid var(--border-color, #8887); background: var(--bg-primary, #18202c); color: var(--text-primary, #eef1f5); box-shadow: 0 20px 80px #0006; }
+.pricing-dialog::backdrop { background: #0008; backdrop-filter: blur(3px); }
+.pricing-tabs { display: flex; gap: .5rem; padding: 1rem 0; border-bottom: 1px solid #8884; margin-bottom: 1rem; }
+.pricing-tabs [aria-pressed=true], .pricing-toolbar [aria-pressed=true] { outline: 2px solid var(--accent, #7d9ffb); outline-offset: -2px; }
+.pricing-dialog form { display: grid; gap: 1rem; }
+.pricing-rate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.pricing-preview, .pricing-revision { border: 1px solid var(--border-color, #8885); padding: 1rem; border-radius: .65rem; margin: 1rem 0; }
+.pricing-preview button { margin: .75rem .75rem 0 0; }
+.pricing-preview dd { overflow-wrap: anywhere; margin: .25rem 0 1rem; }
+.pricing-history { padding: 1rem; margin-top: 1rem; }
+@media (max-width: 640px) { .pricing-heading { flex-direction: column; } .pricing-rate-grid { grid-template-columns: 1fr; } .pricing-dialog { padding: 1rem; } .pricing-table { min-width: 700px; } }
+
+.pricing-menu { display: inline-block; position: relative; margin-left: .6rem; }
+.pricing-menu summary { cursor: pointer; padding: .5rem; }
+.pricing-menu button { display: block; padding: .65rem; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: .4rem; white-space: nowrap; }
+.pricing-history dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.pricing-history dt { font-size: .8rem; color: var(--text-secondary); }
+
+.pricing-dialog { margin: auto; inset: 0; }
+.pricing-page .analytics-link-button, .pricing-dialog .analytics-link-button, .pricing-history .analytics-link-button { appearance: none; background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: .2em; }
+.pricing-pagination button, .pricing-preview > button { padding: .5rem .8rem; border: 1px solid var(--border); border-radius: .45rem; color: var(--text-primary); background: var(--bg-surface); font: inherit; cursor: pointer; }
+.pricing-pagination button:disabled { opacity: .45; cursor: default; }
+.pricing-toolbar [role=group] { display: flex; gap: .4rem; }
+@media (max-width: 640px) { .pricing-dialog > .pricing-heading { flex-direction: row; } }

@@ -288,6 +288,7 @@ function agentBucketStart(at: string, bucket: 'day' | 'hour'): string {
 function agentTotals(events: AgentMetricEvent[]): AgentAnalyticsTotals {
   const latencies = events.map((event) => event.latency_ms)
   return {
+    priced_events: events.length, unpriced_events: 0, cost_complete: true,
     events: events.length,
     errors: events.filter((event) => event.status === 'error').length,
     input_tokens: events.reduce((sum, event) => sum + event.input_tokens, 0),
@@ -312,6 +313,7 @@ function agentBreakdownRow(key: string, events: AgentMetricEvent[]): AgentAnalyt
   const totals = agentTotals(events)
   return {
     key,
+    priced_events: totals.priced_events, unpriced_events: totals.unpriced_events, cost_complete: totals.cost_complete,
     events: totals.events,
     errors: totals.errors,
     input_tokens: totals.input_tokens,
@@ -334,6 +336,7 @@ function agentSeriesPoint(bucketStart: string, key: string, events: AgentMetricE
   return {
     bucket_start: bucketStart,
     key,
+    priced_events: totals.priced_events, unpriced_events: totals.unpriced_events, cost_complete: totals.cost_complete,
     events: totals.events,
     errors: totals.errors,
     input_tokens: totals.input_tokens,

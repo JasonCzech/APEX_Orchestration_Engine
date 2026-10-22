@@ -129,7 +129,7 @@ async def test_runtime_readiness_rechecks_schema_redis_and_workers(
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     schema_checked = asyncio.Event()
 
@@ -175,7 +175,7 @@ async def test_runtime_readiness_coalesces_concurrent_public_probes(
         dependency_started.set()
         await release_dependency.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", validate_schema)
     probes = [asyncio.create_task(lifespan_module.check_runtime_readiness(app)) for _ in range(20)]
@@ -211,7 +211,7 @@ async def test_runtime_readiness_caches_only_opaque_dependency_failure(
         calls += 1
         raise RuntimeError(secret)
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", fail_schema)
     monkeypatch.setattr(lifespan_module, "READINESS_FAILURE_CACHE_S", 60.0)
@@ -238,7 +238,7 @@ async def test_runtime_readiness_fails_when_a_reconciler_exits(
     async def worker() -> None:
         return None
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     await asyncio.gather(*tasks)
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", _async_none)
@@ -262,6 +262,7 @@ async def test_runtime_readiness_fails_when_a_reconciler_heartbeat_is_stale(
         "artifact-upload-reconciler",
         "work-item-mutation-reconciler",
         "apex-load-native-reconciler",
+        "model-pricing-reconciler",
     )
     tasks = tuple(asyncio.create_task(worker(), name=worker_name) for worker_name in worker_names)
     app.state.reconciler_tasks = tasks
@@ -286,7 +287,7 @@ async def test_runtime_readiness_fails_when_reconciler_heartbeat_state_is_missin
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     app.state.reconciler_tasks = tasks
     app.state.reconciler_heartbeats = None
     try:
@@ -308,7 +309,7 @@ async def test_runtime_readiness_rejects_non_finite_or_non_numeric_heartbeats(
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     app.state.reconciler_heartbeats[tasks[0].get_name()] = invalid_heartbeat
     try:
@@ -334,7 +335,7 @@ async def test_runtime_readiness_does_not_trust_a_future_cache_timestamp(
         nonlocal schema_checked
         schema_checked = True
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     app.state.readiness_last_checked_at = asyncio.get_running_loop().time() + 60
     app.state.readiness_last_result = True
@@ -364,7 +365,7 @@ async def test_runtime_readiness_does_not_cache_success_when_worker_exits_mid_ch
         dependency_started.set()
         await release_dependency.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", validate_schema)
     probe = asyncio.create_task(lifespan_module.check_runtime_readiness(app))
@@ -396,7 +397,7 @@ async def test_runtime_readiness_bounds_dependency_checks(
     async def hung_schema_check() -> None:
         await asyncio.Event().wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(5))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", hung_schema_check)
     monkeypatch.setattr(lifespan_module, "READINESS_DEPENDENCY_TIMEOUT_S", 0.01)

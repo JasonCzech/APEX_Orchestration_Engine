@@ -10,7 +10,7 @@ import type { AgentOrder, AgentSort } from '@/api/hooks/useAgentAnalytics'
 export const BUCKETS = ['hour', 'day'] as const
 export type Bucket = (typeof BUCKETS)[number]
 
-export const GROUP_BYS = ['model', 'stage', 'agent', 'test', 'date'] as const
+export const GROUP_BYS = ['model', 'stage', 'agent', 'test', 'date', 'application', 'user'] as const
 export type GroupBy = (typeof GROUP_BYS)[number]
 
 export const MEASURES = ['tokens', 'cost', 'latency'] as const
@@ -23,6 +23,12 @@ export const DEFAULT_LIMIT = 20
 export const ANALYTICS_MAX_OFFSET = 10_000
 
 export interface AnalyticsFilters {
+  view?: "mine" | "authorized"
+  consumer_id?: string
+  app?: string
+  model_id?: string
+  provider?: string
+  cost_basis?: "original" | "corrected"
   from?: string
   to?: string
   bucket?: Bucket
@@ -116,6 +122,12 @@ export function parseAnalyticsFilters(params: URLSearchParams): AnalyticsFilters
   const project = params.get('project')?.trim()
   const test = params.get('test')?.trim()
   return {
+    ...(params.get("view") === "mine" || params.get("view") === "authorized" ? { view: params.get("view") as "mine" | "authorized" } : {}),
+    ...(params.get("consumer_id") ? { consumer_id: params.get("consumer_id")! } : {}),
+    ...(params.get("app") ? { app: params.get("app")! } : {}),
+    ...(params.has("provider") ? { provider: params.get("provider")! } : {}),
+    ...(params.get("model_id") ? { model_id: params.get("model_id")! } : {}),
+    ...(params.get("cost_basis") === "original" ? { cost_basis: "original" as const } : {}),
     ...(parseIso(params.get('from')) ? { from: parseIso(params.get('from')) } : {}),
     ...(parseIso(params.get('to')) ? { to: parseIso(params.get('to')) } : {}),
     ...(isBucket(bucket) ? { bucket } : {}),
@@ -139,6 +151,8 @@ export function parseAnalyticsFilters(params: URLSearchParams): AnalyticsFilters
 
 export function serializeAnalyticsFilters(filters: AnalyticsFilters): URLSearchParams {
   const params = new URLSearchParams()
+  for (const key of ["view", "consumer_id", "app", "model_id", "cost_basis"] as const) { if (filters[key]) params.set(key, filters[key]) }
+  if (filters.provider !== undefined) params.set('provider', filters.provider)
   if (filters.from) params.set('from', filters.from)
   if (filters.to) params.set('to', filters.to)
   if (filters.bucket) params.set('bucket', filters.bucket)
@@ -177,7 +191,13 @@ export function defaultSortFor(measure: Measure): AgentSort {
 
 export function hasAnalyticsFilters(filters: AnalyticsFilters): boolean {
   return Boolean(
-    filters.from ||
+    filters.view ||
+      filters.app ||
+      filters.consumer_id ||
+      filters.model_id ||
+      filters.provider !== undefined ||
+      filters.cost_basis ||
+      filters.from ||
       filters.to ||
       filters.bucket ||
       filters.project ||

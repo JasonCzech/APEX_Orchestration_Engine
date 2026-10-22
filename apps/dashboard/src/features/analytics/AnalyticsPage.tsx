@@ -1,3 +1,6 @@
+import { UsageFacetControls } from './UsageFacetControls'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { UsageHistory } from './UsageHistory'
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
@@ -90,6 +93,8 @@ function truncate(value: string, max = 24): string {
 
 function labelForGroup(group: GroupBy): string {
   return {
+    application: 'Application',
+    user: 'User',
     model: 'Model',
     stage: 'Phase',
     agent: 'Worker agent',
@@ -289,7 +294,8 @@ function AgentUsageCharts({
 }) {
   const patternPrefix = useId().replaceAll(':', '')
   const stacked = useMemo(() => measurementSeries(data.series, measure, group), [data.series, measure, group])
-  const bars = useMemo(() => rankedMeasurements(data.series, measure).slice(0, TOP_N_BARS).map(row => ({ ...row, label: truncate(row.key) })), [data.series, measure])
+  const labels = useMemo(() => new Map(data.series.map(row => [row.key, row.label ?? row.key])), [data.series])
+  const bars = useMemo(() => rankedMeasurements(data.series, measure).slice(0, TOP_N_BARS).map(row => ({ ...row, label: truncate(labels.get(row.key) ?? row.key) })), [data.series, measure, labels])
 
   if (measure === 'latency' && data.series.some(row => metricValue(row, measure) !== null && latencySamples(row) === null)) {
     return <StateCard kind="unconfigured" title="Latency aggregation unavailable" action={null} compact>
@@ -343,7 +349,7 @@ function AgentUsageCharts({
                 key={field}
                 type="monotone"
                 dataKey={field}
-                name={stacked.keys[index]}
+                name={labels.get(stacked.keys[index] ?? '') ?? stacked.keys[index]}
                 legendType="plainline"
                 stackId={measure === 'latency' ? undefined : 'agent'}
                 stroke={CHART_COLORS[index % CHART_COLORS.length]}
@@ -498,7 +504,7 @@ function AgentBreakdownTable({
   sort: AgentSort
   dir: AgentOrder
   onSort: (sort: AgentSort) => void
-  onFilter: (group: GroupBy, value: string) => void
+  onFilter: (group: GroupBy, value: string, row?: AgentAnalyticsBreakdownRow) => void
   onZoomDate: (iso: string) => void
   onPage: (page: PageSelection) => void
 }) {
@@ -566,9 +572,14 @@ function AgentBreakdownTable({
 function renderKeyCell(
   row: AgentAnalyticsBreakdownRow,
   group: GroupBy,
-  onFilter: (group: GroupBy, value: string) => void,
+  onFilter: (group: GroupBy, value: string, row?: AgentAnalyticsBreakdownRow) => void,
   onZoomDate: (iso: string) => void,
 ) {
+  if ((group === 'user' && row.key === 'unknown') ||
+      (group === 'model' && (row.key === 'unknown' || (row.model === null && !row.model_id))) ||
+      (group === 'application' && (row.project_id === null || row.app_id === null))) {
+    return <span>{row.label ?? 'Unattributed'}</span>
+  }
   if (group === 'test') {
     return <Link to={`/runs/${row.thread_id ?? row.key}`}>{row.key}</Link>
   }
@@ -580,17 +591,22 @@ function renderKeyCell(
     )
   }
   return (
-    <button type="button" className="analytics-link-button" onClick={() => onFilter(group, row.key)}>
-      {row.key}
+    <button type="button" className="analytics-link-button" onClick={() => onFilter(group, row.key, row)} aria-label={`${row.label ?? row.key}${row.archived ? ' (Archived)' : ''}`}>
+      {row.label ?? row.key}{row.archived && <small> · Archived</small>}
     </button>
   )
 }
 
 export function AnalyticsPage() {
+  const consumer = useOptionalConsumer()
+  const isAdmin = consumer?.role === "admin"
+  const isGlobalAdmin = isAdmin && consumer.scopes.length === 0
   useTimestampPreference()
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => parseAnalyticsFilters(searchParams), [searchParams])
-  const group = filters.group ?? DEFAULT_GROUP
+  const view = isAdmin ? filters.view ?? 'authorized' : 'mine'
+  const canGroupUsers = isAdmin && view === 'authorized'
+  const group = filters.group === 'user' && !canGroupUsers ? DEFAULT_GROUP : filters.group ?? DEFAULT_GROUP
   const selectedMeasure = filters.measure ?? DEFAULT_MEASURE
   const bucket = effectiveBucket(filters)
   const sort = filters.sort ?? defaultSortFor(selectedMeasure)
@@ -613,7 +629,7 @@ export function AnalyticsPage() {
     const trimmed = project.trim()
     if (trimmed === (filters.project ?? '')) return undefined
     const id = window.setTimeout(
-      () => applyFilters({ project: trimmed || undefined, offset: undefined }),
+      () => applyFilters({ project: trimmed || undefined, app: undefined, offset: undefined }),
       TEXT_DEBOUNCE_MS,
     )
     return () => window.clearTimeout(id)
@@ -629,15 +645,15 @@ export function AnalyticsPage() {
   }, [test, filters.test, applyFilters])
 
   const query = useMemo(
-    () => agentQuery(filters, group, selectedMeasure, bucket),
-    [filters, group, selectedMeasure, bucket],
+    () => ({ ...agentQuery(filters, group, selectedMeasure, bucket), view, app: filters.project ? filters.app : undefined, consumer_id: canGroupUsers ? filters.consumer_id : undefined, model_id: filters.model_id, provider: filters.provider, cost_basis: filters.cost_basis }),
+    [filters, group, selectedMeasure, bucket, view, canGroupUsers],
   )
   const { data, error, isPending, isError, refetch } = useAgentAnalytics(query)
   const modelQuery = useMemo(() => {
-    return { ...query, model: undefined, offset: 0, group_by: 'model' as const, limit: 100, sort: 'key' as const }
+    return { ...query, model: undefined, model_id: undefined, provider: undefined, offset: 0, group_by: 'model' as const, limit: 100, sort: 'key' as const }
   }, [query])
   const models = useAgentAnalytics(modelQuery)
-  const modelOptions = [...new Set([...(models.data?.breakdown.map(row => row.key) ?? []), ...(filters.model ?? [])])].sort()
+  const modelOptions = [...new Set([...(models.data?.breakdown.map(row => row.model ?? row.key) ?? []), ...(filters.model ?? [])])].sort()
 
 
   const allZeroTokens = data !== undefined && data.totals.events > 0 && data.totals.total_tokens === 0
@@ -681,8 +697,13 @@ export function AnalyticsPage() {
     applyFilters({ sort: next, dir: nextSort(sort, dir, next), offset: undefined })
   }
 
-  function addBreakdownFilter(targetGroup: GroupBy, value: string) {
-    if (targetGroup === 'model') applyFilters({ model: toggleValue(filters.model, value), offset: undefined })
+  function addBreakdownFilter(targetGroup: GroupBy, value: string, row?: AgentAnalyticsBreakdownRow) {
+    if (targetGroup === 'user') applyFilters({ consumer_id: value, offset: undefined })
+    if (targetGroup === 'application') {
+      const colon = value.indexOf(':'); const length = Number(value.slice(0, colon)); const project = value.slice(colon + 1, colon + 1 + length); const rest = value.slice(colon + 1 + length); const app = rest.slice(rest.indexOf(':') + 1)
+      applyFilters({ project: row?.project_id ?? project, app: row?.app_id ?? (app || undefined), offset: undefined })
+    }
+    if (targetGroup === 'model') applyFilters(row?.model_id ? { model_id: row.model_id, model: undefined, provider: undefined, offset: undefined } : { model_id: undefined, model: [row?.model ?? value], provider: row?.provider === null ? '' : row?.provider, offset: undefined })
     if (targetGroup === 'stage') applyFilters({ stage: toggleValue(filters.stage, value), offset: undefined })
     if (targetGroup === 'agent') applyFilters({ agent: toggleValue(filters.agent, value), offset: undefined })
   }
@@ -696,7 +717,13 @@ export function AnalyticsPage() {
 
   return (
     <section className="analytics-page animate-enter">
-      <TableToolbar label="Analytics filters" filterCount={[filters.from || filters.to, filters.project, filters.model?.length, filters.stage?.length, filters.agent?.length, filters.test, filters.status].filter(Boolean).length} onClear={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams()) }} className="analytics-toolbar glass-panel">
+      <header className="pricing-heading"><h1>{isAdmin ? 'Usage overview' : 'My usage'}</h1>{isGlobalAdmin && <Link className="btn btn-secondary" to="/analytics/models">Manage model pricing</Link>}</header>
+      <div className="pricing-toolbar glass-panel">
+        <UsageFacetControls filters={{ ...filters, view, from: query.from ?? data?.window.from, to: query.to ?? data?.window.to }} isAdmin={isAdmin} onChange={applyFilters} />
+        {isAdmin && <label>Usage view<select value={query.view} onChange={e => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', e.target.value); next.delete('consumer_id'); next.delete('offset'); if (e.target.value === 'mine' && next.get('group') === 'user') next.delete('group'); return next })}><option value="authorized">Authorized usage</option><option value="mine">My usage</option></select></label>}
+        <label>Cost basis<select value={filters.cost_basis ?? 'corrected'} onChange={e => applyFilters({ cost_basis: e.target.value as 'corrected' | 'original' })}><option value="corrected">Latest corrected costs</option><option value="original">Original recorded costs</option></select></label>
+      </div>
+      <TableToolbar label="Analytics filters" filterCount={[filters.from || filters.to, filters.project, filters.app, filters.consumer_id, filters.model_id, filters.provider, filters.cost_basis, filters.model?.length, filters.stage?.length, filters.agent?.length, filters.test, filters.status].filter(Boolean).length} onClear={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams(view === 'mine' ? { view: 'mine' } : {})) }} className="analytics-toolbar glass-panel">
         <WindowPresets
           value={{ ...(filters.from || data?.window.from ? { from: filters.from ?? data?.window.from } : {}), ...(filters.to || data?.window.to ? { to: filters.to ?? data?.window.to } : {}) }}
           onChange={(window) => applyFilters({ from: window.from, to: window.to, offset: undefined })}
@@ -704,8 +731,8 @@ export function AnalyticsPage() {
         <SegmentControl
           label="Group by"
           value={group}
-          options={GROUP_BYS}
-          labels={{ model: 'Model', stage: 'Phase', agent: 'Agent', test: 'Run', date: 'Date' }}
+          options={canGroupUsers ? GROUP_BYS : GROUP_BYS.filter(value => value !== 'user')}
+          labels={{ model: 'Model', stage: 'Phase', agent: 'Agent', test: 'Run', date: 'Date', application: 'Application', user: 'User' }}
           onChange={setGroup}
         />
         <SegmentControl
@@ -759,8 +786,9 @@ export function AnalyticsPage() {
           label="Models"
           options={modelOptions}
           selected={filters.model ?? []}
-          onToggle={(value) => applyFilters({ model: toggleValue(filters.model, value), offset: undefined })}
+          onToggle={(value) => applyFilters({ model: toggleValue(filters.model, value), model_id: undefined, provider: undefined, offset: undefined })}
         />
+        {filters.model_id && <p>Selected model: {models.data?.breakdown.find(row => row.model_id === filters.model_id)?.label ?? filters.model_id} <button type="button" className="analytics-link-button" onClick={() => applyFilters({ model_id: undefined, offset: undefined })}>Clear selected model</button></p>}
         <ChipGroup
           label="Phases"
           options={PHASE_NAMES}
@@ -794,6 +822,7 @@ export function AnalyticsPage() {
             </div>
           )}
           <AgentKpiCards data={data} allZeroTokens={allZeroTokens} />
+          {data.totals.unpriced_events > 0 && data.cost_visible && <p role="status">Partial cost: {data.totals.unpriced_events} events have no pricing.</p>}
 
           {allZeroTokens && (
             <div className="analytics-zero-hint" data-testid="analytics-zero-token-hint">
@@ -802,7 +831,7 @@ export function AnalyticsPage() {
           )}
 
           {isEmptyWindow ? (
-            <StateCard kind="filtered" title="No agent events in this window" action={<button type="button" className="btn btn-secondary" onClick={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams()) }}>Reset window and filters</button>}>
+            <StateCard kind="filtered" title="No agent events in this window" action={<button type="button" className="btn btn-secondary" onClick={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams(view === 'mine' ? { view: 'mine' } : {})) }}>Reset window and filters</button>}>
               <p>Try a wider time window or clear a model, agent, or run filter.</p>
             </StateCard>
           ) : (
@@ -827,6 +856,7 @@ export function AnalyticsPage() {
           )}
         </>
       ) : null}
+      <UsageHistory key={JSON.stringify({ ...query, from: query.from ?? data?.window.from, to: query.to ?? data?.window.to })} filters={{ from: query.from ?? data?.window.from, to: query.to ?? data?.window.to, view: query.view, project: query.project, app: query.app, consumer_id: query.consumer_id, model_id: query.model_id, provider: query.provider, model: query.model?.join(","), stage: query.stage?.join(","), agent: query.agent?.join(","), test: query.test, status: query.status, cost_basis: query.cost_basis }} />
     </section>
   )
 }

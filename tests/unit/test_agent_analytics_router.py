@@ -258,13 +258,13 @@ def test_default_window_underflow_is_422_before_aggregation() -> None:
     assert repo.calls == []
 
 
-def test_cost_flag_does_not_show_cost_to_non_admin() -> None:
+def test_cost_flag_shows_personal_cost_to_non_admin() -> None:
     repo = FakeAgentAnalyticsRepository()
     with make_client(repo, OPERATOR, cost_enabled=True) as client:
         response = client.get("/v1/analytics/agents")
     assert response.status_code == 200
-    assert response.json()["cost_visible"] is False
-    assert response.json()["totals"]["cost_usd"] is None
+    assert response.json()["cost_visible"] is True
+    assert response.json()["totals"]["cost_usd"] is not None
 
 
 def test_scoped_consumer_gets_visibility_filter() -> None:

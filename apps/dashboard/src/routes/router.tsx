@@ -161,6 +161,11 @@ export const appRoutes: RouteObject[] = [
             lazy: lazyPage(() => import('@/features/context/pages'), 'EvidencePage'),
           },
           {
+            path: 'analytics/models',
+            handle: handle('Model pricing'),
+            lazy: lazyPage(() => import('@/features/analytics/ModelPricingPage'), 'ModelPricingPage'),
+          },
+          {
             path: 'analytics',
             handle: handle('Agent analytics'),
             lazy: lazyPage(() => import('@/features/analytics/pages'), 'AnalyticsPage'),

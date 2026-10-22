@@ -1,11 +1,13 @@
 """Shared row-visibility predicate for app-aware analytics projections."""
 
 from collections.abc import Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import ColumnElement, and_, false, or_
 
-from apex.auth.identity import ScopeRef
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 
 
 def analytics_scope_filter(
@@ -39,3 +41,37 @@ def analytics_scope_filter(
                 )
             )
     return or_(*predicates) if predicates else false()
+
+
+@dataclass(frozen=True)
+class AnalyticsVisibility:
+    scopes: tuple[ScopeRef, ...] | None
+    consumer_id: str | None
+
+    @classmethod
+    def resolve(
+        cls,
+        identity: ConsumerIdentity,
+        view: Literal["mine", "authorized"] | None = None,
+        consumer_id: str | None = None,
+    ) -> "AnalyticsVisibility":
+        if identity.role is not Role.ADMIN:
+            if view == "authorized" or (
+                consumer_id is not None and consumer_id != identity.consumer_id
+            ):
+                raise HTTPException(403, "Only your own usage is available")
+            consumer_id = identity.consumer_id
+        elif view == "mine":
+            if consumer_id is not None and consumer_id != identity.consumer_id:
+                raise HTTPException(403, "Personal view only includes your own usage")
+            consumer_id = identity.consumer_id
+        return cls(None if identity.is_unscoped else tuple(identity.scopes), consumer_id)
+
+    def filters(self, model: Any) -> list[Any]:
+        result = []
+        scope = analytics_scope_filter(model, self.scopes)
+        if scope is not None:
+            result.append(scope)
+        if self.consumer_id is not None:
+            result.append(model.consumer_id == self.consumer_id)
+        return result

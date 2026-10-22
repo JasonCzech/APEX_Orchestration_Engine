@@ -199,6 +199,7 @@ def test_phase_usage_succeeded_maps_to_ok(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured == [
         {
             "consumer_name": "alice",
+            "consumer_id": None,
             "surface": "graph",
             "action": "phase:story_analysis:succeeded",
             "status": "ok",
@@ -267,6 +268,7 @@ def test_phase_usage_rejects_hostile_checkpoint_scalars_without_hooks(
     assert captured == [
         {
             "consumer_name": "graph",
+            "consumer_id": None,
             "surface": "graph",
             "action": "phase:execution:succeeded",
             "status": "ok",
@@ -297,6 +299,7 @@ def test_phase_usage_replay_key_is_stable_per_attempt(monkeypatch: pytest.Monkey
             {
                 "event_key": "phase:stable",
                 "consumer_name": "graph",
+            "consumer_id": None,
                 "surface": "graph",
                 "action": "phase:execution:succeeded",
                 "status": "ok",

@@ -32,6 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
 from apex.adapters.registry import PortKind
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY
 from apex.domain.agent_deliverables import (
     MAX_DELIVERABLE_CHARS,
     output_contract,
@@ -2048,13 +2049,53 @@ def _make_agent(phase: Phase):
         return _stub_agent_body(phase, state, config)
 
     def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
+        previous = _entry(state, phase)
+        revision = previous.get("revise_count", 0)
+        if type(revision) is not int or not 0 <= revision <= 10:
+            raise ValueError("checkpointed phase revision count is invalid")
+        retained = previous.get("usage_invocations", [])
+        if type(retained) is not list or len(retained) > 11:
+            raise ValueError("checkpointed invocation history is invalid")
+        occurred_at = utcnow_iso()
+        raw_actor = config.get("configurable", {}).get(RUNTIME_ACTOR_ID_KEY)
+        consumer_id = (
+            raw_actor
+            if type(raw_actor) is str
+            and 1 <= len(raw_actor) <= 255
+            and "\x00" not in raw_actor
+            and not contains_credential_material(raw_actor)
+            else None
+        )
         started = perf_counter()
         result = invoke_agent(state, config)
         elapsed_ms = max(0, round((perf_counter() - started) * 1000))
-        previous_ms = _agent_latency_ms(_entry(state, phase).get("agent_latency_ms")) or 0
+        previous_ms = _agent_latency_ms(previous.get("agent_latency_ms")) or 0
         result["phase_results"][phase.value]["agent_latency_ms"] = min(
             86_400_000, previous_ms + elapsed_ms
         )
+        # Finalization may happen in a different authenticated run after an
+        # output-review interrupt. Retain the actor and time of the model work,
+        # never the later approver or the time spent waiting for that approval.
+        result["phase_results"][phase.value]["usage_consumer_id"] = consumer_id
+        result["phase_results"][phase.value]["usage_occurred_at"] = occurred_at
+        invocation = result["phase_results"][phase.value]
+        normalized: dict[str, Any] = {}
+        _accumulate_usage(normalized, invocation.get("usage_metadata"))
+        snapshot = {
+            "revision": revision,
+            "usage_consumer_id": consumer_id,
+            "usage_occurred_at": occurred_at,
+            "usage_metadata": normalized or None,
+            "model": invocation.get("model"),
+            "agent_latency_ms": min(86_400_000, elapsed_ms),
+            "status": "failed" if invocation.get("status") == "failed" else "succeeded",
+        }
+        # A review revision is a separate invocation, possibly by another user.
+        # Replaying the same worker replaces its pending snapshot; durable event
+        # inserts remain idempotent by thread/phase/attempt/revision.
+        invocation["usage_invocations"] = [
+            item for item in retained if type(item) is dict and item.get("revision") != revision
+        ] + [snapshot]
         return result
 
     return agent
@@ -2605,32 +2646,53 @@ def _make_finalize(phase: Phase):
         )
         # Usage analytics (M6): best-effort, never fails the run.
         usage_events.record_phase_usage_sync(phase.value, status, config, attempt=attempt)
-        usage_metadata = entry.get("usage_metadata")
-        recorded_model = entry.get("model")
-        normalized_usage: dict[str, Any] = {}
-        _accumulate_usage(normalized_usage, usage_metadata)
-        safe_model = (
-            recorded_model
-            if type(recorded_model) is str
-            and 1 <= len(recorded_model) <= 200
-            and "\x00" not in recorded_model
-            and not contains_credential_material(recorded_model)
-            else None
+        snapshots = entry.get("usage_invocations")
+        # Older checkpoints have one aggregate event with unknown ownership.
+        invocations = (
+            snapshots if type(snapshots) is list and 1 <= len(snapshots) <= 11 else [entry]
         )
-        # Compute latency is measured around the worker, never from phase wall
-        # time (which includes operator reviews). Legacy checkpoints and engine
-        # phases without a worker measurement remain unknown.
-        agent_latency = _agent_latency_ms(entry.get("agent_latency_ms"))
-        usage_events.record_agent_event_sync(
-            phase=phase.value,
-            status=status,
-            attempt=attempt,
-            config=config,
-            latency_ms=round(agent_latency) if agent_latency is not None else None,
-            usage=normalized_usage if normalized_usage else None,
-            agent_name=f"{phase.value}.worker",
-            model=safe_model,
-        )
+        for invocation in invocations:
+            if type(invocation) is not dict:
+                continue
+            usage_metadata = invocation.get("usage_metadata")
+            recorded_model = invocation.get("model")
+            normalized_usage: dict[str, Any] = {}
+            _accumulate_usage(normalized_usage, usage_metadata)
+            safe_model = (
+                recorded_model
+                if type(recorded_model) is str
+                and 1 <= len(recorded_model) <= 200
+                and "\x00" not in recorded_model
+                and not contains_credential_material(recorded_model)
+                else None
+            )
+            # Compute latency is measured around the worker, never from phase wall
+            # time (which includes operator reviews). Legacy checkpoints and engine
+            # phases without a worker measurement remain unknown.
+            agent_latency = _agent_latency_ms(invocation.get("agent_latency_ms"))
+            usage_at = _checkpoint_terminal_timestamp(invocation.get("usage_occurred_at"))
+            raw_consumer = invocation.get("usage_consumer_id")
+            usage_consumer = (
+                raw_consumer
+                if type(raw_consumer) is str
+                and 1 <= len(raw_consumer) <= 255
+                and "\x00" not in raw_consumer
+                and not contains_credential_material(raw_consumer)
+                else None
+            )
+            usage_events.record_agent_event_sync(
+                phase=phase.value,
+                status=invocation.get("status", status),
+                attempt=attempt,
+                config=config,
+                latency_ms=round(agent_latency) if agent_latency is not None else None,
+                usage=normalized_usage if normalized_usage else None,
+                agent_name=f"{phase.value}.worker",
+                model=safe_model,
+                consumer_id=usage_consumer,
+                occurred_at=datetime.fromisoformat(usage_at) if usage_at else None,
+                revision=invocation.get("revision", 0),
+            )
         if transcript_warning is not None:
             if transcript_warning not in warnings:
                 warnings = [*warnings, transcript_warning][-MAX_DURABLE_PHASE_DIAGNOSTICS:]

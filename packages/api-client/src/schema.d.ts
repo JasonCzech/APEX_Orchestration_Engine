@@ -262,6 +262,228 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/analytics/agents/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History */
+        get: operations["getAgentUsageHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/agents/events/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail */
+        get: operations["getAgentUsageEvent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/agents/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export */
+        get: operations["exportAgentUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/agents/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Facets */
+        get: operations["getAgentUsageFacets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Models */
+        get: operations["listModelPricing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail */
+        get: operations["getModelPricing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive */
+        post: operations["archiveAnalyticsModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct */
+        post: operations["createModelCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/corrections/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview */
+        post: operations["previewModelCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/corrections/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Status */
+        get: operations["getModelCorrection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/corrections/{job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retryModelCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History */
+        get: operations["getModelPriceHistory"];
+        put?: never;
+        /** Set Price */
+        post: operations["setModelPrice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/analytics/models/{model_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore */
+        post: operations["restoreAnalyticsModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/analytics/usage": {
         parameters: {
             query?: never;
@@ -1897,12 +2119,21 @@ export interface components {
         };
         /** AgentAnalyticsBreakdownRow */
         AgentAnalyticsBreakdownRow: {
+            /** App Id */
+            app_id?: string | null;
+            /** Archived */
+            archived?: boolean | null;
             /** Avg Latency Ms */
             avg_latency_ms?: number | null;
             /** Cache Creation Tokens */
             cache_creation_tokens: number;
             /** Cache Read Tokens */
             cache_read_tokens: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Cost Usd */
             cost_usd?: number | null;
             /** Errors */
@@ -1913,15 +2144,30 @@ export interface components {
             input_tokens: number;
             /** Key */
             key: string;
+            /** Label */
+            label?: string | null;
             /**
              * Latency Samples
              * @description Count of events with recorded latency; null for legacy readers.
              */
             latency_samples?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Model Id */
+            model_id?: string | null;
             /** Output Tokens */
             output_tokens: number;
             /** P95 Latency Ms */
             p95_latency_ms?: number | null;
+            /**
+             * Priced Events
+             * @default 0
+             */
+            priced_events: number;
+            /** Project Id */
+            project_id?: string | null;
+            /** Provider */
+            provider?: string | null;
             /** Reasoning Tokens */
             reasoning_tokens: number;
             /** Runs */
@@ -1930,6 +2176,11 @@ export interface components {
             thread_id?: string | null;
             /** Total Tokens */
             total_tokens: number;
+            /**
+             * Unpriced Events
+             * @default 0
+             */
+            unpriced_events: number;
         };
         /** AgentAnalyticsPage */
         AgentAnalyticsPage: {
@@ -1954,6 +2205,10 @@ export interface components {
         };
         /** AgentAnalyticsSeriesPoint */
         AgentAnalyticsSeriesPoint: {
+            /** App Id */
+            app_id?: string | null;
+            /** Archived */
+            archived?: boolean | null;
             /** Avg Latency Ms */
             avg_latency_ms?: number | null;
             /**
@@ -1965,6 +2220,11 @@ export interface components {
             cache_creation_tokens: number;
             /** Cache Read Tokens */
             cache_read_tokens: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Cost Usd */
             cost_usd?: number | null;
             /** Errors */
@@ -1975,21 +2235,41 @@ export interface components {
             input_tokens: number;
             /** Key */
             key: string;
+            /** Label */
+            label?: string | null;
             /**
              * Latency Samples
              * @description Count of events with recorded latency; null for legacy readers.
              */
             latency_samples?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Model Id */
+            model_id?: string | null;
             /** Output Tokens */
             output_tokens: number;
             /** P95 Latency Ms */
             p95_latency_ms?: number | null;
+            /**
+             * Priced Events
+             * @default 0
+             */
+            priced_events: number;
+            /** Project Id */
+            project_id?: string | null;
+            /** Provider */
+            provider?: string | null;
             /** Reasoning Tokens */
             reasoning_tokens: number;
             /** Runs */
             runs: number;
             /** Total Tokens */
             total_tokens: number;
+            /**
+             * Unpriced Events
+             * @default 0
+             */
+            unpriced_events: number;
         };
         /** AgentAnalyticsTotals */
         AgentAnalyticsTotals: {
@@ -2004,6 +2284,11 @@ export interface components {
             cache_creation_tokens: number;
             /** Cache Read Tokens */
             cache_read_tokens: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Cost Usd */
             cost_usd?: number | null;
             /** Errors */
@@ -2026,12 +2311,22 @@ export interface components {
             output_tokens: number;
             /** P95 Latency Ms */
             p95_latency_ms?: number | null;
+            /**
+             * Priced Events
+             * @default 0
+             */
+            priced_events: number;
             /** Reasoning Tokens */
             reasoning_tokens: number;
             /** Runs */
             runs: number;
             /** Total Tokens */
             total_tokens: number;
+            /**
+             * Unpriced Events
+             * @default 0
+             */
+            unpriced_events: number;
         };
         /** AgentAnalyticsWindow */
         AgentAnalyticsWindow: {
@@ -2049,12 +2344,142 @@ export interface components {
              * Group By
              * @enum {string}
              */
-            group_by: "model" | "stage" | "agent" | "date" | "test";
+            group_by: "model" | "stage" | "agent" | "date" | "test" | "application" | "user";
             /**
              * To
              * Format: date-time
              */
             to: string;
+        };
+        /** AgentUsageDetailResponse */
+        AgentUsageDetailResponse: {
+            /** Agent Name */
+            agent_name: string;
+            /** App Id */
+            app_id: string | null;
+            /** Archived */
+            archived: boolean;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Cache Creation Tokens */
+            cache_creation_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Consumer Id */
+            consumer_id: string | null;
+            /** Consumer Name Snapshot */
+            consumer_name_snapshot: string | null;
+            /**
+             * Corrections
+             * @default []
+             */
+            corrections: {
+                [key: string]: unknown;
+            }[];
+            /** Cost Visible */
+            cost_visible: boolean;
+            /** Effective Cost Usd */
+            effective_cost_usd: string | null;
+            /** Id */
+            id: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Latency Ms */
+            latency_ms: number | null;
+            /** Model */
+            model: string | null;
+            /** Model Catalog Id */
+            model_catalog_id: string | null;
+            /** Original Cost Usd */
+            original_cost_usd: string | null;
+            /** Original Pricing */
+            original_pricing?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Phase */
+            phase: string;
+            /** Pricing Interval Id */
+            pricing_interval_id: string | null;
+            /** Project Id */
+            project_id: string | null;
+            /** Provider */
+            provider: string | null;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+            /** Status */
+            status: string;
+            /** Thread Id */
+            thread_id: string | null;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** AgentUsageEventResponse */
+        AgentUsageEventResponse: {
+            /** Agent Name */
+            agent_name: string;
+            /** App Id */
+            app_id: string | null;
+            /** Archived */
+            archived: boolean;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Cache Creation Tokens */
+            cache_creation_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Consumer Id */
+            consumer_id: string | null;
+            /** Consumer Name Snapshot */
+            consumer_name_snapshot: string | null;
+            /** Effective Cost Usd */
+            effective_cost_usd: string | null;
+            /** Id */
+            id: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Latency Ms */
+            latency_ms: number | null;
+            /** Model */
+            model: string | null;
+            /** Model Catalog Id */
+            model_catalog_id: string | null;
+            /** Original Cost Usd */
+            original_cost_usd: string | null;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Phase */
+            phase: string;
+            /** Pricing Interval Id */
+            pricing_interval_id: string | null;
+            /** Project Id */
+            project_id: string | null;
+            /** Provider */
+            provider: string | null;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+            /** Status */
+            status: string;
+            /** Thread Id */
+            thread_id: string | null;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** AgentUsageHistoryResponse */
+        AgentUsageHistoryResponse: {
+            /** Cost Visible */
+            cost_visible: boolean;
+            /** Items */
+            items: components["schemas"]["AgentUsageEventResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /** ApplicationCreate */
         ApplicationCreate: {
@@ -2415,6 +2840,106 @@ export interface components {
             work_item_keys?: string[];
             /** Work Tracking Connection Id */
             work_tracking_connection_id?: string | null;
+        };
+        /** CorrectionJobResponse */
+        CorrectionJobResponse: {
+            /** Actor Id */
+            actor_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /**
+             * Effective To
+             * Format: date-time
+             */
+            effective_to: string;
+            /** Failure Code */
+            failure_code: string | null;
+            /** Final Totals */
+            final_totals: {
+                [key: string]: unknown;
+            };
+            /** Generation Id */
+            generation_id: string;
+            /** Id */
+            id: string;
+            /** Model Id */
+            model_id: string;
+            /** Preview Totals */
+            preview_totals: {
+                [key: string]: unknown;
+            };
+            /** Processed Count */
+            processed_count: number;
+            /** Reason */
+            reason: string;
+            /** Retry Count */
+            retry_count: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "succeeded" | "failed" | "superseded";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** CorrectionPreviewResponse */
+        CorrectionPreviewResponse: {
+            /** After Cost Usd */
+            after_cost_usd: string;
+            /** Base Generation Id */
+            base_generation_id: string | null;
+            /** Before Cost Usd */
+            before_cost_usd: string;
+            /**
+             * Calculated At
+             * Format: date-time
+             */
+            calculated_at: string;
+            /** Delta Cost Usd */
+            delta_cost_usd: string;
+            /** Events */
+            events: number;
+            /** Expected Version */
+            expected_version: number;
+            /** Preview Token */
+            preview_token: string;
+            /** Previously Unpriced */
+            previously_unpriced: number;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** CorrectionWrite */
+        CorrectionWrite: {
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /**
+             * Effective To
+             * Format: date-time
+             */
+            effective_to: string;
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Preview Token */
+            preview_token?: string | null;
+            rates: components["schemas"]["Rates"];
+            /** Reason */
+            reason: string;
         };
         /** CreatePromptRequest */
         CreatePromptRequest: {
@@ -3974,6 +4499,65 @@ export interface components {
             total: number;
             window: components["schemas"]["WindowOut"];
         };
+        /** ModelPricingListResponse */
+        ModelPricingListResponse: {
+            /** Items */
+            items: components["schemas"]["ModelPricingResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /** ModelPricingResponse */
+        ModelPricingResponse: {
+            /** Active Correction Id */
+            active_correction_id: string | null;
+            /** Active Pricing Generation Id */
+            active_pricing_generation_id: string | null;
+            /** Archive Reason */
+            archive_reason: string | null;
+            /** Archived At */
+            archived_at: string | null;
+            /** Archived By */
+            archived_by: string | null;
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "archived" | "historical_only";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            current_price: components["schemas"]["PriceIntervalResponse"] | null;
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
+            /** Model Key */
+            model_key: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /** ModelWrite */
+        ModelWrite: {
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Reason */
+            reason: string;
+        };
         /** NativeApprovalDecision */
         NativeApprovalDecision: {
             /** Approved */
@@ -4371,6 +4955,85 @@ export interface components {
             /** Script Version Id */
             script_version_id: string;
         };
+        /** PriceGenerationResponse */
+        PriceGenerationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string | null;
+            /** Creator Name */
+            creator_name: string | null;
+            /** Id */
+            id: string;
+            /** Intervals */
+            intervals: components["schemas"]["PriceIntervalResponse"][];
+            /** Job Id */
+            job_id: string | null;
+            /** Model Id */
+            model_id: string;
+            /** Number */
+            number: number;
+            /** Published At */
+            published_at: string | null;
+            /** Reason */
+            reason: string;
+            /** Source */
+            source: string;
+        };
+        /** PriceHistoryResponse */
+        PriceHistoryResponse: {
+            /** Items */
+            items: components["schemas"]["PriceGenerationResponse"][];
+            /** Total */
+            total: number;
+        };
+        /** PriceIntervalResponse */
+        PriceIntervalResponse: {
+            /** Cache Creation */
+            cache_creation: string;
+            /** Cache Read */
+            cache_read: string;
+            /**
+             * Currency
+             * @constant
+             */
+            currency: "USD";
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+            /** Generation Id */
+            generation_id: string;
+            /** Id */
+            id: string;
+            /** Input */
+            input: string;
+            /** Output */
+            output: string;
+            /**
+             * Unit
+             * @constant
+             */
+            unit: "million_tokens";
+        };
+        /** PriceWrite */
+        PriceWrite: {
+            /** Effective From */
+            effective_from?: string | null;
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            rates: components["schemas"]["Rates"];
+            /** Reason */
+            reason: string;
+        };
         /** ProbeResult */
         ProbeResult: {
             /** Detail */
@@ -4572,6 +5235,17 @@ export interface components {
              * @default 0
              */
             total: number;
+        };
+        /** Rates */
+        Rates: {
+            /** Cache Creation */
+            cache_creation: number | string;
+            /** Cache Read */
+            cache_read: number | string;
+            /** Input */
+            input: number | string;
+            /** Output */
+            output: number | string;
         };
         /** RerunPipelineRequest */
         RerunPipelineRequest: {
@@ -5090,6 +5764,26 @@ export interface components {
             errors: number;
             /** Events */
             events: number;
+        };
+        /** UsageFacetOption */
+        UsageFacetOption: {
+            /** App Id */
+            app_id?: string | null;
+            /** Label */
+            label: string;
+            /** Project Id */
+            project_id?: string | null;
+            /** Value */
+            value: string;
+        };
+        /** UsageFacetsResponse */
+        UsageFacetsResponse: {
+            /** Applications */
+            applications: components["schemas"]["UsageFacetOption"][];
+            /** Truncated */
+            truncated: boolean;
+            /** Users */
+            users: components["schemas"]["UsageFacetOption"][];
         };
         /** UsageRuns */
         UsageRuns: {
@@ -5946,9 +6640,11 @@ export interface operations {
                 /** @description Histogram bucket size. */
                 bucket?: "day" | "hour";
                 /** @description Breakdown dimension. */
-                group_by?: "model" | "stage" | "agent" | "date" | "test";
+                group_by?: "model" | "stage" | "agent" | "date" | "test" | "application" | "user";
                 /** @description Filter to one project (must be inside the consumer's scopes). */
                 project?: string | null;
+                view?: ("mine" | "authorized") | null;
+                consumer_id?: string | null;
                 /** @description Filter. Accepts repeated values or comma-separated values. */
                 model?: string[] | null;
                 /** @description Filter. Accepts repeated values or comma-separated values. */
@@ -5965,6 +6661,10 @@ export interface operations {
                 order?: "asc" | "desc";
                 limit?: number;
                 offset?: number;
+                app?: string | null;
+                model_id?: string | null;
+                provider?: string | null;
+                cost_basis?: "corrected" | "original";
             };
             header?: never;
             path?: never;
@@ -5992,6 +6692,514 @@ export interface operations {
             };
         };
     };
+    getAgentUsageHistory: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+                from?: string | null;
+                to?: string | null;
+                view?: ("mine" | "authorized") | null;
+                consumer_id?: string | null;
+                project?: string | null;
+                app?: string | null;
+                model_id?: string | null;
+                provider?: string | null;
+                model?: string | null;
+                stage?: string | null;
+                agent?: string | null;
+                test?: string | null;
+                status?: ("ok" | "error") | null;
+                cost_basis?: "original" | "corrected";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentUsageHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAgentUsageEvent: {
+        parameters: {
+            query?: {
+                view?: ("mine" | "authorized") | null;
+            };
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentUsageDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exportAgentUsage: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                view?: ("mine" | "authorized") | null;
+                consumer_id?: string | null;
+                project?: string | null;
+                app?: string | null;
+                model_id?: string | null;
+                provider?: string | null;
+                model?: string | null;
+                stage?: string | null;
+                agent?: string | null;
+                test?: string | null;
+                status?: ("ok" | "error") | null;
+                cost_basis?: "original" | "corrected";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAgentUsageFacets: {
+        parameters: {
+            query?: {
+                q?: string;
+                from?: string | null;
+                to?: string | null;
+                view?: ("mine" | "authorized") | null;
+                consumer_id?: string | null;
+                project?: string | null;
+                app?: string | null;
+                model_id?: string | null;
+                provider?: string | null;
+                model?: string | null;
+                stage?: string | null;
+                agent?: string | null;
+                test?: string | null;
+                status?: ("ok" | "error") | null;
+                cost_basis?: "original" | "corrected";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageFacetsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listModelPricing: {
+        parameters: {
+            query?: {
+                status?: "active" | "archived" | "all";
+                q?: string;
+                provider?: string | null;
+                missing_pricing?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getModelPricing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archiveAnalyticsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createModelCorrection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    previewModelCorrection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getModelCorrection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retryModelCorrection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getModelPriceHistory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriceHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setModelPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PriceWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restoreAnalyticsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getUsageAnalytics: {
         parameters: {
             query?: {
@@ -6003,6 +7211,8 @@ export interface operations {
                 bucket?: "day" | "hour";
                 /** @description Filter to one project (must be inside the consumer's scopes). */
                 project?: string | null;
+                view?: ("mine" | "authorized") | null;
+                consumer_id?: string | null;
             };
             header?: never;
             path?: never;

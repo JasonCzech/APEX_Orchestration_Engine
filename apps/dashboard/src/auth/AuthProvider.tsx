@@ -185,6 +185,7 @@ export function AuthProvider({
         [...info.consumer.scopes].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
       )
       const identityChanged =
+        previous.consumer.id !== info.consumer.id ||
         previous.consumer.name !== info.consumer.name ||
         previous.consumer.role !== info.consumer.role ||
         beforeScopes !== afterScopes

@@ -23,7 +23,7 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 from urllib.parse import parse_qs
@@ -37,7 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.auth.identity import ConsumerIdentity, ScopeRef
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ScopeRef
 from apex.auth.service import extract_api_key, hash_api_key
 from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.durable_evidence import sanitize_durable_object, sanitize_durable_text
@@ -47,7 +47,6 @@ from apex.persistence.models import AgentEvent, UsageEvent
 from apex.services.analytics_scope import analytics_scope_filter
 from apex.services.pricing import (
     coerce_token_count,
-    compute_cost,
     normalize_cache_token_counts,
     normalize_usage_mapping,
 )
@@ -155,6 +154,7 @@ async def _commit_event(session: AsyncSession, row: Any, values: dict[str, Any])
 async def record_usage_event(
     *,
     consumer_name: str,
+    consumer_id: str | None = None,
     surface: str,
     action: str,
     status: str = "ok",
@@ -180,6 +180,7 @@ async def record_usage_event(
             await _insert_usage_event(
                 session_factory,
                 consumer_name=consumer_name,
+                consumer_id=consumer_id,
                 surface=surface,
                 action=action,
                 status=status,
@@ -204,6 +205,7 @@ async def _insert_usage_event(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     consumer_name: str,
+    consumer_id: str | None = None,
     surface: str,
     action: str,
     status: str = "ok",
@@ -219,6 +221,7 @@ async def _insert_usage_event(
             {
                 "event_key": event_key,
                 "consumer_name": consumer_name,
+                "consumer_id": consumer_id,
                 "project_id": project_id,
                 "app_id": app_id,
                 "surface": surface,
@@ -287,6 +290,7 @@ def record_phase_usage_sync(
         )
         event: dict[str, Any] = {
             "consumer_name": consumer_name or "graph",
+            "consumer_id": _bounded_event_label(configurable.get(RUNTIME_ACTOR_ID_KEY), 255),
             "surface": SURFACE_GRAPH,
             "action": f"phase:{safe_phase}:{safe_status}",
             "status": "ok" if safe_status in _OK_PHASE_STATUSES else "error",
@@ -400,6 +404,9 @@ async def _insert_agent_event(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     thread_id: str | None,
+    consumer_id: str | None = None,
+    consumer_name_snapshot: str | None = None,
+    occurred_at: datetime | None = None,
     project_id: str | None,
     app_id: str | None,
     phase: str,
@@ -424,6 +431,9 @@ async def _insert_agent_event(
             {
                 "event_key": event_key,
                 "thread_id": thread_id,
+                "consumer_id": consumer_id,
+                "consumer_name_snapshot": consumer_name_snapshot,
+                "at": occurred_at or datetime.now(UTC),
                 "project_id": project_id,
                 "app_id": app_id,
                 "phase": phase,
@@ -444,12 +454,27 @@ async def _insert_agent_event(
             },
             _AGENT_TEXT_LIMITS,
         )
+        from apex.services.model_pricing import price_event
+
+        try:
+            async with session.begin_nested():
+                await price_event(session, values)
+        except Exception:
+            # Keep the usage evidence even when pricing is unavailable.
+            values["cost_usd"] = None
+            values.pop("model_catalog_id", None)
+            values.pop("pricing_interval_id", None)
+            values["extra"].pop("pricing", None)
+            logger.warning("agent_events.pricing_failed")
         await _commit_event(session, AgentEvent(**values), values)
 
 
 async def record_agent_event(
     *,
     thread_id: str | None,
+    consumer_id: str | None = None,
+    consumer_name_snapshot: str | None = None,
+    occurred_at: datetime | None = None,
     project_id: str | None,
     app_id: str | None,
     phase: str,
@@ -460,6 +485,7 @@ async def record_agent_event(
     status: str,
     latency_ms: int | None,
     usage: Mapping[str, Any] | None = None,
+    revision: int = 0,
 ) -> None:
     """Insert one agent-behavior event; never raises."""
     try:
@@ -472,6 +498,8 @@ async def record_agent_event(
         if safe_phase is None or safe_agent_name is None or safe_status is None:
             return
         safe_attempt = attempt if type(attempt) is int and 1 <= attempt <= 1_000_000 else None
+        if type(revision) is not int or not 0 <= revision <= 10:
+            return
         safe_latency_ms = (
             latency_ms if type(latency_ms) is int and 0 <= latency_ms <= 86_400_000 else None
         )
@@ -479,7 +507,8 @@ async def record_agent_event(
         token_usage = normalize_usage_metadata(safe_usage)
         safe_model = _bounded_event_label(model, _AGENT_TEXT_LIMITS["model"])
         safe_provider = _bounded_event_label(provider, _AGENT_TEXT_LIMITS["provider"])
-        cost_usd, pricing = compute_cost(safe_model, token_usage)
+        occurred_at = occurred_at or datetime.now(UTC)
+        cost_usd, pricing = None, None
         extra: dict[str, Any] = {}
         if pricing is not None:
             extra["pricing"] = pricing
@@ -497,6 +526,7 @@ async def record_agent_event(
                 agent_name=safe_agent_name,
                 project_id=safe_project_id,
                 app_id=safe_app_id,
+                **({"revision": revision} if revision else {}),
             )
             if safe_thread_id is not None and safe_attempt is not None
             else None
@@ -512,6 +542,9 @@ async def record_agent_event(
             await _insert_agent_event(
                 session_factory,
                 thread_id=safe_thread_id,
+                consumer_id=_bounded_event_label(consumer_id, 255),
+                consumer_name_snapshot=_bounded_event_label(consumer_name_snapshot, 255),
+                occurred_at=occurred_at,
                 project_id=safe_project_id,
                 app_id=safe_app_id,
                 phase=safe_phase,
@@ -546,6 +579,9 @@ def record_agent_event_sync(
     usage: Mapping[str, Any] | None = None,
     agent_name: str | None = None,
     model: str | None = None,
+    consumer_id: str | None = None,
+    occurred_at: datetime | None = None,
+    revision: int = 0,
 ) -> None:
     """Sync bridge for graph nodes: one row per phase/agent invocation.
 
@@ -576,6 +612,11 @@ def record_agent_event_sync(
         )
         asyncio.run(
             record_agent_event(
+                # Attribution is captured by the worker before review interrupts.
+                # Missing legacy provenance must not inherit the finalizer's actor.
+                consumer_id=_bounded_event_label(consumer_id, 255),
+                occurred_at=occurred_at,
+                revision=revision,
                 thread_id=_bounded_event_label(
                     configurable.get("thread_id"), _AGENT_TEXT_LIMITS["thread_id"]
                 ),
@@ -626,6 +667,7 @@ def _request_consumer_name(scope: Mapping[str, Any]) -> str:
 async def _record_request_event(
     *,
     consumer_name: str,
+    consumer_id: str | None = None,
     action: str,
     status: str,
     duration_ms: int,
@@ -639,6 +681,7 @@ async def _record_request_event(
         await _insert_usage_event(
             get_sessionmaker(),
             consumer_name=consumer_name,
+            consumer_id=consumer_id,
             surface=SURFACE_V1,
             action=action,
             status=status,
@@ -776,12 +819,15 @@ class UsageTrackingMiddleware:
                 return  # docs/openapi/unmatched paths carry no contract operation
             duration_ms = int((time.perf_counter() - started) * 1000)
             consumer_name = _request_consumer_name(scope)
+            principal = scope.get("state", {}).get("identity")
+            consumer_id = principal.consumer_id if type(principal) is ConsumerIdentity else None
             project_id, app_id = _request_scope(scope)
             if len(_PENDING) >= _MAX_PENDING:
                 return
             task = asyncio.get_running_loop().create_task(
                 _record_request_event(
                     consumer_name=consumer_name,
+                    consumer_id=consumer_id,
                     action=safe_operation_id,
                     status="ok" if status_code < 400 else "error",
                     duration_ms=duration_ms,
@@ -823,11 +869,14 @@ class UsageAnalyticsRepository:
         bucket: str,
         project_id: str | None = None,
         visible_scopes: tuple[ScopeRef, ...] | None = None,
+        consumer_id: str | None = None,
     ) -> dict[str, Any]:
         filters: list[ColumnElement[bool]] = [
             UsageEvent.at >= window_from,
             UsageEvent.at < window_to,
         ]
+        if consumer_id is not None:
+            filters.append(UsageEvent.consumer_id == consumer_id)
         if project_id is not None:
             filters.append(UsageEvent.project_id == project_id)
         scope_filter = analytics_scope_filter(UsageEvent, visible_scopes)

@@ -232,7 +232,7 @@ def _assert_local_runtime_ready(app: FastAPI) -> None:
         if isinstance(raw_workers, (list, tuple))
         else ()
     )
-    if len(workers) != 4 or any(task.done() for task in workers):
+    if len(workers) != 5 or any(task.done() for task in workers):
         raise RuntimeNotReadyError("a required reconciliation worker is unavailable")
     heartbeats = getattr(app.state, "reconciler_heartbeats", None)
     if not isinstance(heartbeats, dict):
@@ -276,6 +276,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # application-owned schema matches this exact image. This protects manual
         # migration deployments as well as the chart's migrate-then-roll hook.
         await validate_schema_head()
+        from apex.services.model_pricing import initialize_pricing, run_pricing_worker
+
+        await initialize_pricing()
         deletion_stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         worker_names = (
@@ -283,6 +286,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "artifact-upload-reconciler",
             "work-item-mutation-reconciler",
             "apex-load-native-reconciler",
+            "model-pricing-reconciler",
         )
         app.state.reconciler_heartbeats = {worker_name: loop.time() for worker_name in worker_names}
 
@@ -319,6 +323,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 name=worker_names[3],
             ),
         ]
+        workers.append(
+            asyncio.create_task(
+                run_pricing_worker(deletion_stop, lambda: heartbeat(worker_names[4])),
+                name=worker_names[4],
+            )
+        )
         app.state.reconciler_tasks = tuple(workers)
         runtime_started = True
         app.state.runtime_ready = True

@@ -3,6 +3,7 @@ import type { AgentAnalyticsSeriesPoint } from '@/api/hooks/useAgentAnalytics'
 import { aggregateMeasurements, measurementSeries, metricValue, rankedMeasurements } from './analyticsMeasurements'
 
 const point = (changes: Partial<AgentAnalyticsSeriesPoint> = {}): AgentAnalyticsSeriesPoint => ({
+  priced_events: 0, unpriced_events: 100, cost_complete: false,
   bucket_start: '2026-10-17T00:00:00Z', key: 'worker', events: 100, latency_samples: 1,
   errors: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_tokens: 0,
   cache_creation_tokens: 0, reasoning_tokens: 0, cost_usd: null, avg_latency_ms: 100,

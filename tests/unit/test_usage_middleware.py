@@ -25,6 +25,7 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     async def fake_record(
         *,
         consumer_name: str,
+        consumer_id: str | None,
         action: str,
         status: str,
         duration_ms: int,
@@ -35,6 +36,7 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         captured.append(
             {
                 "consumer_name": consumer_name,
+                "consumer_id": consumer_id,
                 "surface": usage.SURFACE_V1,
                 "action": action,
                 "status": status,

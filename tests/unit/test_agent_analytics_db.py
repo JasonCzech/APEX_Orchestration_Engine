@@ -179,7 +179,7 @@ def test_agent_event_capture_and_aggregation_round_trip(
 
         # group_by model: the cost-bearing model vs the unknown-model split (review R2).
         model_data = asyncio.run(aggregate(group_by="model"))
-        by_model = {row["key"]: row for row in model_data["breakdown"]}
+        by_model = {row["model"]: row for row in model_data["breakdown"]}
         assert by_model["claude-sonnet-4-20250514"]["total_tokens"] == 1100
         assert by_model["unknown-model"]["cost_usd"] is None
 

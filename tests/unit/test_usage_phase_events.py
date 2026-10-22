@@ -5,7 +5,9 @@ from typing import Any
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, StateSnapshot
 
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY
 from apex.graphs.pipeline.graph import builder
 from apex.services import usage
 
@@ -112,3 +114,71 @@ def test_record_agent_event_sync_resolves_model_and_maps_status(
         phase="reporting", status="succeeded", attempt=1, config=cfg, latency_ms=5
     )
     assert captured["status"] == "ok"  # succeeded -> ok
+
+
+def test_usage_keeps_invoking_actor_and_time_after_another_user_approves(
+    agent_events: list[dict[str, Any]],
+) -> None:
+    g = builder.compile(checkpointer=InMemorySaver())
+    cfg = config(
+        "cross-user-review",
+        phases=["story_analysis"],
+        gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
+        **{RUNTIME_ACTOR_ID_KEY: "alice"},
+    )
+    result = g.invoke({"title": "Demo", "request": "load test checkout"}, cfg)
+    assert "__interrupt__" in result
+    phase_state = g.get_state(cfg, subgraphs=True).tasks[0].state
+    assert isinstance(phase_state, StateSnapshot)
+    invoked_at = phase_state.values["phase_results"]["story_analysis"]["usage_occurred_at"]
+    assert agent_events == []
+    resumed: RunnableConfig = {
+        **cfg,
+        "configurable": {**cfg.get("configurable", {}), RUNTIME_ACTOR_ID_KEY: "bob"},
+    }
+    g.invoke(Command(resume={"action": "approve"}), resumed)
+    assert len(agent_events) == 1
+    assert agent_events[0]["consumer_id"] == "alice"
+    assert agent_events[0]["occurred_at"].isoformat() == invoked_at
+
+
+def test_legacy_usage_does_not_inherit_current_finalizer_identity(monkeypatch):
+    captured = {}
+
+    async def capture(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(usage, "record_agent_event", capture)
+    usage.record_agent_event_sync(
+        phase="reporting",
+        status="succeeded",
+        attempt=1,
+        config=config("legacy", **{RUNTIME_ACTOR_ID_KEY: "bob"}),
+        latency_ms=0,
+    )
+    assert captured["consumer_id"] is None
+
+
+def test_cross_user_revisions_retain_each_invocation(agent_events, monkeypatch):
+    from apex.graphs.pipeline import phase_subgraph
+
+    times = iter([10.0, 10.012, 20.0, 20.025])
+    monkeypatch.setattr(phase_subgraph, "perf_counter", lambda: next(times))
+    g = builder.compile(checkpointer=InMemorySaver())
+    cfg = config(
+        "cross-user-revision",
+        phases=["story_analysis"],
+        gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
+        **{RUNTIME_ACTOR_ID_KEY: "alice"},
+    )
+    g.invoke({"title": "Demo", "request": "load test checkout"}, cfg)
+    bob: RunnableConfig = {
+        **cfg,
+        "configurable": {**cfg.get("configurable", {}), RUNTIME_ACTOR_ID_KEY: "bob"},
+    }
+    g.invoke(Command(resume={"action": "revise", "instructions": "Add a checkout case"}), bob)
+    g.invoke(Command(resume={"action": "approve"}), bob)
+    assert [(e["consumer_id"], e["revision"], e["latency_ms"]) for e in agent_events] == [
+        ("alice", 0, 12),
+        ("bob", 1, 25),
+    ]

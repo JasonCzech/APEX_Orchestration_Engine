@@ -10,6 +10,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     group_by: 'model',
   },
   totals: {
+    priced_events: 8, unpriced_events: 0, cost_complete: true,
     events: 8,
     latency_samples: 8,
     errors: 1,
@@ -30,6 +31,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     {
       key: 'claude-3-5-sonnet-latest',
       thread_id: null,
+      priced_events: 5, unpriced_events: 0, cost_complete: true,
       events: 5,
     latency_samples: 5,
       errors: 1,
@@ -47,6 +49,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     {
       key: 'gpt-4o-mini',
       thread_id: null,
+      priced_events: 3, unpriced_events: 0, cost_complete: true,
       events: 3,
     latency_samples: 3,
       errors: 0,
@@ -66,6 +69,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     {
       bucket_start: '2026-06-05T00:00:00Z',
       key: 'claude-3-5-sonnet-latest',
+      priced_events: 2, unpriced_events: 0, cost_complete: true,
       events: 2,
     latency_samples: 2,
       errors: 0,
@@ -83,6 +87,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     {
       bucket_start: '2026-06-05T00:00:00Z',
       key: 'gpt-4o-mini',
+      priced_events: 1, unpriced_events: 0, cost_complete: true,
       events: 1,
     latency_samples: 1,
       errors: 0,
@@ -100,6 +105,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
     {
       bucket_start: '2026-06-06T00:00:00Z',
       key: 'claude-3-5-sonnet-latest',
+      priced_events: 3, unpriced_events: 0, cost_complete: true,
       events: 3,
     latency_samples: 3,
       errors: 1,
@@ -122,6 +128,7 @@ export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
 export const EMPTY_AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
   ...AGENT_ANALYTICS_FIXTURE,
   totals: {
+    priced_events: 0, unpriced_events: 0, cost_complete: true,
     events: 0,
     latency_samples: 0,
     errors: 0,

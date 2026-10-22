@@ -27,6 +27,7 @@ from apex.services.agent_analytics import (
     AgentOrder,
     AgentSort,
 )
+from apex.services.analytics_scope import AnalyticsVisibility
 from apex.services.usage import UsageAnalyticsRepository
 from apex.settings import ApexSettings
 
@@ -49,6 +50,7 @@ class UsageAnalyticsReader(Protocol):
         bucket: str,
         project_id: str | None = None,
         visible_scopes: tuple[ScopeRef, ...] | None = None,
+        consumer_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -64,6 +66,7 @@ class AgentAnalyticsReader(Protocol):
         group_by: AgentGroupBy,
         project_id: str | None = None,
         visible_scopes: tuple[ScopeRef, ...] | None = None,
+        consumer_id: str | None = None,
         models: tuple[str, ...] = (),
         stages: tuple[str, ...] = (),
         agents: tuple[str, ...] = (),
@@ -73,6 +76,10 @@ class AgentAnalyticsReader(Protocol):
         order: AgentOrder = "desc",
         limit: int = 20,
         offset: int = 0,
+        app_id: str | None = None,
+        model_id: str | None = None,
+        provider: str | None = None,
+        cost_basis: str = "corrected",
     ) -> dict[str, Any]: ...
 
 
@@ -174,6 +181,9 @@ class UsageAnalyticsResponse(BaseModel):
 
 
 class AgentAnalyticsTotals(BaseModel):
+    priced_events: int = 0
+    unpriced_events: int = 0
+    cost_complete: bool = True
     events: int
     errors: int
     input_tokens: int
@@ -195,7 +205,20 @@ class AgentAnalyticsTotals(BaseModel):
     models: int = 0
 
 
-class AgentAnalyticsBreakdownRow(BaseModel):
+class AgentAnalyticsGroupMetadata(BaseModel):
+    label: str | None = None
+    model_id: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    archived: bool | None = None
+    project_id: str | None = None
+    app_id: str | None = None
+
+
+class AgentAnalyticsBreakdownRow(AgentAnalyticsGroupMetadata):
+    priced_events: int = 0
+    unpriced_events: int = 0
+    cost_complete: bool = True
     key: str
     thread_id: str | None = None
     events: int
@@ -217,7 +240,10 @@ class AgentAnalyticsBreakdownRow(BaseModel):
     runs: int
 
 
-class AgentAnalyticsSeriesPoint(BaseModel):
+class AgentAnalyticsSeriesPoint(AgentAnalyticsGroupMetadata):
+    priced_events: int = 0
+    unpriced_events: int = 0
+    cost_complete: bool = True
     bucket_start: datetime
     key: str
     events: int
@@ -323,7 +349,7 @@ def _validate_window(window_from: datetime, window_to: datetime, bucket: str) ->
 
 
 def _cost_visible(identity: ConsumerIdentity, settings: ApexSettings) -> bool:
-    return bool(settings.analytics_cost_visible and identity.role is Role.ADMIN)
+    return bool(settings.analytics_cost_visible)
 
 
 def _scrub_costs(payload: dict[str, Any]) -> dict[str, Any]:
@@ -343,6 +369,8 @@ async def get_usage_analytics(
     to: ToParam = None,
     bucket: BucketParam = "day",
     project: ProjectParam = None,
+    view: Literal["mine", "authorized"] | None = None,
+    consumer_id: Annotated[NoNulStr | None, Query(max_length=255)] = None,
 ) -> UsageAnalyticsResponse:
     """Aggregate usage events (any authenticated role; results are scope-filtered)."""
     window_to = _aware(to) or datetime.now(UTC)
@@ -350,13 +378,15 @@ async def get_usage_analytics(
     _validate_window(window_from, window_to, bucket)
     if project is not None and not identity.allows_project(project):
         raise HTTPException(status_code=403, detail="project is outside this consumer's scopes")
-    visible = None if identity.is_unscoped else tuple(identity.scopes)
+    visibility = AnalyticsVisibility.resolve(identity, view, consumer_id)
+    visible = visibility.scopes
     data = await repo.aggregate(
         window_from=window_from,
         window_to=window_to,
         bucket=bucket,
         project_id=project,
         visible_scopes=visible,
+        consumer_id=visibility.consumer_id,
     )
     return UsageAnalyticsResponse(
         window=UsageWindow.model_validate({"from": window_from, "to": window_to, "bucket": bucket}),
@@ -377,6 +407,8 @@ async def get_agent_analytics(
     bucket: BucketParam = "day",
     group_by: GroupByParam = "model",
     project: ProjectParam = None,
+    view: Literal["mine", "authorized"] | None = None,
+    consumer_id: Annotated[NoNulStr | None, Query(max_length=255)] = None,
     model: MultiParam = None,
     stage: MultiParam = None,
     agent: MultiParam = None,
@@ -386,6 +418,10 @@ async def get_agent_analytics(
     order: AgentOrderParam = "desc",
     limit: LimitParam = 20,
     offset: OffsetParam = 0,
+    app: Annotated[ScopeId | None, Query(max_length=255)] = None,
+    model_id: Annotated[NoNulStr | None, Query(max_length=32)] = None,
+    provider: Annotated[NoNulStr | None, Query(max_length=64)] = None,
+    cost_basis: Literal["corrected", "original"] = "corrected",
 ) -> AgentAnalyticsResponse:
     """Aggregate LangGraph agent behavior events."""
     window_to = _aware(to) or datetime.now(UTC)
@@ -393,9 +429,16 @@ async def get_agent_analytics(
     _validate_window(window_from, window_to, bucket)
     if project is not None and not identity.allows_project(project):
         raise HTTPException(status_code=403, detail="project is outside this consumer's scopes")
-    visible = None if identity.is_unscoped else tuple(identity.scopes)
+    visibility = AnalyticsVisibility.resolve(identity, view, consumer_id)
+    visible = visibility.scopes
     show_cost = _cost_visible(identity, settings)
     effective_sort = "total_tokens" if not show_cost and sort == "cost_usd" else sort
+    if group_by == "user" and identity.role is not Role.ADMIN:
+        raise HTTPException(403, "User grouping requires an administrator")
+    if app is not None and (
+        project is None or not identity.allows_scope(project_id=project, app_id=app)
+    ):
+        raise HTTPException(403, "Application is outside the requested project scope")
     models = _multi(model)
     stages = _multi(stage)
     agents = _multi(agent)
@@ -406,6 +449,11 @@ async def get_agent_analytics(
         group_by=group_by,
         project_id=project,
         visible_scopes=visible,
+        consumer_id=visibility.consumer_id,
+        app_id=app,
+        model_id=model_id,
+        provider=provider,
+        cost_basis=cost_basis,
         models=models,
         stages=stages,
         agents=agents,
