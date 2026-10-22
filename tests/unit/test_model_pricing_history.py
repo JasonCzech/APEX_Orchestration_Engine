@@ -3,7 +3,6 @@
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -40,14 +39,17 @@ from apex.services.model_pricing import (
     price_event,
     process_correction,
 )
+from apex.settings import ApexSettings, LLMSettings
 
 ADMIN = ConsumerIdentity(
     consumer_id="admin", name="Admin", consumer_type=ConsumerType.DASHBOARD, role=Role.ADMIN
 )
-SETTINGS = SimpleNamespace(
-    llm=SimpleNamespace(allowed_models=["gpt-4o", "gpt-4o-mini"], default_model="gpt-4o-mini")
+SETTINGS = ApexSettings(
+    llm=LLMSettings(allowed_models=["gpt-4o", "gpt-4o-mini"], default_model="gpt-4o-mini")
 )
-RATES = Rates(input="4", output="8", cache_read="0.5", cache_creation="5")
+RATES = Rates(
+    input=Decimal("4"), output=Decimal("8"), cache_read=Decimal("0.5"), cache_creation=Decimal("5")
+)
 
 
 @pytest_asyncio.fixture(
@@ -233,7 +235,12 @@ async def test_zero_price_and_interval_boundaries(session):
         expected_version=model.version,
         reason="Free promotion",
         idempotency_key="free",
-        rates=Rates(input="0", output="0", cache_read="0", cache_creation="0"),
+        rates=Rates(
+            input=Decimal("0"),
+            output=Decimal("0"),
+            cache_read=Decimal("0"),
+            cache_creation=Decimal("0"),
+        ),
         effective_from=start,
     )
     await set_price(model.id, body, ADMIN, session, SETTINGS)
@@ -301,6 +308,56 @@ async def test_admission_archive_and_resume(session, monkeypatch):
         await admit_models(
             {"model_by_phase": {"execution": "gpt-4o"}}, thread_id="thread", actor_id="alice"
         )
+
+
+@pytest.mark.asyncio
+async def test_owned_rerun_checks_only_active_agents_and_preserves_other_model_choices(
+    session, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from apex.domain.pipeline import Phase
+    from apex.services.model_pricing import admit_models
+
+    monkeypatch.setattr("apex.settings.get_settings", lambda: SETTINGS)
+
+    @asynccontextmanager
+    async def use_session():
+        yield session
+
+    monkeypatch.setattr("apex.persistence.db.get_sessionmaker", lambda: use_session)
+    archived = await ensure_model(session, "gpt-4o")
+    archived.archived_at = datetime.now(UTC)
+    await session.commit()
+    owners = {phase.value: "langgraph" for phase in Phase}
+    owners["execution"] = "hitl"
+    retained = {phase.value: "gpt-4o" for phase in Phase if phase != Phase.EXECUTION}
+    retained["reporting"] = "gpt-4o-mini"
+    config = {
+        "phase_execution": {"schema_version": 1, "owners": owners},
+        "model_by_phase": retained,
+        "rerun_phases": ["execution"],
+    }
+    # Human-only reruns need no model availability or admission database IO.
+    monkeypatch.setattr(
+        "apex.persistence.db.get_sessionmaker",
+        lambda: pytest.fail("Human rerun looked up model admission"),
+    )
+    assert await admit_models(config, thread_id="owned-thread", actor_id="alice") == retained
+    monkeypatch.setattr("apex.persistence.db.get_sessionmaker", lambda: use_session)
+
+    config["rerun_phases"] = ["reporting"]
+    assert await admit_models(config, thread_id="owned-thread", actor_id="alice") == retained
+    assert (
+        await admit_models(config, thread_id="owned-thread", actor_id="alice", resume=True)
+        == retained
+    )
+
+    # An explicitly rerun agent must still pass current availability checks.
+    config["rerun_phases"] = ["story_analysis"]
+    with pytest.raises(HTTPException) as unavailable:
+        await admit_models(config, thread_id="owned-thread", actor_id="alice")
+    assert unavailable.value.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -430,7 +487,9 @@ def test_rates_reject_invalid_or_overprecision_values(value):
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        Rates(input=value, output="1", cache_read="1", cache_creation="1")
+        Rates.model_validate(
+            {"input": value, "output": "1", "cache_read": "1", "cache_creation": "1"}
+        )
 
 
 @pytest.mark.asyncio

@@ -79,7 +79,7 @@ async def test_secret_ref_without_secrets_port_raises() -> None:
         )
 
 
-def test_port_kind_covers_all_nine_kinds() -> None:
+def test_port_kind_covers_all_ten_kinds() -> None:
     assert {k.value for k in PortKind} == {
         "work_tracking",
         "log_search",
@@ -89,6 +89,7 @@ def test_port_kind_covers_all_nine_kinds() -> None:
         "source_control",
         "execution_engine",
         "artifact_store",
+        "analysis",
         "secrets",
     }
 

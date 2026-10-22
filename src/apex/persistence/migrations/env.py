@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
 from apex.persistence.database_role_claims import DATABASE_ROLE_LOCK_KEY
 from apex.persistence.db import dispose_engine_instance_definitively
+from apex.persistence.migration_compare import compare_server_default
 from apex.persistence.migration_lineage import (
     CREATE_LINEAGE_TABLE_SQL,
     INSERT_LINEAGE_SQL,
@@ -93,7 +94,7 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
         include_schemas=True,
         include_object=_include_object,
         compare_type=True,
-        compare_server_default=True,
+        compare_server_default=compare_server_default,
         literal_binds=connection is None,
     )
 

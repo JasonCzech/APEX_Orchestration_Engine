@@ -5,7 +5,7 @@ Flow (plan Part 1, "Durability & the execution phase" — the engine kill switch
 1. Discover the EngineHandle: thread state ``values.engine_handle`` via the loopback
    LangGraph API (the caller's key is forwarded, so @auth.on scoping applies), falling
    back to the latest ``engine_runs`` projection row;
-2. resolve the engine adapter with the run's persisted project scope;
+2. resolve the engine adapter with the immutable traffic-entry project scope;
 3. ``adapter.abort(handle, reason=...)`` — failures propagate and leave the graph
    poller alive so a failed kill never strands the external load;
 4. leave an active LangGraph monitor alive so it can collect results and durably
@@ -15,7 +15,7 @@ Flow (plan Part 1, "Durability & the execution phase" — the engine kill switch
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypeGuard, cast
 
@@ -33,6 +33,7 @@ from apex.domain.pipeline import (
     Phase,
     PhaseStatus,
 )
+from apex.domain.test_scope import TestScopeV1
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
     EngineProviderRunNotFoundError,
@@ -54,6 +55,7 @@ from apex.services.public_projection import (
     validated_native_identifier,
     validated_native_mapping_page,
 )
+from apex.services.test_scope import load_persisted_test_scope
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -190,6 +192,9 @@ class _AbortTarget:
     connection_version: datetime | None = None
     project_id: str | None = None
     app_id: str | None = None
+    execution_project_id: str | None = None
+    test_scope: TestScopeV1 | None = None
+    checkpoint_scope_observed: bool = False
     attempt: int | None = None
     phase: str | None = None
     projection_id: str | None = None
@@ -293,6 +298,11 @@ class EngineAbortService:
         if target is None:
             await self._release_read_transaction()
             raise EngineRunNotFoundError(thread_id)
+        try:
+            target = await self._bind_execution_scope(thread_id, target)
+        except BaseException:
+            await self._release_read_transaction()
+            raise
         if get_settings().is_locked_down and (
             not target.handle.connection_id or target.connection_version is None
         ):
@@ -325,6 +335,52 @@ class EngineAbortService:
             monitor_run_ids,
             reason=reason,
         )
+
+    async def _bind_execution_scope(self, thread_id: str, target: _AbortTarget) -> _AbortTarget:
+        """Separate provider routing from run ownership using the durable binding."""
+        try:
+            scope = await load_persisted_test_scope(thread_id)
+            if scope is None:
+                if target.test_scope is not None:
+                    raise ValueError("Scoped checkpoint has no immutable participant binding")
+                return replace(target, execution_project_id=target.project_id)
+            if (
+                target.project_id != scope.primary.project_id
+                or target.app_id != scope.primary.application_id
+            ):
+                raise ValueError("Engine projection ownership differs from its scope binding")
+            if target.checkpoint_scope_observed:
+                checkpoint = target.test_scope
+                if checkpoint is None or (
+                    checkpoint.primary_participant_id != scope.primary_participant_id
+                    or checkpoint.traffic_entry_participant_id != scope.traffic_entry_participant_id
+                    or {p.id: p for p in checkpoint.participants}
+                    != {p.id: p for p in scope.participants}
+                ):
+                    raise ValueError("Checkpoint topology differs from its scope binding")
+            for participant in scope.participants:
+                if self._allowed_scopes is not None and not any(
+                    grant.project_id == participant.project_id
+                    and grant.app_id in (None, participant.application_id)
+                    for grant in self._allowed_scopes
+                ):
+                    raise ValueError("Engine abort requires access to every participant")
+                if (
+                    self._allowed_project_ids is not None
+                    and participant.project_id not in self._allowed_project_ids
+                ):
+                    raise ValueError("Engine abort requires access to every project")
+            return replace(
+                target,
+                execution_project_id=(
+                    scope.traffic_entry.project_id
+                    if scope.traffic_entry
+                    else scope.primary.project_id
+                ),
+                test_scope=scope,
+            )
+        except ValueError:
+            raise EngineConnectionAffinityMissingError from None
 
     async def _abort_target(
         self,
@@ -371,7 +427,7 @@ class EngineAbortService:
                 resolved = await metadata_resolver(
                     PortKind.EXECUTION_ENGINE,
                     connection_id=handle.connection_id,
-                    project_id=target.project_id,
+                    project_id=target.execution_project_id or target.project_id,
                     expected_provider=handle.engine,
                 )
                 if not isinstance(resolved, ResolvedAdapter):
@@ -399,7 +455,7 @@ class EngineAbortService:
                 adapter, resolved_connection_id = await self._resolver.resolve_with_connection_id(
                     PortKind.EXECUTION_ENGINE,
                     connection_id=handle.connection_id,
-                    project_id=target.project_id,
+                    project_id=target.execution_project_id or target.project_id,
                     expected_provider=handle.engine,
                 )
                 if not _safe_connection_id(resolved_connection_id):
@@ -717,6 +773,12 @@ class EngineAbortService:
             )
         run_config = values.get("run_config")
         run_config = run_config if type(run_config) is dict else {}
+        scope = None
+        if run_config.get("test_scope") is not None:
+            try:
+                scope = TestScopeV1.model_validate(run_config["test_scope"])
+            except ValueError:
+                raise EngineConnectionAffinityMissingError from None
         return _StateTarget(
             found=True,
             attempt_bound=attempt_bound,
@@ -729,6 +791,8 @@ class EngineAbortService:
                 ),
                 project_id=_optional_str(run_config.get("project_id")),
                 app_id=_optional_str(run_config.get("app_id")),
+                test_scope=scope,
+                checkpoint_scope_observed=True,
                 attempt=attempt,
                 bound_at=_optional_datetime(state.get("created_at")),
             ),
@@ -949,6 +1013,10 @@ def _merge_abort_targets(primary: _AbortTarget, projection: _AbortTarget) -> _Ab
         connection_version=primary.connection_version or projection.connection_version,
         project_id=primary.project_id or projection.project_id,
         app_id=primary.app_id or projection.app_id,
+        test_scope=primary.test_scope or projection.test_scope,
+        checkpoint_scope_observed=(
+            primary.checkpoint_scope_observed or projection.checkpoint_scope_observed
+        ),
         attempt=primary.attempt or projection.attempt,
         phase=primary.phase or projection.phase,
         projection_id=projection.projection_id,

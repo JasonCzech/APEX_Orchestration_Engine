@@ -63,6 +63,14 @@ def test_revision_upgrade_and_downgrade_operations_are_executable(
 
     module.upgrade()
     upgrade_calls = tuple(operations.calls)
+    if module.revision == "0042":
+        # Pricing history is intentionally retained; rollback requires a
+        # separately reviewed archival migration, never an implicit data drop.
+        with pytest.raises(RuntimeError, match="explicit archival migration"):
+            module.downgrade()
+        assert tuple(operations.calls) == upgrade_calls
+        assert upgrade_calls
+        return
     module.downgrade()
     downgrade_calls = tuple(operations.calls[len(upgrade_calls) :])
 

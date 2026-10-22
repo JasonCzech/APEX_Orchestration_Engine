@@ -15,32 +15,37 @@ import {
 } from './wizardTestUtils'
 
 describe('NewRunWizard shell', () => {
-  it('waits for a complete project edit and confirms before clearing attached work', async () => {
+  it('confirms participant changes, preserves authored workload, and retains documents for revalidation', async () => {
     installWizardHandlers([draftRead({ id: 'draft-scope', payload: {
       title: 'Existing test', request: 'Existing request',
-      scope: { project_id: 'demo', app_id: 'app-checkout', environment_id: 'env-staging' },
-      document_ids: ['doc-existing'], prompt_overrides: { 'phase/story_analysis/system': { content: 'Edited prompt' } },
+      scope: { project_id: 'demo', app_id: 'app-checkout', environment_id: 'env-staging', test_scope: {
+        schema_version: 1,
+        participants: [{ id: 'backend', layer: 'backend', project_id: 'demo', application_id: 'app-checkout', environment_id: 'env-staging' }],
+        primary_participant_id: 'backend', traffic_entry_participant_id: 'backend',
+      } },
+      document_ids: ['doc-existing'], context_summary_ids: ['summary-existing'],
+      config: { golden_configurable: { load_test: { vusers: 75, ramp_s: 10, duration_s: 60, slas: { p95_ms: 200 } } } },
+      prompt_overrides: { 'phase/story_analysis/system': { content: 'Edited prompt' } },
     } })])
     const user = userEvent.setup()
     const rendered = renderWizard('/runs/new?draft=draft-scope')
     const project = await screen.findByLabelText('Project')
-    expect(screen.getAllByRole('heading', { level: 2 }).length).toBeGreaterThan(0)
     await waitFor(() => expect(project).toHaveValue('demo'))
-    await user.clear(project)
-    await user.type(project, 'new-project')
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    await user.tab()
+    await user.selectOptions(project, '')
     const dialog = await screen.findByRole('dialog', { name: 'Change test scope' })
-    expect(dialog).toHaveTextContent('1 attached documents')
+    expect(dialog).toHaveTextContent('Context tied to removed systems must be revalidated')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(project).toHaveValue('demo')
-    await user.clear(project)
-    await user.type(project, 'new-project')
-    await user.tab()
-    await user.click(within(await screen.findByRole('dialog', { name: 'Change test scope' })).getByRole('button', { name: 'Change project' }))
-    expect(project).toHaveValue('new-project')
+    await user.selectOptions(project, '')
+    await user.click(within(await screen.findByRole('dialog', { name: 'Change test scope' })).getByRole('button', { name: 'Change scope' }))
+    expect(project).toHaveValue('')
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    expect(screen.queryByText('doc-existing')).not.toBeInTheDocument()
+    expect(screen.getByTestId('review-issues')).toHaveTextContent('Attached document doc-existing is missing or unavailable')
+    expect(screen.getByRole('button', { name: 'Remove missing document' })).toBeInTheDocument()
+    const preview = JSON.parse(screen.getByTestId('launch-payload-json').textContent!)
+    expect(preview.document_ids).toEqual(['doc-existing'])
+    expect(preview.configurable.project_id).toBe('')
+    expect(preview.configurable.load_test).toEqual({ vusers: 75, ramp_s: 10, duration_s: 60, slas: { p95_ms: 200 } })
     await flushAndUnmountWizard(rendered)
   })
 

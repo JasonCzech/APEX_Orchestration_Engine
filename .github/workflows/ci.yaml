@@ -809,10 +809,11 @@ jobs:
             nginxinc/nginx-unprivileged:1.31.2-alpine3.23@sha256:6320020c7da8714feab524e02c08c5a1958675c4e68700e93a2fd8970b065786
           docker run -d --name apex-minio \
             --network container:apex-minio-gateway \
+            --user 0:0 --entrypoint minio \
             -e MINIO_ROOT_USER=apex \
             -e MINIO_ROOT_PASSWORD=apex-minio \
-            minio/minio:RELEASE.2024-07-16T23-46-41Z@sha256:77ff9f7e12549d269990b167fa21da010fa8b0beb40d6064569b8887e37c456b \
-            server /data --address 127.0.0.1:9100 --console-address 127.0.0.1:9101
+            bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20 \
+            server /bitnami/minio/data --address 127.0.0.1:9100 --console-address 127.0.0.1:9101
           for i in {1..30}; do
             if curl -fsS http://localhost:9000/minio/health/live >/dev/null; then
               break

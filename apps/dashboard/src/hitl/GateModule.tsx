@@ -38,6 +38,8 @@ import { GateDraftGuard } from './GateDraftGuard'
 import { GateActionBar } from './GateActionBar'
 import {
   isActionAllowedForGate,
+  gateDraftSignature,
+  isReopeningAction,
   isEngineRetryGateKind,
   isPromptDirty,
   type GateAction,
@@ -49,6 +51,7 @@ import { PhaseReviewPanel } from './PhaseReviewPanel'
 import { PromptReviewPanel } from './PromptReviewPanel'
 import { SupersededBanner } from './SupersededBanner'
 import { useGate } from './useGate'
+import { HumanCompletionPanel } from './HumanCompletionPanel'
 import './hitl.css'
 
 function phaseLabel(phase: string): string {
@@ -59,6 +62,10 @@ function gateKindLabel(kind: GateInstance['kind']): string {
   switch (kind) {
     case 'prompt_review':
       return 'Review prompts'
+    case 'analysis_recovery':
+      return 'Recover analysis'
+    case 'human_completion':
+      return 'Complete human work'
     case 'phase_review':
       return 'Review phase results'
     case 'engine_provision_retry':
@@ -116,7 +123,7 @@ export function GateModuleView({
         {header}
         <div className="gate-awaiting" data-testid="gate-awaiting">
           <span className="gate-spinner" aria-hidden="true" />
-          <span>
+          {machineState.action === 'complete' ? <span>Validating completed work…</span> : <span>
             Agent working on your{' '}
             {machineState.action === 'retry'
               ? 'provider retry'
@@ -126,7 +133,7 @@ export function GateModuleView({
                 ? 'prompt edits'
                 : 'revision instructions'} — the gate
             will reopen.
-          </span>
+          </span>}
         </div>
       </section>
     )
@@ -152,7 +159,7 @@ export function GateModuleView({
   return (
     <section className={frameClass} data-testid="gate-module" aria-label={kindLabel}>
       {header}
-      <GateDraftGuard dirty={!submitting && (dirty || Boolean(draft.message?.trim() || draft.instructions?.trim()))} />
+      <GateDraftGuard dirty={!submitting && (dirty || Boolean(draft.output) || Boolean(draft.message?.trim() || draft.instructions?.trim()))} />
 
       {machineState.tag === 'failed' && (
         <div className="tonal-card danger gate-failed" data-testid="gate-failed">
@@ -205,6 +212,7 @@ export function GateModuleView({
           onEdit={onEdit}
         />
       )}
+      {payload?.kind === 'human_completion' && <HumanCompletionPanel key={gateDraftSignature(gate)} payload={payload} output={draft.output} disabled={disabled} onChange={output => onEdit({ output })} />}
       {payload?.kind === 'phase_review' && (
         <PhaseReviewPanel
           threadId={threadId}
@@ -301,6 +309,7 @@ export function GateModule({
       accepted.action !== 'discuss' &&
       accepted.action !== 'revise' &&
       accepted.action !== 'retry' &&
+      (accepted.action !== 'complete' || hitl.state.tag === 'no_gate' || hitl.gate?.interrupt_id !== accepted.interruptId) &&
       (!expectedId || accepted.interruptId === expectedId)
     ) {
       firedRef.current = true
@@ -311,14 +320,14 @@ export function GateModule({
       firedRef.current = true
       onOutcome?.({ type: 'superseded' })
     }
-  }, [accepted, supersededGateId, onOutcome, expectedId])
+  }, [accepted, supersededGateId, onOutcome, expectedId, hitl.state.tag, hitl.gate?.interrupt_id])
 
   useEffect(() => {
     if (hitl.state.tag === 'open' || hitl.state.tag === 'failed' || hitl.state.tag === 'superseded' || hitl.state.tag === 'no_gate') onReopening?.(false)
   }, [hitl.state.tag, onReopening])
 
   const submit = useCallback((action: GateAction) => {
-    if (['modify', 'discuss', 'revise', 'retry'].includes(action)) onReopening?.(true)
+    if (isReopeningAction(action)) onReopening?.(true)
     hitl.submit(action)
   }, [hitl, onReopening])
 
@@ -342,6 +351,8 @@ export function GateModule({
         const advertised = gate.payload?.actions ?? []
         if (!advertised.includes(action)) return false
         switch (action) {
+          case 'complete':
+          case 'assign_hitl':
           case 'approve':
           case 'retry':
             submit(action)

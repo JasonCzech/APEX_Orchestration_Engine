@@ -605,6 +605,15 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
     """
 
     limits = (settings or get_settings()).runs
+    prompt_edit = payload.get("prompt") if type(payload) is dict else None
+    structured_contexts = (
+        type(prompt_edit) is dict and type(prompt_edit.get("context_edits")) is list
+    )
+    total_limit = (
+        max(limits.max_gate_payload_chars, limits.max_model_input_chars)
+        if structured_contexts
+        else limits.max_gate_payload_chars
+    )
     stack: list[tuple[Any, tuple[str, ...], int]] = [(payload, (), 0)]
     total_chars = 0
     nodes = 0
@@ -633,6 +642,9 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
                     "user",
                     "application",
                 }
+            )
+            is_prompt_part = is_prompt_part or (
+                len(path) >= 3 and path[-3] == "context_edits" and path[-1] == "content"
             )
             per_string_limit = (
                 limits.max_prompt_part_chars if is_prompt_part else limits.max_gate_string_chars
@@ -672,10 +684,9 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
             raise ValueError("gate payload contains an unsupported value")
         elif type(value) is int and value.bit_length() > 256:
             raise ValueError("gate payload integers must not exceed 256 bits")
-        if total_chars > limits.max_gate_payload_chars:
+        if total_chars > total_limit:
             raise ValueError(
-                "gate payload exceeds the deployment limit "
-                f"({limits.max_gate_payload_chars} characters)"
+                f"gate payload exceeds the deployment limit ({total_limit} characters)"
             )
 
 

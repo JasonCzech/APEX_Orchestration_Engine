@@ -1,3 +1,5 @@
+import { TestScopeSummary } from '@/features/new-test/TestScopeSummary'
+import { CopyTestSetupButton } from './CopyTestSetupButton'
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -151,9 +153,9 @@ export function RunWorkspace({
   const announcementGate = summaryGate && typeof summaryGate.kind === 'string' && isPhaseName(summaryGate.phase)
     ? { kind: summaryGate.kind, phase: summaryGate.phase, interrupt_id: summaryGate.interrupt_id }
     : pendingGate
-  if (pendingGate?.kind === 'prompt_review' || pendingGate?.kind === 'phase_review') {
+  if (pendingGate?.kind === 'prompt_review' || pendingGate?.kind === 'phase_review' || pendingGate?.kind === 'human_completion') {
     const current = phaseStrip.find(entry => entry.phase === pendingGate.phase)
-    if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
+    if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : pendingGate.kind === 'human_completion' ? 'awaiting_human_completion' : 'awaiting_output_review'
   }
   const progress = phaseProgress(phaseStrip)
 
@@ -260,6 +262,7 @@ export function RunWorkspace({
         )}
         <span className="spacer" />
         {(!embedded || showEmbeddedControls) && <RequireRole role="operator">
+          <CopyTestSetupButton key={threadId} threadId={threadId} />
           {!hitl.gate && detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
             <AbortConfirm
@@ -327,6 +330,7 @@ export function RunWorkspace({
         />
       )}
       <ScopeContext project={detail.project_id} application={detail.app_id} />
+      <TestScopeSummary value={detail.test_scope} />
       <nav className="run-sections ux-section-navigation" aria-label="Run sections">
         {embedded ? (
           <>
@@ -360,7 +364,7 @@ export function RunWorkspace({
         <div className="run-pipeline-hero-head">
           <div>
             <div className="run-pipeline-hero-kicker">Test progress</div>
-            <h3 className="run-pipeline-hero-title">Selected phases</h3>
+            <h3 className="run-pipeline-hero-title">Workflow phases</h3>
           </div>
           <div className="run-pipeline-counter-group">
             <span className={`run-pipeline-counter${detail.thread_status === 'busy' ? ' live' : ''}`}>

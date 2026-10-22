@@ -5,11 +5,12 @@ invariants (immutability, monotonic version numbers, pointer semantics) live in
 PromptCatalogService so they are enforced identically over fakes in tests.
 """
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, false, func, or_, select, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.persistence.models import Prompt, PromptVersion
+from apex.auth.identity import ConsumerIdentity
+from apex.persistence.models import Application, Environment, Prompt, PromptVersion
 from apex.persistence.repositories._conflicts import (
     bounded_driver_message,
     driver_constraint_name,
@@ -21,17 +22,104 @@ class DuplicatePromptKeyError(Exception):
 
 
 class PromptRepository:
-    def __init__(self, session: AsyncSession, *, commit_on_write: bool = True) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        commit_on_write: bool = True,
+        identity: ConsumerIdentity | None = None,
+    ) -> None:
+        self.identity = identity
         self._session = session
         self._commit_on_write = commit_on_write
+
+    def readable(self):
+        identity = self.identity
+        if identity is None or identity.is_unscoped:
+            return true()
+        app_scope = or_(
+            *[
+                and_(
+                    Application.project_id == scope.project_id,
+                    Application.id == scope.app_id if scope.app_id else true(),
+                )
+                for scope in identity.scopes
+            ],
+            false(),
+        )
+        apps = select(Application.id).where(app_scope, Application.archived_at.is_(None))
+        envs = select(Environment.id).where(Environment.application_id.in_(apps))
+        return or_(
+            Prompt.namespace.not_in(["application", "environment"]),
+            and_(
+                Prompt.namespace == "application",
+                or_(Prompt.is_shared.is_(True), Prompt.application_id.in_(apps)),
+            ),
+            and_(Prompt.namespace == "environment", Prompt.environment_id.in_(envs)),
+        )
+
+    async def validate_associations(
+        self, application_id: str | None, environment_id: str | None
+    ) -> None:
+        if application_id and await self._session.get(Application, application_id) is None:
+            raise ValueError("Application not found")
+        if environment_id and await self._session.get(Environment, environment_id) is None:
+            raise ValueError("Environment not found")
+
+    async def set_default(self, prompt_id: str) -> Prompt:
+        # Lock the complete default family in stable order, including the current
+        # default; the partial unique indexes protect against concurrent inserts.
+        target = await self.get(prompt_id)
+        if target is None:
+            raise ValueError("Prompt not found")
+        family = and_(Prompt.namespace == target.namespace, Prompt.phase == target.phase)
+        locked = (
+            await self._session.scalars(
+                select(Prompt)
+                .where(family)
+                .order_by(Prompt.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+        target = next((row for row in locked if row.id == prompt_id), None)
+        if target is None:
+            raise ValueError("Prompt not found")
+        if (
+            target.namespace not in {"system", "phase"}
+            or not target.selection_enabled
+            or target.archived_at
+            or not target.active_version_id
+        ):
+            raise ValueError("Only active selectable system or phase prompts can be defaults")
+        await self._session.execute(update(Prompt).where(family).values(is_default=False))
+        await self._session.flush()
+        target.is_default = True
+        await self._finish_write()
+        return target
 
     # ── Reads ────────────────────────────────────────────────────────────────
 
     async def get(self, prompt_id: str) -> Prompt | None:
-        return await self._session.get(Prompt, prompt_id)
+        return await self._session.scalar(
+            select(Prompt).where(Prompt.id == prompt_id, self.readable())
+        )
+
+    async def get_default(self, namespace: str, *, phase: str | None = None) -> Prompt | None:
+        """Read the designated default without paginating catalog alternatives."""
+        return await self._session.scalar(
+            select(Prompt).where(
+                Prompt.namespace == namespace,
+                Prompt.phase == phase,
+                Prompt.is_default.is_(True),
+                self.readable(),
+            )
+        )
 
     async def get_by_key(self, namespace: str, key: str) -> Prompt | None:
-        stmt = select(Prompt).where(Prompt.namespace == namespace, Prompt.key == key)
+        stmt = select(Prompt).where(
+            Prompt.namespace == namespace, Prompt.key == key, self.readable()
+        )
         return await self._session.scalar(stmt)
 
     async def search(
@@ -43,11 +131,31 @@ class PromptRepository:
         allow_application: bool = False,
         limit: int = 100,
         offset: int = 0,
+        phase: str | None = None,
+        application_id: str | None = None,
+        include_shared: bool = False,
+        environment_id: str | None = None,
+        selection_enabled: bool | None = None,
     ) -> list[Prompt]:
-        stmt = select(Prompt).order_by(Prompt.namespace, Prompt.key)
+        stmt = select(Prompt).where(self.readable()).order_by(Prompt.namespace, Prompt.key)
+        if phase is not None:
+            stmt = stmt.where(Prompt.phase == phase)
+        if application_id is not None:
+            stmt = stmt.where(
+                or_(
+                    Prompt.application_id == application_id,
+                    Prompt.is_shared.is_(True) if include_shared else false(),
+                )
+            )
+        elif include_shared:
+            stmt = stmt.where(Prompt.is_shared.is_(True))
+        if environment_id is not None:
+            stmt = stmt.where(Prompt.environment_id == environment_id)
+        if selection_enabled is not None:
+            stmt = stmt.where(Prompt.selection_enabled == selection_enabled)
         if namespace is not None:
             stmt = stmt.where(Prompt.namespace == namespace)
-        if not allow_application:
+        if not allow_application and self.identity is None:
             # Application prompts do not carry project ownership yet. Keep them
             # out of ordinary catalog reads until that ownership can be enforced.
             stmt = stmt.where(Prompt.namespace != "application")
@@ -65,12 +173,20 @@ class PromptRepository:
         return list((await self._session.scalars(stmt.limit(limit).offset(offset))).all())
 
     async def get_version(self, version_id: str) -> PromptVersion | None:
-        return await self._session.get(PromptVersion, version_id)
+        return await self._session.scalar(
+            select(PromptVersion)
+            .join(Prompt, Prompt.id == PromptVersion.prompt_id)
+            .where(PromptVersion.id == version_id, self.readable())
+        )
 
     async def get_versions_by_ids(self, version_ids: list[str]) -> list[PromptVersion]:
         if not version_ids:
             return []
-        stmt = select(PromptVersion).where(PromptVersion.id.in_(version_ids))
+        stmt = (
+            select(PromptVersion)
+            .join(Prompt, Prompt.id == PromptVersion.prompt_id)
+            .where(PromptVersion.id.in_(version_ids), self.readable())
+        )
         return list((await self._session.scalars(stmt)).all())
 
     async def list_versions(
@@ -78,7 +194,8 @@ class PromptRepository:
     ) -> list[PromptVersion]:
         stmt = (
             select(PromptVersion)
-            .where(PromptVersion.prompt_id == prompt_id)
+            .join(Prompt, Prompt.id == PromptVersion.prompt_id)
+            .where(PromptVersion.prompt_id == prompt_id, self.readable())
             .order_by(PromptVersion.version.desc())
         )
         return list((await self._session.scalars(stmt.limit(limit).offset(offset))).all())
@@ -105,7 +222,7 @@ class PromptRepository:
         allow_application: bool = False,
     ) -> PromptVersion | None:
         """The active version for an unarchived (namespace, key), or None."""
-        if namespace == "application" and not allow_application:
+        if self.identity is None and namespace == "application" and not allow_application:
             return None
         stmt = (
             select(PromptVersion)
@@ -114,6 +231,7 @@ class PromptRepository:
                 Prompt.namespace == namespace,
                 Prompt.key == key,
                 Prompt.archived_at.is_(None),
+                self.readable(),
             )
         )
         return await self._session.scalar(stmt)

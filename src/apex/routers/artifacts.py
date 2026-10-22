@@ -36,6 +36,7 @@ ArtifactKey = Annotated[NoNulStr, Path(min_length=1, max_length=1024)]
 FALLBACK_MEDIA_TYPE = "application/octet-stream"
 TRANSCRIPT_PREFIX = "transcripts/"
 ENGINE_RUN_PREFIX = "engine-runs/"
+ANALYSIS_PREFIX = "analysis/"
 _ENGINE_NAMESPACE_RE = re.compile(r"^engine-runs/[0-9a-f]{64}$")
 _MEDIA_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$")
 _MAX_CHECKPOINT_SCAN_DEPTH = 64
@@ -598,7 +599,7 @@ async def _load_artifact_authorization_rows(
         )
 
     transcript_thread_id = _transcript_thread_id(key)
-    if transcript_thread_id is not None:
+    if transcript_thread_id is not None or _analysis_thread_id(key) is not None:
         reference = await repositories.artifact_references.get_exact(key)
         return _ArtifactAuthorizationRows(
             artifact_reference=(
@@ -615,6 +616,11 @@ async def _authorize_materialized_artifact(
     rows: _ArtifactAuthorizationRows,
     request: Request,
 ) -> AuthorizedArtifact:
+    from apex.services.test_scope import can_access_thread
+
+    for reference in (rows.artifact_reference, rows.engine_run):
+        if reference is not None and not await can_access_thread(identity, reference.thread_id):
+            raise _artifact_not_found()
     document = rows.document
     if document is not None:
         if document.project_id is None or identity.allows_scope(
@@ -632,6 +638,47 @@ async def _authorize_materialized_artifact(
                 expected_size=document.size_bytes,
             )
         raise _artifact_not_found()
+
+    if key.startswith(ANALYSIS_PREFIX):
+        from apex.services.test_scope import allows_test_scope, load_persisted_test_scope
+
+        thread_id = _analysis_thread_id(key)
+        reference = rows.artifact_reference
+        if (
+            thread_id is None
+            or reference is None
+            or reference.kind != "analysis"
+            or reference.artifact_key != key
+            or reference.thread_id != thread_id
+            or not reference.ownership_known
+            or not _reference_visible(identity, reference)
+        ):
+            raise _artifact_not_found()
+        try:
+            binding = await load_persisted_test_scope(thread_id)
+        except (ValueError, TypeError):
+            raise _artifact_not_found() from None
+        if (
+            binding is None
+            or not allows_test_scope(identity, binding)
+            or reference.project_id != binding.primary.project_id
+            or reference.app_id != binding.primary.application_id
+        ):
+            raise _artifact_not_found()
+        connection_id = _connection_id(reference.connection_id)
+        if (
+            connection_id is None
+            or reference.size_bytes is None
+            or reference.content_sha256 is None
+        ):
+            raise _content_identity_repair_required()
+        return AuthorizedArtifact(
+            media_type="application/json",
+            project_id=reference.project_id,
+            connection_id=connection_id,
+            expected_size=reference.size_bytes,
+            content_sha256=reference.content_sha256,
+        )
 
     if key.startswith(ENGINE_RUN_PREFIX):
         if _parse_engine_key(key) is None:
@@ -890,6 +937,18 @@ def _transcript_thread_id(key: str) -> str | None:
         return None
     thread_id = key.removeprefix(TRANSCRIPT_PREFIX).split("/", 1)[0]
     return thread_id or None
+
+
+def _analysis_thread_id(key: str) -> str | None:
+    parts = key.split("/")
+    if (
+        len(parts) != 3
+        or parts[0] != "analysis"
+        or parts[1] in {"", ".", ".."}
+        or re.fullmatch(r"[0-9a-f]{64}\.json", parts[2]) is None
+    ):
+        return None
+    return parts[1]
 
 
 async def _thread_artifact_lookup(

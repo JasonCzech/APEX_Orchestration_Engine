@@ -21,10 +21,10 @@ describe('LangGraph client singleton', () => {
   it('retries construction after the cached promise rejects', async () => {
     const recoveredClient = { assistants: {}, runs: {}, threads: {} }
     clientConstructor
-      .mockImplementationOnce(() => {
+      .mockImplementationOnce(function () {
         throw new Error('transient chunk failure')
       })
-      .mockImplementationOnce(() => recoveredClient)
+      .mockImplementationOnce(function () { return recoveredClient })
 
     await expect(getLangGraphClient()).rejects.toThrow('transient chunk failure')
     await expect(getLangGraphClient()).resolves.toBe(recoveredClient)
@@ -33,7 +33,7 @@ describe('LangGraph client singleton', () => {
 
   it('rejects redirects without dropping SDK request headers or signals', async () => {
     const recoveredClient = { assistants: {}, runs: {}, threads: {} }
-    clientConstructor.mockReturnValue(recoveredClient)
+    clientConstructor.mockImplementation(function () { return recoveredClient })
     setApiKey('apex_redirect_test_key')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'))
 
@@ -67,7 +67,7 @@ describe('LangGraph client singleton', () => {
 
   it('does not clone a consumed POST request after the server responds', async () => {
     const recoveredClient = { assistants: {}, runs: {}, threads: {} }
-    clientConstructor.mockReturnValue(recoveredClient)
+    clientConstructor.mockImplementation(function () { return recoveredClient })
     setApiKey('apex_post_body_key')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
       async (input) => {
@@ -103,7 +103,7 @@ describe('LangGraph client singleton', () => {
   it('rebuilds the singleton after a same-key semantic session change', async () => {
     const firstClient = { assistants: {}, runs: {}, threads: {} }
     const secondClient = { assistants: {}, runs: {}, threads: {} }
-    clientConstructor.mockReturnValueOnce(firstClient).mockReturnValueOnce(secondClient)
+    clientConstructor.mockImplementationOnce(function () { return firstClient }).mockImplementationOnce(function () { return secondClient })
     setApiKey('apex_same_key_session')
 
     await expect(getLangGraphClient()).resolves.toBe(firstClient)
@@ -115,7 +115,7 @@ describe('LangGraph client singleton', () => {
 
   it('rejects an SDK response that belongs to a superseded semantic session', async () => {
     const recoveredClient = { assistants: {}, runs: {}, threads: {} }
-    clientConstructor.mockReturnValue(recoveredClient)
+    clientConstructor.mockImplementation(function () { return recoveredClient })
     setApiKey('apex_inflight_session')
     let resolveFetch: ((response: Response) => void) | undefined
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(

@@ -18,7 +18,7 @@ export function getDevSystemInfo(): SystemInfo {
       version: 'acc-add-line-demo-2.0',
       environment: 'offline-demo',
       features: { engines: true, documents: true, dummy_data: true },
-      limits: { max_context_packets: 32 },
+      limits: { max_test_participants: 32, max_context_packets: 32 },
       consumer: {
         name: 'Demo Presenter',
         role: 'admin',
@@ -31,7 +31,7 @@ export function getDevSystemInfo(): SystemInfo {
     version: 'dev',
     environment: 'development',
     features: { engines: true, documents: true },
-    limits: { max_context_packets: 32 },
+    limits: { max_test_participants: 32, max_context_packets: 32 },
     consumer: {
       name: 'Dev Admin',
       role: 'admin',

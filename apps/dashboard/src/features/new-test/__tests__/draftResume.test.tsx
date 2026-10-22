@@ -42,10 +42,9 @@ describe('wizard draft resume', () => {
 
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(screen.getByLabelText('Request')).toHaveValue('Pick up where we left off')
-    expect(screen.getByLabelText('Project')).toHaveValue('demo')
-    // The catalog selects rehydrate from the stored scope ids.
-    await waitFor(() => expect(screen.getByLabelText('Application')).toHaveValue('app-checkout'))
-    await waitFor(() => expect(screen.getByLabelText('Environment')).toHaveValue('env-staging'))
+    expect(screen.getByText(/Legacy selection: demo/)).toHaveTextContent('app-checkout')
+    expect(screen.getByText(/Legacy selection: demo/)).toHaveTextContent('env-staging')
+    expect(screen.getByText('Exactly one backend is required.')).toBeInTheDocument()
     // No resume picker when the URL already names a draft.
     expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)

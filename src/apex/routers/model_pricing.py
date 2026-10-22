@@ -35,7 +35,18 @@ from apex.services.model_pricing import (
     utc,
 )
 
-router = APIRouter(prefix="/analytics/models", tags=["model-pricing"])
+
+def require_pricing_admin(identity: CurrentIdentity) -> None:
+    """Authorize before request validation or database-dependent dependencies."""
+    if not identity.is_unscoped:
+        raise HTTPException(403, "Requires an unrestricted platform administrator")
+
+
+router = APIRouter(
+    prefix="/analytics/models",
+    tags=["model-pricing"],
+    dependencies=[Depends(require_pricing_admin)],
+)
 Session = Annotated[AsyncSession, Depends(get_session)]
 Rate = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=9, allow_inf_nan=False)]
 ModelId = Annotated[str, Path(min_length=1, max_length=32, pattern=r"^[^\x00]*$")]
@@ -155,8 +166,7 @@ class CorrectionJobResponse(BaseModel):
 
 
 def admin(identity: Any) -> None:
-    if not identity.is_unscoped:
-        raise HTTPException(403, "Requires an unrestricted platform administrator")
+    require_pricing_admin(identity)
     from apex.settings import get_settings
 
     if not get_settings().model_pricing_admin_enabled:

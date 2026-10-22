@@ -1,31 +1,64 @@
 # APEX prompt catalog and customization
 
 The application-neutral catalog lives in `src/apex/domain/prompt_catalog.py`.
-It supplies all seven phase system/user pairs, the shared platform policy and an
-application requirements template. The dashboard demo phase defaults are generated
-from this file; telecom-specific requirements belong in the demo application rows,
-not the phase instructions. Unwired JMeter/VuGen specialization entries have been
-removed from the active demo catalog.
+The Prompts page shows **All Namespaces**, **System Prompt**, **Phase context**,
+**Application context**, and **Environment Context**, in that order. All Namespaces
+is an aggregate view; retained request templates and unresolved legacy entries
+appear in its Compatibility section.
 
-## Instruction levels
+| Category | Catalog applicability | Selection per test |
+| --- | --- | --- |
+| System Prompt | Global alternatives; one default | Exactly one for the whole pipeline |
+| Phase context | Alternatives and one default per phase | Exactly one per included phase |
+| Application context | One application or explicitly shared | Ordered list of 0–32 |
+| Environment Context | One environment; application derived from it | Ordered list of 0–32 |
 
-1. **Platform policy and output contract** are runtime-owned. They establish
-   evidence handling, instruction precedence, action boundaries, uncertainty,
-   confidentiality and the validated output shape. The prompt review editor shows
-   the shared platform policy as read-only. A deployed runtime update changes this
-   policy; new model outputs record its catalog revision and the initial composed
-   model-input SHA-256 in their phase state/transcript.
-2. **Phase system instructions** define the job, required inputs, coverage and
-   completion criteria. **Phase user templates** supply the run title and request.
-   Both are editable catalog versions. The existing `phase/<phase>` run override
-   selects the phase system text; `phase/<phase>/user` selects its user text.
-3. **Application context** specializes all phases for one application. Use an
-   `application` namespace entry keyed by the actual application ID. It cannot
-   override platform rules, output schemas, approved targets or engine controls.
-4. **Run review edits, additional context and operator revisions** refine the
-   current task within those constraints. Conflicting requirements are blockers
-   when necessary for that phase. Retrieved evidence and prior outputs never
-   become instructions, even if they contain instruction-like text.
+Applicability is explicit metadata, immutable after creation. Catalog keys are
+names, not applicability rules. An unscoped administrator can create alternatives,
+activate immutable versions, and atomically replace a default. A default cannot
+be archived until a replacement is designated. Catalog reads and version access
+respect application/project ownership, including previews and launch validation.
+
+## Selection and runtime contract
+
+New wizard tests persist `prompt_selections` with `schema_version: 1`, one `system`
+reference, a `phases` map, and ordered `application`/`environment` arrays. Each
+reference contains `prompt_id`, `version_id`, and optional `override_content`.
+Selections pin the displayed version; activating another catalog version never
+silently updates the test. The wizard offers an explicit update action.
+
+Required selections initialize from catalog defaults. Optional lists start empty.
+Application changes retain shared context and remove incompatible scoped entries;
+environment changes remove incompatible environment entries. Drafts may be saved
+incomplete, but launch requires every reference and content field to validate.
+Legacy draft overrides that cannot be mapped remain visible as upgrade issues.
+
+At launch the server authorizes and validates selections and writes a server-owned
+`prompt_manifest` containing applicability, identities, versions, ordered entries,
+effective template content and setup-override provenance. Clients cannot submit
+this manifest. Runtime and resume resolve exclusively from it; catalog edits,
+rollback or archival do not change a launched test. A missing/corrupt manifest
+fails explicitly. Reruns retain the original manifest and ownership plan while a
+server-owned execution window limits which phases run again.
+Creating a new test from a saved configuration revalidates its selections.
+
+Model input is composed in this order:
+
+1. Fixed platform policy and runtime output contract.
+2. The one shared System Prompt.
+3. Current Phase context.
+4. Application context entries in selected order.
+5. Environment Context entries in selected order.
+6. Operator request, upstream handoffs and supporting evidence.
+
+During phase review the shared system content is read-only, enforced by both UI
+and server. Phase and optional context content may be revised for the current
+phase. Selected identities, ordering and membership remain fixed. These edits
+are run review revisions and never modify catalog versions or later phases.
+Structured `context_edits` identify each optional entry by prompt ID.
+
+Configurations without `prompt_selections` keep the historical resolver and
+system/user/application review behavior. The old resolver remains available.
 
 ## Tailoring application requirements
 
@@ -103,6 +136,22 @@ select remote workload IDs or targets by writing them in its output. This change
 does not add an automatic deployment tool or a real-time monitoring agent.
 
 ## Updating installations
+
+Deploy the additive migration chain through **0045** and the compatible backend
+before the new dashboard. Migration **0043** introduces the prompt contract;
+**0044** adds durable participant scope and **0045** adds native analysis submission receipts.
+The migration is additive and its data statements are idempotent. It preserves
+prompt IDs, immutable versions and customized content; marks recognized phase
+system entries as phase context; retains user templates as compatibility records;
+and associates application entries only by unambiguous application ID. Archived
+entries are never reactivated. Missing defaults are seeded from frozen canonical
+instructions. Unresolved application records remain restricted and nonselectable.
+
+Run normal Alembic upgrades, then the catalog consistency check and contract checks.
+No production migration or deployment is performed by the source-code change.
+Keep the compatible backend available throughout dashboard rollout. Manifest
+preparation failures log only an error category and consumer identifier.
+
 
 Seed missing entries without changing existing versions:
 

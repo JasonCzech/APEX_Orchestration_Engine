@@ -281,6 +281,15 @@ class ProbeResult(BaseModel):
 # ── probe calls: one cheap, read-only, stub-safe call per port kind ─────────
 
 
+async def _probe_analysis(adapter: Any) -> str:
+    from apex.ports.analysis import AnalysisCapabilities
+
+    capability = await adapter.capabilities()
+    if not isinstance(capability, AnalysisCapabilities) or not capability.available:
+        raise ValueError("Analysis service is unavailable")
+    return "Analysis v1: " + ", ".join(capability.engines)
+
+
 async def _probe_work_tracking(adapter: Any) -> str:
     # "PHX-241" is the stub backlog's demo story. Real trackers use their own
     # key formats and rarely hold that key, so a miss falls back to a listing:
@@ -440,6 +449,7 @@ async def _probe_secrets(adapter: Any) -> str:
 
 
 PROBE_CALLS: dict[PortKind, Callable[[Any], Awaitable[str]]] = {
+    PortKind.ANALYSIS: _probe_analysis,
     PortKind.WORK_TRACKING: _probe_work_tracking,
     PortKind.LOG_SEARCH: _probe_log_search,
     PortKind.OBSERVABILITY: _probe_observability,

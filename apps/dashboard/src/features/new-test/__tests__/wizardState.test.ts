@@ -27,7 +27,10 @@ import {
 
 function validDraft(): WizardDraft {
   const draft = emptyDraft()
+  draft.prompt_selections = { schema_version: 1, system: { prompt_id: 'system', version_id: 'system-v1' }, phases: Object.fromEntries(PHASE_NAMES.map(phase => [phase, { prompt_id: phase, version_id: `${phase}-v1` }])), application: [], environment: [] }
+  draft.prompt_selection_issues = []
   draft.scope.project_id = 'demo'
+  draft.scope.test_scope = { schema_version: 1, participants: [{ id: 'backend', layer: 'backend', project_id: 'demo', application_id: 'app-checkout', environment_id: 'env-staging' }], primary_participant_id: 'backend', traffic_entry_participant_id: null }
   draft.title = 'Checkout soak'
   draft.request = 'Soak the checkout flow'
   return draft
@@ -47,18 +50,13 @@ describe('wizardState validation', () => {
     filled.config.phases = []
     filled.prompt_overrides['phase/execution'] = { content: '   ' }
     const issues = allIssues(filled)
-    expect(issues).toEqual([
-      { step: 'config', message: 'Select at least one phase' },
-      {
-        step: 'prompts',
-        message: 'Override for phase/execution is empty — edit it or revert to catalog',
-      },
-    ])
+    expect(issues).toEqual([])
   })
 
   it('separates a complete plan from readiness for external execution', () => {
     const draft = validDraft()
     draft.config.engine = 'apex_load'
+    draft.config.analysis = { schema_version: 1, selections: [{ tool: 'perfreportforge', connection_id: 'analysis-forge' }] }
 
     const readiness = assessWizardReadiness(draft)
     expect(readiness.planningIssues).toEqual([])
@@ -118,15 +116,19 @@ describe('gates mapping to the configurable matrix', () => {
 describe('buildLaunchPreview', () => {
   it('builds the exact payload: omits empty optionals, includes explicit gates', () => {
     const draft = validDraft()
+    draft.prompt_selections = undefined
     expect(buildLaunchPreview(draft)).toEqual({
       assistant_id: 'pipeline',
       metadata: { project_id: 'demo', title: 'Checkout soak' },
       input: { title: 'Checkout soak', request: 'Soak the checkout flow' },
       configurable: {
+        test_scope: draft.scope.test_scope,
         project_id: 'demo',
         engine: 'sim',
         gates: allGatedMatrix(),
         phases: [...PHASE_NAMES],
+        phase_execution: { schema_version: 1, owners: Object.fromEntries(PHASE_NAMES.map(p => [p, 'langgraph'])) },
+        analysis: { schema_version: 1, selections: [] },
       },
       document_ids: [],
       work_item_keys: [],
@@ -135,6 +137,7 @@ describe('buildLaunchPreview', () => {
 
   it('includes scope ids, phase subset, overrides and context selections', () => {
     const draft = validDraft()
+    draft.prompt_selections = undefined
     draft.scope.app_id = 'app-checkout'
     draft.scope.environment_id = 'env-staging'
     draft.config.engine = 'apex_load'
@@ -153,12 +156,15 @@ describe('buildLaunchPreview', () => {
       title: 'Checkout soak',
     })
     expect(preview.configurable).toEqual({
+      test_scope: draft.scope.test_scope,
       project_id: 'demo',
       app_id: 'app-checkout',
       environment_id: 'env-staging',
       engine: 'apex_load',
       connections: { work_tracking: 'conn-jira' },
-      phases: ['execution', 'reporting'],
+      phases: [...PHASE_NAMES],
+      phase_execution: { schema_version: 1, owners: Object.fromEntries(PHASE_NAMES.map(p => [p, ['execution', 'reporting'].includes(p) ? 'langgraph' : 'hitl'])) },
+      analysis: { schema_version: 1, selections: [] },
       gates: ALL_AUTO_GATES,
       prompt_overrides: { 'phase/execution': { content: 'Custom system prompt' } },
     })
@@ -168,6 +174,7 @@ describe('buildLaunchPreview', () => {
 
   it('requires legacy selections to be rebound and rejects mixed connections', () => {
     const draft = validDraft()
+    draft.prompt_selections = undefined
     draft.work_items = [
       { key: 'PHX-241', connection_id: null, provider: null },
     ]
@@ -188,6 +195,7 @@ describe('buildLaunchPreview', () => {
 
   it('retains unedited golden fields while visible controls override the bundle', () => {
     const draft = validDraft()
+    draft.prompt_selections = undefined
     draft.config.golden_config_id = 'asst-gold'
     draft.config.golden_configurable = {
       engine: 'loadrunner',
@@ -223,7 +231,7 @@ describe('parseDraftPayload', () => {
     draft.config.gates_mode = 'custom'
     draft.config.gates_custom = allGatedMatrix()
     draft.prompt_overrides['phase/execution'] = { content: 'x' }
-    expect(parseDraftPayload(JSON.parse(JSON.stringify(draft)))).toEqual(draft)
+    expect(parseDraftPayload(JSON.parse(JSON.stringify(draft)))).toEqual({ ...draft, prompt_selection_issues: ['Validating prompt selections…'] })
 
     const junk = parseDraftPayload({
       title: 42,
@@ -280,6 +288,7 @@ describe('holistic wizard readiness', () => {
 
   it('retains excluded prompt overrides in the draft but excludes them from launch', () => {
     const draft = validDraft()
+    draft.prompt_selections = undefined
     draft.config.phases = ['story_analysis']
     draft.prompt_overrides = {
       'phase/story_analysis/user': { content: 'Use the supplied requirements.' },
@@ -304,6 +313,7 @@ describe('holistic wizard readiness', () => {
 
 it('excludes inherited and authored application prompts outside the current application', () => {
   const draft = emptyDraft()
+  draft.prompt_selections = undefined
   draft.scope.app_id = 'app-current'
   draft.config.golden_configurable = { prompt_overrides: {
     'application/app-old': { version_id: 'old-version' },

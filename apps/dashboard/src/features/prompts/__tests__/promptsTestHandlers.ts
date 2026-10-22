@@ -18,6 +18,7 @@ export interface VersionRecord {
 export interface PromptRecord {
   id: string
   namespace: string
+  is_default?: boolean
   key: string
   description: string | null
   archived_at: string | null
@@ -167,6 +168,11 @@ interface CapturedCalls {
 function summaryOf(prompt: PromptRecord) {
   const active = prompt.versions.find((entry) => entry.id === prompt.active_version_id)
   return {
+    phase: prompt.namespace === 'phase' ? prompt.key.split('/')[0] : null,
+    application_id: prompt.namespace === 'application' ? prompt.key : null,
+    is_shared: false,
+    is_default: prompt.is_default ?? prompt.namespace === 'phase',
+    selection_enabled: ['system', 'phase', 'application', 'environment'].includes(prompt.namespace),
     id: prompt.id,
     namespace: prompt.namespace,
     key: prompt.key,

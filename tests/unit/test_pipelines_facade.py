@@ -1,6 +1,7 @@
 """Facade mapping + /pipelines read routes against a fake loopback client."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
@@ -907,18 +908,111 @@ def test_list_pipelines_rejects_huge_offset_before_loopback() -> None:
     assert fake.search_calls == []
 
 
-def test_list_pipelines_passes_project_filter_to_metadata_search() -> None:
+def test_list_pipelines_filters_project_without_restricting_primary_metadata() -> None:
     fake = FakeThreads([THREAD_INTERRUPTED, THREAD_IDLE])
     app = make_app(FakeClient(fake), operator_identity(("p2",)))
     with TestClient(app) as client:
         response = client.get("/v1/pipelines", params={"project": "p2", "status": "idle"})
     assert response.status_code == 200
     assert [item["thread_id"] for item in response.json()["items"]] == ["t-2"]
-    assert fake.search_calls[0]["metadata"] == {"project_id": "p2"}
+    # A project may own a secondary participant. Filtering native metadata would
+    # incorrectly discard those runs before the participant-aware facade filter.
+    assert fake.search_calls[0]["metadata"] is None
     assert fake.search_calls[0]["status"] == "idle"
     assert fake.search_calls[0]["sort_by"] == "updated_at"
     assert fake.search_calls[0]["select"] == list(PIPELINE_SUMMARY_SELECT)
     assert fake.search_calls[0]["extract"] == PIPELINE_SUMMARY_EXTRACT
+
+
+@pytest.mark.parametrize(("offset", "expected"), [(0, ["combined"]), (1, ["t-2"])])
+def test_project_filter_matches_secondary_participants_before_pagination(
+    offset: int, expected: list[str]
+) -> None:
+    combined = {
+        **deepcopy(THREAD_IDLE),
+        "thread_id": "combined",
+        "metadata": {
+            "project_id": "p1",
+            "app_id": "a1",
+            "test_scope": {
+                "schema_version": 1,
+                "primary_participant_id": "front",
+                "traffic_entry_participant_id": "front",
+                "participants": [
+                    {
+                        "id": "front",
+                        "project_id": "p1",
+                        "application_id": "a1",
+                        "environment_id": "e1",
+                        "layer": "frontend",
+                    },
+                    {
+                        "id": "back",
+                        "project_id": "p2",
+                        "application_id": "a2",
+                        "environment_id": "e2",
+                        "layer": "backend",
+                    },
+                ],
+            },
+        },
+    }
+    unrelated = {
+        **deepcopy(THREAD_IDLE),
+        "thread_id": "unrelated",
+        "metadata": {"project_id": "p3"},
+    }
+    fake = FakeThreads([unrelated, combined, THREAD_IDLE])
+    app = make_app(FakeClient(fake), operator_identity(("p1", "p2")))
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/pipelines",
+            params={"project": "p2", "status": "idle", "limit": 1, "offset": offset},
+        )
+    assert response.status_code == 200
+    assert [item["thread_id"] for item in response.json()["items"]] == expected
+    assert fake.search_calls[0]["metadata"] is None
+
+
+@pytest.mark.parametrize(
+    "raw_scope",
+    [
+        "malformed historical scope",
+        ["not a scope"],
+        {"participants": ["not a participant"]},
+        {"api_key": "legacy-scope-secret-canary"},
+        {"participants": [{"project_id": "x" * 256}]},
+        {
+            "schema_version": 1,
+            "primary_participant_id": "backend",
+            "participants": [
+                {
+                    "id": "backend",
+                    "layer": "backend",
+                    "project_id": "p1",
+                    "application_id": "password=legacy-scope-secret-canary",
+                    "environment_id": "e1",
+                }
+            ],
+        },
+    ],
+)
+def test_legacy_scope_metadata_is_validated_before_summary_and_project_filter(
+    raw_scope: Any,
+) -> None:
+    thread = {
+        **deepcopy(THREAD_IDLE),
+        "metadata": {"project_id": "p1", "test_scope": raw_scope},
+    }
+    assert map_thread_summary(thread)["test_scope"] is None
+    app = make_app(FakeClient(FakeThreads([thread])), operator_identity(("p1", "p2")))
+    with TestClient(app) as client:
+        listing = client.get("/v1/pipelines")
+        filtered = client.get("/v1/pipelines", params={"project": "p2"})
+    assert listing.status_code == filtered.status_code == 200
+    assert listing.json()["items"][0]["test_scope"] is None
+    assert "legacy-scope-secret-canary" not in listing.text
+    assert filtered.json()["items"] == []
 
 
 def test_list_pipelines_rejects_out_of_scope_project_before_loopback() -> None:

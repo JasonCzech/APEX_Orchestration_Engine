@@ -19,7 +19,7 @@ export const PHASE_LABELS: Record<PhaseName, string> = {
   env_triage: 'Env Triage',
   script_scenario: 'Script & Scenario',
   execution: 'Execution',
-  reporting: 'Reporting',
+  reporting: 'Reporting & Analysis',
   postmortem: 'Postmortem',
 }
 
@@ -50,6 +50,7 @@ export type PipelinePhaseVisual =
   | 'pending'
   | 'prompt_review'
   | 'running'
+  | 'human_completion'
   | 'results_ready'
   | 'completed'
   | 'failed'
@@ -72,6 +73,7 @@ export function statusVisual(status: string | null | undefined): StatusVisual {
     case 'running':
       return { tone: 'accent', active: true }
     case 'awaiting_prompt_review':
+    case 'awaiting_human_completion':
     case 'awaiting_output_review':
       return { tone: 'warning', active: true }
     case 'skipped':
@@ -91,6 +93,8 @@ export function pipelinePhaseVisual(status: string | null | undefined): Pipeline
       return 'running'
     case 'awaiting_prompt_review':
       return 'prompt_review'
+    case 'awaiting_human_completion':
+      return 'human_completion'
     case 'awaiting_output_review':
       return 'results_ready'
     case 'skipped':
@@ -110,6 +114,8 @@ export function pipelineStatusLabel(status: string | null | undefined): string {
       return 'Prompt review'
     case 'running':
       return 'Executing'
+    case 'human_completion':
+      return 'Awaiting human completion'
     case 'results_ready':
       return 'Results ready'
     case 'completed':
@@ -149,6 +155,7 @@ export function executionResultLabel(run: { execution_result?: string | null; ph
 }
 
 export function orchestrationStatusLabel(status: string | null | undefined, strip?: PipelineSummary['phase_strip']): string {
+  if (status === 'interrupted' && strip?.some(entry => entry.status === 'awaiting_human_completion')) return 'Awaiting human completion'
   if (status === 'idle' && strip) {
     const selected = strip.filter(entry => entry.status !== 'none' && entry.status !== 'unknown')
     if (selected.some(entry => entry.status === 'aborted')) return 'Stopped by operator'
@@ -166,7 +173,7 @@ export function orchestrationTone(status: string | null | undefined, strip?: Pip
 }
 
 export function gateLabel(kind: string | null | undefined): string {
-  return ({ prompt_review: 'Review prompts', phase_review: 'Review phase results', engine_provision_retry: 'Recover engine provisioning' } as Record<string, string>)[kind ?? ''] ?? 'Review required'
+  return ({ human_completion: 'Complete human work', analysis_recovery: 'Recover analysis', prompt_review: 'Review prompts', phase_review: 'Review phase results', engine_provision_retry: 'Recover engine provisioning' } as Record<string, string>)[kind ?? ''] ?? 'Review required'
 }
 
 /** Shared snapshot projection for every detail/compare phase display. */
@@ -175,27 +182,31 @@ export function normalizedPhases(
   fallback: PipelineSummary['phase_strip'] = [],
   useFallback = false,
   context?: Pick<PipelineSummary, 'thread_status' | 'current_phase' | 'pending_gate'>,
-) {
+): Array<{ phase: PhaseName; status: string; attempt?: number | null; executor?: string; completed_by?: string }> {
   const plan = state.phases_plan?.every(isPhaseName) ? state.phases_plan : undefined
   return PHASE_NAMES.map((phase) => {
     if (plan && !plan.includes(phase)) return { phase, status: 'none', attempt: undefined }
     const entry = state.phase_results?.[phase]
+    const ownerMap = (state.run_config?.phase_execution as { owners?: Record<string, string> } | undefined)?.owners
+    const executor = typeof entry?.executor === 'string' ? entry.executor : ownerMap?.[phase]
+    const completion = typeof entry?.completed_by === 'string' ? entry.completed_by : undefined
     // useThreadState validates fields independently after schema drift. An
     // unrelated invalid field must not replace a valid status with stale data.
     const gate = context?.thread_status === 'interrupted' ? context.pending_gate : null
-    if (gate?.phase === phase && ['prompt_review', 'phase_review'].includes(gate.kind ?? '') && (!entry?.status || !isPipelinePhaseComplete(entry.status))) {
-      return { phase, status: gate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review', attempt: entry?.attempt }
+    if (gate?.phase === phase && ['prompt_review', 'phase_review', 'human_completion'].includes(gate.kind ?? '') && (!entry?.status || !isPipelinePhaseComplete(entry.status))) {
+      return { phase, status: gate.kind === 'prompt_review' ? 'awaiting_prompt_review' : gate.kind === 'human_completion' ? 'awaiting_human_completion' : 'awaiting_output_review', attempt: entry?.attempt, executor, completed_by: completion }
     }
     if (context?.thread_status === 'error' && context.current_phase === phase && (!entry?.status || !isPipelinePhaseComplete(entry.status))) {
-      return { phase, status: state.run_aborted ? 'aborted' : 'failed', attempt: entry?.attempt }
+      return { phase, status: state.run_aborted ? 'aborted' : 'failed', attempt: entry?.attempt, executor, completed_by: completion }
     }
-    if (entry?.status) return { phase, status: entry.status, attempt: entry.attempt }
+    if (entry?.status) return { phase, status: entry.status, attempt: entry.attempt, executor, completed_by: completion }
     const previous = useFallback ? fallback.find((item) => item.phase === phase) : undefined
     return {
       phase,
       status: plan?.includes(phase) && (!previous?.status || previous.status === 'none')
         ? 'pending' : previous?.status ?? (plan ? 'none' : 'unknown'),
       attempt: previous?.attempt ?? undefined,
+      executor,
     }
   })
 }
@@ -210,7 +221,7 @@ export function withLiveRunningPhase(
 ) {
   if (context.thread_status !== 'busy' || context.pending_gate || !live.runId ||
     !['live', 'reconnecting'].includes(live.stream.status)) return strip
-  if (strip.some(item => ['running', 'awaiting_prompt_review', 'awaiting_output_review'].includes(item.status))) return strip
+  if (strip.some(item => ['running', 'awaiting_prompt_review', 'awaiting_output_review', 'awaiting_human_completion'].includes(item.status))) return strip
   const observations = Object.entries(live.stream.phaseProgress ?? {})
   if (observations.some(([, progress]) => progress && ['awaiting_prompt_review', 'awaiting_output_review'].includes(progress.status ?? ''))) return strip
   const running = observations.filter(([, progress]) => progress?.status === 'running')

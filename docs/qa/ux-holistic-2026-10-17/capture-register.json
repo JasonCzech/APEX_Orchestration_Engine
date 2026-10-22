@@ -1,0 +1,506 @@
+[
+  {
+    "step": 1,
+    "file": "01-home-demo-apex-light.jpg",
+    "surface": "Home — demo mode",
+    "health": "Mixed",
+    "observed": "ACC add-a-line dataset at 1440x900 in apex-light. The attention rail, four metric tiles, Execution Health and Test Results all render, but the tiles, the health panel and the results panel each name a different population: 'in the loaded recent runs', 'Last 7 days, across accessible projects' and 'up to the latest 50 loaded runs'.",
+    "recommendation": "State one population per screen, or caption every panel with the same one."
+  },
+  {
+    "step": 2,
+    "file": "02-apikey-gate-connected.jpg",
+    "surface": "API key gate",
+    "health": "Needs landmarks",
+    "observed": "The production build's real gate at 127.0.0.1:4175. axe reports no main landmark and content outside landmarks. There is no theme control here, and a first-time browser always renders apex-light regardless of prefers-color-scheme.",
+    "recommendation": "Wrap the gate in <main>; make 'system' the default theme preference."
+  },
+  {
+    "step": 3,
+    "file": "03-home-connected-failure-counts.jpg",
+    "surface": "Home — failure counts (H-01)",
+    "health": "Contradictory",
+    "observed": "One viewport, three failure numbers over an identical 39-run fleet: FAILURES 4, Test Results 'Failed 0', Execution Health 'Phases failed 0'. The API reports execution_result null for all 39 and thread_status error for 4.",
+    "recommendation": "Split the tile into 'Orchestration errors' and 'Test failures'; render unknown phase data as an em dash, not 0."
+  },
+  {
+    "step": 4,
+    "file": "04-failed-run-overview-no-reason.jpg",
+    "surface": "Run detail — failed run (R-01)",
+    "health": "Needs a reason",
+    "observed": "ORCHESTRATION FAILED with 'Test result: Not available' and a Test acceptance panel that correctly states orchestration completion does not certify a release. No failure reason appears anywhere. Header says Application 'Not selected'; the Run context panel beside it says 'Not recorded'.",
+    "recommendation": "Surface the run-level error on the Overview card; use one string for a missing application."
+  },
+  {
+    "step": 5,
+    "file": "05-failed-run-execution-shows-pending.jpg",
+    "surface": "Phase detail — failing phase (R-01)",
+    "health": "Incorrect",
+    "observed": "The phase that stopped the run reads 'Execution — PENDING' while the header reads ORCHESTRATION FAILED, a 'SNAPSHOT REFRESH ACTIVE' chip is live on a terminal run, and three strings use 'yet' or present continuous.",
+    "recommendation": "Derive phase status with thread_status as an input; suppress the live chip on terminal threads; make the 'yet' copy conditional."
+  },
+  {
+    "step": 6,
+    "file": "06-approvals-keyboard-shortcuts.jpg",
+    "surface": "Approvals — shortcuts overlay (A-05)",
+    "health": "Accurate, no exit",
+    "observed": "role=dialog, aria-modal, labelled, and focus moves into it, but it contains no focusable element and no close control. The documented shortcuts are correct, including 'x — Arm abort confirmation'.",
+    "recommendation": "Add a close button, matching the navigation drawer's pattern."
+  },
+  {
+    "step": 7,
+    "file": "07-prompt-gate-decision.jpg",
+    "surface": "Prompt gate (G-01, A-06)",
+    "health": "Strong, with unsafe skip",
+    "observed": "Prompt provenance is shown at the decision point (catalog, system@v1 and user@v1) with 'Prompt source: catalog' and a Tools in Play panel. The action row is '▶ Execute Phase' (primary), 'Skip Phase' (secondary, no confirmation), 'Abort' (danger, typed confirmation).",
+    "recommendation": "Confirm Skip Phase as weightily as Abort; remove U+25B6 from the button's accessible name."
+  },
+  {
+    "step": 8,
+    "file": "08-admin-connections-registry.jpg",
+    "surface": "Admin — connections",
+    "health": "Mostly sound",
+    "observed": "Ten seeded connections with enabled toggles whose dot changes colour as well as label (#0F7A50 to #666E79), so state is not carried by colour alone. Two artifact_store connections are both enabled with no indication which one wins.",
+    "recommendation": "Show precedence when two connections of the same kind are enabled."
+  },
+  {
+    "step": 9,
+    "file": "09-decision-receipt-and-actioned-row.jpg",
+    "surface": "Approvals — decision receipt (A-02)",
+    "health": "Good receipt, wrong advance",
+    "observed": "After approving, a receipt names the run and time, the queue row greys to 'actioned' and the badge decrements. The selection then jumps to queue index 0 rather than the next open gate.",
+    "recommendation": "Advance to the next open gate, as gateModuleContract.ts specifies."
+  },
+  {
+    "step": 10,
+    "file": "10-abort-armed-prefilled-x.jpg",
+    "surface": "Gate — armed abort (A-04)",
+    "health": "Needs a fix",
+    "observed": "The 'x' shortcut arms the typed confirmation and focuses it, but the keystroke also lands in the field, so it opens containing 'x' against a 'Type ABORT' placeholder. Escape does not dismiss it; a visible Cancel does.",
+    "recommendation": "preventDefault() on the x keydown; wire Escape to Cancel."
+  },
+  {
+    "step": 11,
+    "file": "11-skip-phase-no-confirmation.jpg",
+    "surface": "Prompt gate — skip executed (G-01)",
+    "health": "Unsafe",
+    "observed": "Skip Phase fired on one click with no confirmation. Receipt: 'Skipped the phase and continued the run'. The API records the phase as skipped with actor 'unknown'. Selection again returned to queue index 0.",
+    "recommendation": "Confirm the skip, naming the phase and what will not be produced."
+  },
+  {
+    "step": 12,
+    "file": "12-output-gate-revision-instructions.jpg",
+    "surface": "Output gate — revise",
+    "health": "Sound",
+    "observed": "'Request changes' opens a labelled REVISION INSTRUCTIONS field asking 'What should the agent change before re-running this phase?', and the submit button stays disabled until text is entered.",
+    "recommendation": "Focus the field when it opens, as the keyboard path already does."
+  },
+  {
+    "step": 13,
+    "file": "13-revise-labelled-actioned-elsewhere.jpg",
+    "surface": "Approvals — revise mislabelled (G-03)",
+    "health": "Misleading",
+    "observed": "After a successful revise the row greys to 'actioned elsewhere' and the badge drops, though the API shows the gate reopened under a new interrupt id and still needs a decision. A reload restores it.",
+    "recommendation": "Distinguish 'my action produced a new interrupt' from a 409 CAS loss before emitting superseded."
+  },
+  {
+    "step": 14,
+    "file": "14-compare-failed-run-ranked-best.jpg",
+    "surface": "Compare — failed run ranked best (COR-02)",
+    "health": "Serious",
+    "observed": "run-aborted reads ORCHESTRATION FAILED, EXECUTION FAILED, RESULT FAILED, yet supplies p95 0 ms and error rate 0.00% as the green-tinted Baseline while the two runs that completed are tinted pink and labelled 'Worse'. The delta text says 'percentage not available', so the code already knows the baseline is not a real measurement.",
+    "recommendation": "Gate KPI participation on execution having succeeded; render uncollected KPIs as not collected and exclude them from ranking and baseline eligibility."
+  },
+  {
+    "step": 15,
+    "file": "15-concurrency-superseded-correct.jpg",
+    "surface": "Concurrency — superseded (walkthrough f)",
+    "health": "Correct",
+    "observed": "The same gate decided in two sessions: the loser gets 'Decision was completed elsewhere', the row greys, the badge decrements, and the API records exactly one approval. Nothing was decided twice.",
+    "recommendation": "Keep this. Reserve the 'actioned elsewhere' treatment for this case only."
+  },
+  {
+    "step": 16,
+    "file": "a11y-01-dash-badge-dark-theme.jpg",
+    "surface": "Pending badge contrast (A11Y-01)",
+    "health": "Fails WCAG 1.4.3",
+    "observed": "White-on-violet pending count in the dark theme at /runs. .dash-badge hardcodes color:white instead of --accent-contrast, giving 2.98, 2.19 and 2.04:1 across the three dark themes. This single declaration accounts for 99 of 140 axe nodes.",
+    "recommendation": "Replace the literal with var(--accent-contrast); .btn-success carries the same latent bug."
+  },
+  {
+    "step": 17,
+    "file": "a11y-02-analytics-chips-solarized-light.jpg",
+    "surface": "Analytics filter chips (A11Y-15)",
+    "health": "Undersized",
+    "observed": "23 px .level-chip filter chips on /analytics in solarized-light at 1440. Measured with getBoundingClientRect(), they miss the 24 px target-size floor by 1 px and survive WCAG 2.5.8 only through the spacing exception.",
+    "recommendation": "Raise the chips to 24 px so they pass on their own rather than on sibling spacing."
+  },
+  {
+    "step": 18,
+    "file": "a11y-03-prompt-gate-tab-trap-edited.jpg",
+    "surface": "Prompt editor keyboard trap (A11Y-04)",
+    "health": "P0 — fails WCAG 2.1.2",
+    "observed": "The gate marked 'edited' with the primary action changed to 'Save Edit & Re-review' after Tab presses inside the CodeMirror editor were swallowed and inserted leading whitespace into the prompt.",
+    "recommendation": "Pass indentWithTab={false} in PromptTabsEditor.tsx, or advertise the Escape-then-Tab escape."
+  },
+  {
+    "step": 19,
+    "file": "a11y-04-chart-series-solarized-light.jpg",
+    "surface": "Chart series contrast (A11Y-03)",
+    "health": "Fails",
+    "observed": "Two chart series measured at 1.00:1 against each other in demo mode. No series pair reaches 3:1 in any theme, and series-against-surface falls to 2.32:1 in apex-light. Series are distinguished by colour alone.",
+    "recommendation": "Adopt Load's eight-colour palette, verify adjacent pairs at 3:1, and add a non-colour encoding."
+  },
+  {
+    "step": 20,
+    "file": "a11y-05-codemirror-gutter-apex-light.jpg",
+    "surface": "Editor gutter contrast (A11Y-02)",
+    "health": "Fails",
+    "observed": "CodeMirror gutter line numbers at 3.30:1 in apex-light on a prompt detail page.",
+    "recommendation": "Raise the gutter token to meet 4.5:1, or treat line numbers as decorative and hide them from AT."
+  },
+  {
+    "step": 21,
+    "file": "a11y-06-reflow-720x450-200pct.jpg",
+    "surface": "Reflow at 200% zoom (A11Y)",
+    "health": "Checked",
+    "observed": "720x450 approximating 1440 at 200% zoom, used to check for horizontal page scroll, clipped controls and overlapping sticky headers.",
+    "recommendation": "See ACCESSIBILITY.md for the per-route reflow results."
+  },
+  {
+    "step": 22,
+    "file": "agent-01-strip-skipped-failed-7of7.jpg",
+    "surface": "Phase strip — mixed states (AGT-07)",
+    "health": "Indistinct",
+    "observed": "A 7/7 run containing skipped and failed phases. Phase-step connectors are dead CSS, so the progress line is uniformly grey regardless of outcome.",
+    "recommendation": "Define the emitted connector classes, or drop the connector styling and rely on the step badges."
+  },
+  {
+    "step": 23,
+    "file": "agent-02-reasoning-tab-clipped-provenance.jpg",
+    "surface": "Agent Reasoning tab (AGT-02)",
+    "health": "Mis-signposted",
+    "observed": "The tab named Agent Reasoning says no reasoning is recorded while a durable transcript for that same phase is two tabs away in Artifacts.",
+    "recommendation": "Link the transcript from the Reasoning tab instead of reporting nothing recorded."
+  },
+  {
+    "step": 24,
+    "file": "agent-03-timeline-audit-trail.jpg",
+    "surface": "Run timeline (AGT-02)",
+    "health": "Works",
+    "observed": "The timeline as a governance trail: every phase has a transcript artifact and the overview links all seven by name.",
+    "recommendation": "Keep. Reference it from the Reasoning tab."
+  },
+  {
+    "step": 25,
+    "file": "agent-04-runs-grid-7of7.jpg",
+    "surface": "Runs grid PROGRESS column (AGT-15)",
+    "health": "No per-phase state",
+    "observed": "PROGRESS renders as bare n/m text, so a 7/7 run with one skipped and five failed phases is visually identical to a clean 7/7 run. PhaseStrip has one call site in the app; PARITY.md row 3a's 'phase-strip micro-viz' claim is stale.",
+    "recommendation": "Either render the compact strip the parity table claims, or correct the parity table."
+  },
+  {
+    "step": 26,
+    "file": "agent-05-output-gate-results-ready-vs-pending.jpg",
+    "surface": "Output gate status split (AGT-08)",
+    "health": "Contradictory",
+    "observed": "At a gate the phase strip prints RESULTS READY while the metrics row beneath prints STATUS Pending for the same phase.",
+    "recommendation": "Read both from one normalisation."
+  },
+  {
+    "step": 27,
+    "file": "agent-06-prompt-gate-skip-vs-abort.jpg",
+    "surface": "Skip versus Abort (AGT-13)",
+    "health": "Asymmetric",
+    "observed": "Skip Phase is the only gate action with no scope statement, beside an Abort that requires typed confirmation.",
+    "recommendation": "State what Skip will not produce, and confirm it."
+  },
+  {
+    "step": 28,
+    "file": "agent-07-queue-identical-gate-chips.png",
+    "surface": "Queue gate chips (AGT-04)",
+    "health": "Colour coding inert",
+    "observed": "'Review prompts' and 'Review phase results' chips measured byte-identical in colour, background and border: .topbar-meta-chip.info and .accent are one shared rule, so gateKindTone() has no effect.",
+    "recommendation": "Give the two gate kinds distinct tones, or drop the dead tone function."
+  },
+  {
+    "step": 29,
+    "file": "agent-08-demo-postmortem-executing-on-failed-run.jpg",
+    "surface": "Postmortem on a failed run",
+    "health": "Extends R-01",
+    "observed": "Demo mode shows a postmortem phase as executing on a run whose header reports failure.",
+    "recommendation": "Covered by the terminal-state fix."
+  },
+  {
+    "step": 30,
+    "file": "agent-09-overview-cascade-errors.jpg",
+    "surface": "Run overview error cascade",
+    "health": "Noisy",
+    "observed": "Multiple stacked error surfaces on one overview.",
+    "recommendation": "Collapse repeated failures of one cause into a single ProblemCard."
+  },
+  {
+    "step": 31,
+    "file": "agent-10-transcript-artifact-viewer.jpg",
+    "surface": "Transcript in the artifact viewer (AGT-02)",
+    "health": "Works",
+    "observed": "GET /v1/artifacts/transcripts/... returns 200 text/plain and renders with a TRANSCRIPT chip and a Download control, confirming PARITY row 4b's durable reasoning path.",
+    "recommendation": "Keep; signpost it from the Reasoning tab."
+  },
+  {
+    "step": 32,
+    "file": "agent-11-all-complete-grey-connectors.jpg",
+    "surface": "All-complete strip (AGT-07)",
+    "health": "Dead styling",
+    "observed": "Every connector renders grey on a run where all seven phases completed.",
+    "recommendation": "Same fix as agent-01."
+  },
+  {
+    "step": 33,
+    "file": "agent-12-compare-phase-states.jpg",
+    "surface": "Compare phase vocabulary (AGT-16)",
+    "health": "Mismatched",
+    "observed": "The phase strip announces a different vocabulary to assistive technology than it displays visually.",
+    "recommendation": "Align the accessible name with the visible label (WCAG 2.5.3)."
+  },
+  {
+    "step": 34,
+    "file": "area-01-wizard-review-ready-vs-sim.jpg",
+    "surface": "New Test review step (ARE-01)",
+    "health": "Self-contradictory",
+    "observed": "The footer states 'Ready to launch: the plan and execution target are set' while Application and Environment both read '— none —' on the same screen.",
+    "recommendation": "Make readiness depend on a resolved execution target; emptyDraft() should not hard-code project_id 'demo'."
+  },
+  {
+    "step": 35,
+    "file": "area-02-wizard-deleted-doc-launchable.jpg",
+    "surface": "New Test with a deleted document (ARE-02)",
+    "health": "Unsafe",
+    "observed": "A draft whose attached document was deleted still reports 'Test plan is complete', shows 'Name unavailable', and leaves Launch Test enabled.",
+    "recommendation": "Re-validate attachments on draft resume and block launch on an unresolvable reference."
+  },
+  {
+    "step": 36,
+    "file": "area-03-cycles-overview-next-action.jpg",
+    "surface": "Cycles overview (ARE-14)",
+    "health": "Needs work",
+    "observed": "The cycle overview's next action is unclear relative to its own preflight blockers.",
+    "recommendation": "Lead with the blocking item and its owner."
+  },
+  {
+    "step": 37,
+    "file": "area-04-cycles-nav-guard-works.jpg",
+    "surface": "Cycles unsaved-changes guard (ARE-11)",
+    "health": "Works, with a bypass",
+    "observed": "CycleEditor's navigation guard works properly: dialog, Escape and backdrop keep editing, focus trapped, background inert. 'Cancel editing' bypasses it entirely and discards unsaved text with no prompt.",
+    "recommendation": "Route Cancel through the same guard; style the Cycles dialogs, which render unstyled native buttons."
+  },
+  {
+    "step": 38,
+    "file": "area-05-cycles-409-unstyled-raw.jpg",
+    "surface": "Cycles 409 conflict (ARE-12)",
+    "health": "Raw",
+    "observed": "A genuine 409 surfaces as bare 'Cycle request failed (409)' with a copy-paste recovery.",
+    "recommendation": "Explain the conflict and offer a reload-and-retry action."
+  },
+  {
+    "step": 39,
+    "file": "area-06-cycles-handoff-dialog-unstyled.jpg",
+    "surface": "Cycles handoff dialog (ARE-11)",
+    "health": "Unstyled",
+    "observed": "ProviderScriptImport's and CycleHandoff's dialogs render unstyled native buttons jammed together.",
+    "recommendation": "Use the shared Dialog button primitives."
+  },
+  {
+    "step": 40,
+    "file": "area-07-presets-500-connected.jpg",
+    "surface": "Test Presets 500 (ARE-07)",
+    "health": "Route unreachable",
+    "observed": "POST /assistants/search returns HTTP 500 both direct to :2024 and through the proxy, while /v1/pipelines returns 200. Test Presets cannot load in connected mode. The 2026-09-14 resources audit recorded the same 500.",
+    "recommendation": "Fix the assistants search path; until then show a plain error with details behind disclosure."
+  },
+  {
+    "step": 41,
+    "file": "area-08-cycle-404.jpg",
+    "surface": "Cycles permission denial (ARE-13)",
+    "health": "Wrong error",
+    "observed": "Cycles gates its UI on role while the server gates on scope, so operators see 'New cycle', always receive 403, and the denial renders as 404 'Cycle not found'.",
+    "recommendation": "Gate the UI on scope and render 403 as a permission message."
+  },
+  {
+    "step": 42,
+    "file": "area-09-prompt-diff-unreadable.jpg",
+    "surface": "Prompt version diff (ARE-24)",
+    "health": "Unreadable",
+    "observed": "Changed lines render at 1.11:1 and 1.16:1 — page-surface tokens on a dark code surface — so the diff rows are blank bars.",
+    "recommendation": "Use the code surface's own add/remove tokens."
+  },
+  {
+    "step": 43,
+    "file": "area-10-preset-detail-raw-ids-apexload.jpg",
+    "surface": "Preset detail (ARE-08)",
+    "health": "Silent downgrade",
+    "observed": "Applying a preset whose pinned engine is unrecognised silently downgrades it to the simulator while showing a 'config inherited' badge.",
+    "recommendation": "Fail loudly on an unrecognised engine instead of substituting one."
+  },
+  {
+    "step": 44,
+    "file": "area-11-cycles-preflight-blockers-flat.jpg",
+    "surface": "Cycles preflight blockers (ARE-16)",
+    "health": "Flat",
+    "observed": "Blocking and non-blocking preflight items render with the same weight.",
+    "recommendation": "Rank blockers above advisories."
+  },
+  {
+    "step": 45,
+    "file": "corr-01-execution-pending-vs-strip-running.jpg",
+    "surface": "Two phase-status sources (COR-06)",
+    "health": "Disagree",
+    "observed": "phase_strip and values.phase_results disagree on 18 of 45 runs. The grid counter reads the strip; the detail counter reads phase_results.",
+    "recommendation": "Normalise once and read both counters from it."
+  },
+  {
+    "step": 46,
+    "file": "corr-02-compare-not-running-and-pp-deltas.jpg",
+    "surface": "Compare status labels (COR-01)",
+    "health": "Loses outcome",
+    "observed": "Compare calls every idle run 'Not running', so a run that reads ORCHESTRATION FAILED on /runs reads NOT RUNNING in green here.",
+    "recommendation": "Pass the phase strip to orchestrationStatusLabel on compare as the other screens do."
+  },
+  {
+    "step": 47,
+    "file": "corr-03-compare-connected-not-running-and-zero-counts.jpg",
+    "surface": "Compare in connected mode (COR-01)",
+    "health": "Same defect",
+    "observed": "The same label collapse reproduced against the connected dataset.",
+    "recommendation": "As COR-01."
+  },
+  {
+    "step": 48,
+    "file": "corr-04-analytics-phantom-model-facet-zero-vs-dash.jpg",
+    "surface": "Analytics MODELS facet (COR-09)",
+    "health": "Phantom data",
+    "observed": "The MODELS filter lists four models that exist in neither dataset.",
+    "recommendation": "Derive the facet from the returned data."
+  },
+  {
+    "step": 49,
+    "file": "corr-05-analytics-connected-latency-p95-and-oct16-tick.jpg",
+    "surface": "Analytics buckets and latency (COR-07, COR-10)",
+    "health": "Wrong",
+    "observed": "An API bucket of 2026-10-17T00:00:00Z renders as 'Oct 16', and AVG LATENCY reads 53.0s against a p95 of 5.6s because gate wait time is recorded as agent latency.",
+    "recommendation": "Format buckets in the window's own zone; exclude human wait from agent latency."
+  },
+  {
+    "step": 50,
+    "file": "corr-06-test-result-failed-before-gate-decision.jpg",
+    "surface": "Premature test result (COR-03)",
+    "health": "Incorrect",
+    "observed": "'Test result: Failed' is published while execution is still running and the run is awaiting a gate decision, on the same screen as a button stating it does not approve the test result.",
+    "recommendation": "Withhold the result until execution reaches a terminal state."
+  },
+  {
+    "step": 51,
+    "file": "corr-07-compare-ranks-uncollected-run-as-best.jpg",
+    "surface": "Compare ranking (COR-02)",
+    "health": "Serious",
+    "observed": "The same defect as capture 14, captured by the correctness reviewer independently.",
+    "recommendation": "As COR-02."
+  },
+  {
+    "step": 52,
+    "file": "corr-08-failed-run-7of7-neutral-badge.jpg",
+    "surface": "Finished-phase counter (COR-05)",
+    "health": "Misleading",
+    "observed": "A failed run reads '7/7 phases finished' because 'finished' counts failed, aborted and skipped phases.",
+    "recommendation": "Count succeeded phases, or rename the counter."
+  },
+  {
+    "step": 53,
+    "file": "load-01-shell-dashboard.jpg",
+    "surface": "APEX Load — shell",
+    "health": "Reference",
+    "observed": "Load's current sidebar and topbar, built from source and run locally. Flat surfaces: themeComponents.css removes the ambient mesh gradient and the frosted top bar that Orchestration still paints.",
+    "recommendation": "Adopt the flat shell; remove the mesh gradient and the hard-coded blue bloom at AppShell.css:27."
+  },
+  {
+    "step": 54,
+    "file": "load-02-library-scripts.jpg",
+    "surface": "APEX Load — library",
+    "health": "Reference",
+    "observed": "A library screen with its filter bar, table and pagination, in sentence case throughout.",
+    "recommendation": "Adopt --label-case/--label-tracking; Orchestration hard-codes uppercase 63 times."
+  },
+  {
+    "step": 55,
+    "file": "load-02b-library-filters-pagination.png",
+    "surface": "APEX Load — filters and pagination",
+    "health": "Reference",
+    "observed": "The filter and pagination controls Orchestration's eighteen tables reimplement locally.",
+    "recommendation": "Reuse one filter and pagination primitive."
+  },
+  {
+    "step": 56,
+    "file": "load-03-settings-section-nav.jpg",
+    "surface": "APEX Load — section navigation",
+    "health": "Reference",
+    "observed": "Load's section navigation pattern, from sectionNavigation.css and topbarNavigation.css.",
+    "recommendation": "Compare against Orchestration's eight competing tab treatments."
+  },
+  {
+    "step": 57,
+    "file": "load-04-personal-preferences.jpg",
+    "surface": "APEX Load — personal preferences",
+    "health": "Reference",
+    "observed": "The preferences surface the UX contract says the two products should match.",
+    "recommendation": "Align Orchestration's Settings with this layout."
+  },
+  {
+    "step": 58,
+    "file": "load-05-form-new-run.jpg",
+    "surface": "APEX Load — form",
+    "health": "Reference",
+    "observed": "Form fields and selects on Load's --bg-input and --select-* surfaces, which Orchestration lacks entirely.",
+    "recommendation": "Adopt the six form-surface tokens; Orchestration has no global styling rule for select, input or textarea."
+  },
+  {
+    "step": 59,
+    "file": "load-06-tabs-table-pagination.jpg",
+    "surface": "APEX Load — tabs and table",
+    "health": "Reference",
+    "observed": "Tab, table and pagination treatment in the light theme.",
+    "recommendation": "Reference for table density and header style."
+  },
+  {
+    "step": 60,
+    "file": "load-07-dark-theme-tabs-table.jpg",
+    "surface": "APEX Load — dark theme",
+    "health": "Reference",
+    "observed": "The same surfaces in dark, for per-theme token comparison.",
+    "recommendation": "17 of 68 shared dark-theme tokens hold different values."
+  },
+  {
+    "step": 61,
+    "file": "load-08-dark-library.jpg",
+    "surface": "APEX Load — dark library",
+    "health": "Reference",
+    "observed": "Load's dark library screen.",
+    "recommendation": "Reference for the dark surface stack."
+  },
+  {
+    "step": 62,
+    "file": "16-preflight-rerun-prerequisites.jpg",
+    "surface": "Re-run preflight (walkthrough g)",
+    "health": "Passes",
+    "observed": "'Re-run phases' states its own rule — 'Prerequisites resolve against phases earlier in this plan or already succeeded on this thread' — and lists each phase's prerequisite. Deselecting Execution did not block the re-run: the Reporting row changed to 'Will reuse Execution artifacts (attempt …)'. Gate mode offers Inherit defaults / All gated / All auto.",
+    "recommendation": "Keep. This is the pattern the other confirmation surfaces should follow: explain the consequence rather than refuse."
+  },
+  {
+    "step": 63,
+    "file": "17-consumer-key-shown-once.jpg",
+    "surface": "One-time API key (walkthrough k)",
+    "health": "Exemplary",
+    "observed": "'API key created … Store it now — it will never be shown again', the key in a code element with Copy, and an 'I've stored it' button that is genuinely disabled until 'I have stored this key somewhere safe' is ticked (verified: confirmDisabled true -> false). ConsumerKeyLifecycle.tsx:109 also registers a navigation guard.",
+    "recommendation": "Keep, and apply the same proportionality to Skip Phase and to the gate prompt editor, which are equally irreversible and have no protection at all."
+  }
+]

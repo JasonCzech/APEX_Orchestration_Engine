@@ -60,7 +60,7 @@ class ApiConsumer(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256 hex
     consumer_type: Mapped[str] = mapped_column(String(32))  # dashboard | headless | internal
     role: Mapped[str] = mapped_column(String(32))  # viewer | operator | admin
-    enabled: Mapped[bool] = mapped_column(default=True)
+    enabled: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -152,7 +152,9 @@ class AuditLog(Base):
     principal_id: Mapped[str | None] = mapped_column(String(255))
     principal_type: Mapped[str | None] = mapped_column(String(64))
     principal_role: Mapped[str | None] = mapped_column(String(32))
-    principal_scopes: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    principal_scopes: Mapped[dict[str, Any]] = mapped_column(
+        JsonColumn, default=dict, server_default=text("'{}'")
+    )
     request_method: Mapped[str | None] = mapped_column(String(16))
     request_path: Mapped[str | None] = mapped_column(String(2048))
     request_id: Mapped[str | None] = mapped_column(String(255))
@@ -161,7 +163,9 @@ class AuditLog(Base):
     status_code: Mapped[int | None] = mapped_column(Integer)
     resource_type: Mapped[str | None] = mapped_column(String(128))
     resource_id: Mapped[str | None] = mapped_column(String(255))
-    extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    extra: Mapped[dict[str, Any]] = mapped_column(
+        JsonColumn, default=dict, server_default=text("'{}'")
+    )
     event_nonce: Mapped[str | None] = mapped_column(String(32))
     previous_hash: Mapped[str | None] = mapped_column(String(64))
     event_hash: Mapped[str] = mapped_column(String(64), unique=True)
@@ -183,7 +187,9 @@ class ConsumerDeletionRecord(Base):
     name: Mapped[str] = mapped_column(String(255))
     consumer_type: Mapped[str] = mapped_column(String(32))
     role: Mapped[str] = mapped_column(String(32))
-    scopes: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    scopes: Mapped[dict[str, Any]] = mapped_column(
+        JsonColumn, default=dict, server_default=text("'{}'")
+    )
 
 
 # ── Prompt catalog (M2) ─────────────────────────────────────────────────────
@@ -196,11 +202,39 @@ class Prompt(Base):
     __table_args__ = (
         UniqueConstraint("namespace", "key"),
         Index("ix_prompts_active_version_id", "active_version_id"),
+        CheckConstraint(
+            "NOT is_default OR (selection_enabled AND archived_at IS NULL "
+            "AND active_version_id IS NOT NULL AND namespace IN ('system', 'phase'))",
+            name="prompt_default_eligible",
+        ),
+        Index(
+            "uq_prompts_default_system",
+            "namespace",
+            unique=True,
+            postgresql_where=text("is_default AND namespace = 'system'"),
+            sqlite_where=text("is_default AND namespace = 'system'"),
+        ),
+        Index(
+            "uq_prompts_default_phase",
+            "phase",
+            unique=True,
+            postgresql_where=text("is_default AND namespace = 'phase'"),
+            sqlite_where=text("is_default AND namespace = 'phase'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     namespace: Mapped[str] = mapped_column(String(255))  # e.g. "phase", "observability"
     key: Mapped[str] = mapped_column(String(255))  # e.g. "story_analysis/system"
+    phase: Mapped[str | None] = mapped_column(String(64))
+    application_id: Mapped[str | None] = mapped_column(ForeignKey("applications.id"))
+    environment_id: Mapped[str | None] = mapped_column(ForeignKey("environments.id"))
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    selection_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+
     description: Mapped[str | None] = mapped_column(Text)
     active_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("prompt_versions.id", use_alter=True)
@@ -714,7 +748,9 @@ class ApexLoadNativeScenario(Base):
     status: Mapped[str | None] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     idempotency_fingerprint: Mapped[str | None] = mapped_column(String(64))
-    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, server_default=text("'{}'")
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -752,7 +788,9 @@ class ApexLoadNativeSchedule(Base):
     status: Mapped[str | None] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     idempotency_fingerprint: Mapped[str | None] = mapped_column(String(64))
-    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, server_default=text("'{}'")
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -782,13 +820,17 @@ class ApexLoadNativeRun(Base):
     schedule_remote_id: Mapped[str | None] = mapped_column(String(255))
     revision: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(64))
-    terminal: Mapped[bool] = mapped_column(Boolean, default=False)
+    terminal: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    summary: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
-    evidence: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    evidence: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, server_default=text("'{}'")
+    )
     idempotency_key: Mapped[str] = mapped_column(String(255))
-    pipeline_status: Mapped[str] = mapped_column(String(32), default="pending")
+    pipeline_status: Mapped[str] = mapped_column(
+        String(32), default="pending", server_default="pending"
+    )
     pipeline_thread_id: Mapped[str | None] = mapped_column(String(255))
     pipeline_run_id: Mapped[str | None] = mapped_column(String(255))
     pipeline_launch_error: Mapped[str | None] = mapped_column(String(255))
@@ -942,6 +984,7 @@ class UsageEvent(Base):
 
     __tablename__ = "usage_events"
     __table_args__ = (
+        Index("ix_usage_events_at", "at"),
         UniqueConstraint("event_key"),
         Index("ix_usageevent_consumer_at", "consumer_id", "at"),
         Index("ix_usageevent_scope_consumer_at", "project_id", "app_id", "consumer_id", "at"),
@@ -956,9 +999,7 @@ class UsageEvent(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     event_key: Mapped[str | None] = mapped_column(String(512))
-    at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     consumer_name: Mapped[str] = mapped_column(String(255))
     project_id: Mapped[str | None] = mapped_column(String(255))
     app_id: Mapped[str | None] = mapped_column(String(255))
@@ -979,6 +1020,7 @@ class AgentEvent(Base):
 
     __tablename__ = "agent_events"
     __table_args__ = (
+        Index("ix_agent_events_at", "at"),
         UniqueConstraint("event_key"),
         Index("ix_agentevent_consumer_at", "consumer_id", "at"),
         Index("ix_agentevent_scope_consumer_at", "project_id", "app_id", "consumer_id", "at"),
@@ -1004,9 +1046,7 @@ class AgentEvent(Base):
         ForeignKey("model_price_intervals.id", ondelete="RESTRICT")
     )
     event_key: Mapped[str | None] = mapped_column(String(512))
-    at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     thread_id: Mapped[str | None] = mapped_column(String(64))
     project_id: Mapped[str | None] = mapped_column(String(255))
     app_id: Mapped[str | None] = mapped_column(String(255))
@@ -1214,3 +1254,44 @@ class ModelRunAdmission(Base):
     admitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class NativeAnalysisSubmission(Base):
+    """Write-ahead receipt for a native analysis POST with uncertain deduplication."""
+
+    __tablename__ = "native_analysis_submissions"
+    idempotency_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_digest: Mapped[str] = mapped_column(String(64))
+    thread_id: Mapped[str] = mapped_column(String(255))
+    connection_id: Mapped[str] = mapped_column(String(256))
+    native_run_id: Mapped[str] = mapped_column(String(256))
+    job_id: Mapped[str | None] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RunScopeBinding(Base):
+    """Immutable canonical audience and completeness marker for a combined run."""
+
+    __tablename__ = "run_scope_bindings"
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
+    participant_count: Mapped[int] = mapped_column(Integer)
+    scope_digest: Mapped[str] = mapped_column(String(64))
+
+
+class RunParticipant(Base):
+    """Immutable scope projection; no catalog FK so historical evidence survives deletion."""
+
+    __tablename__ = "run_participants"
+    __table_args__ = (
+        Index("ix_run_participants_audience", "project_id", "application_id", "thread_id"),
+    )
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    participant_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255))
+    application_id: Mapped[str] = mapped_column(String(255))
+    environment_id: Mapped[str] = mapped_column(String(256))
+    layer: Mapped[str] = mapped_column(String(16))
+    is_primary: Mapped[bool] = mapped_column(Boolean)
+    is_traffic_entry: Mapped[bool] = mapped_column(Boolean)

@@ -15,6 +15,7 @@ import { initialDraftFor, type GateMachineState } from '@/hitl/gateMachine'
 import {
   engineRetryInterrupt,
   gateInstanceOf,
+  humanInterrupt,
   phaseInterrupt,
   promptInterrupt,
 } from './gateFixtures'
@@ -70,6 +71,32 @@ function renderState(state: GateMachineState, overrides: Partial<Parameters<type
 }
 
 describe('GateModuleView machine states', () => {
+  it('resets buffered human evidence for changed requirements while retaining raw edits across error feedback', async () => {
+    const user = userEvent.setup()
+    const onEdit = vi.fn()
+    const view = (interrupt: ReturnType<typeof humanInterrupt>) => {
+      const gate = gateInstanceOf(interrupt)
+      return <MemoryRouter><GateModuleView threadId="th-human-buffer" gate={gate} machineState={{ tag: 'open', gate, draft: {}, dirty: false }} onEdit={onEdit} onSubmit={vi.fn()} /></MemoryRouter>
+    }
+    const { rerender } = render(view(humanInterrupt()))
+    await user.type(screen.getByLabelText(/Additional evidence/), 'https://evidence.test/results\n')
+    await user.type(screen.getByLabelText('error_rate'), '0.')
+    rerender(view(humanInterrupt('Native evidence is not ready')))
+    expect(screen.getByLabelText(/Additional evidence/)).toHaveValue('https://evidence.test/results\n')
+    expect(screen.getByLabelText('error_rate')).toHaveValue('0.')
+
+    const revised = humanInterrupt()
+    revised.payload = { ...revised.payload as Record<string, unknown>, revision: 2 }
+    rerender(view(revised))
+    expect(screen.getByLabelText(/Additional evidence/)).toHaveValue('')
+    expect(screen.getByLabelText('error_rate')).toHaveValue('')
+
+    await user.type(screen.getByLabelText('error_rate'), '0.05')
+    revised.payload = { ...revised.payload as Record<string, unknown>, artifact_ids: ['new-evidence'] }
+    rerender(view(revised))
+    expect(screen.getByLabelText('error_rate')).toHaveValue('')
+  })
+
   it('renders nothing in no_gate', () => {
     renderState({ tag: 'no_gate' })
     expect(screen.queryByTestId('gate-module')).not.toBeInTheDocument()

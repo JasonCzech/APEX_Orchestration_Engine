@@ -1,3 +1,9 @@
+import { TestScopeSummary } from '../TestScopeSummary'
+import { useAnalysisConnections } from '@/api/hooks/useAnalysisConnections'
+import { PHASE_NAMES } from '@apex/pipeline-events'
+import { ANALYSIS_LABELS } from '../wizardState'
+import { usePromptList, usePromptVersion } from '@/api/hooks/usePrompts'
+import type { PromptSelection } from '@/features/prompts/promptCategories'
 import { reviewPolicySummary } from '../reviewPolicySummary'
 /**
  * Step 6 — Review: summary cards with edit-links back to each step,
@@ -25,6 +31,13 @@ import {
   STEP_LABELS,
   type WizardStepId,
 } from '../wizardState'
+
+function SelectedPromptSummary({ label, selection }: { label: string; selection: PromptSelection | null | undefined }) {
+  const catalog = usePromptList({ selection_enabled: true })
+  const row = catalog.data?.find(row => row.id === selection?.prompt_id)
+  const version = usePromptVersion(row?.namespace ?? '', row?.key ?? '', selection?.version_id, selection?.prompt_id)
+  return <li>{label}: {row?.key ?? 'Not selected'}{selection ? ` · v${version.data?.version ?? selection.version_id}` : ''}{selection?.override_content !== undefined ? ' · test override' : ''}</li>
+}
 
 function ReferenceName({ name, id }: { name?: string; id: string | null | undefined }) {
   return (
@@ -79,12 +92,14 @@ export function ReviewStep({
   onEditStep: (step: WizardStepId, field?: string) => void
 }) {
   const applications = useApplications(draft.scope.project_id || undefined)
-  const environments = useEnvironments(draft.scope.app_id)
+  const traffic = draft.scope.test_scope?.participants.find(p => p.id === draft.scope.test_scope?.traffic_entry_participant_id)
+  const environments = useEnvironments(traffic?.application_id ?? draft.scope.app_id)
   const configurations = useAssistants()
   const releaseConfig = draft.config.golden_configurable?.load_test as { release_id?: string; mapping_revision?: string } | undefined
   const { documents, readiness, environment: targetEnvironment, execution, executionVerificationEnabled } = useWizardReadiness(draft, maxContextPackets)
   const issues = [...readiness.planningIssues, ...readiness.executionIssues]
   const preview = buildLaunchPreview(draft)
+  const analysisConnections = useAnalysisConnections(draft.scope.project_id, draft.config.engine !== 'sim')
   const phases = selectedPhases(draft.config)
   const inherited =
     draft.config.golden_configurable && isRecord(draft.config.golden_configurable['prompt_overrides'])
@@ -100,7 +115,7 @@ export function ReviewStep({
   return (
     <section className="wizard-step" aria-label="Review">
       {documents.isError && draft.document_ids.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => void documents.refetch()}>Retry document verification</button>}
-      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Overrides for excluded phases are saved in this draft and will not be sent at launch.</p>}
+      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Prompts for HITL phases remain saved in this draft; only LangGraph phases receive prompts at launch.</p>}
       {issues.length > 0 && (
         <div className="wizard-issues" role="alert" data-testid="review-issues">
           <span className="wizard-label">Outstanding issues</span>
@@ -142,6 +157,7 @@ export function ReviewStep({
         </ReviewCard>
         {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
         <ReviewCard title="Scope" step="scope" onEdit={onEditStep}>
+          <TestScopeSummary value={draft.scope.test_scope} />
           <dl className="wizard-review-dl">
             <dt>Title</dt>
             <dd>{draft.title.trim() || '—'}</dd>
@@ -197,8 +213,9 @@ export function ReviewStep({
             </>}
             <dt>Phases</dt>
             <dd>
-              {phases.map((phase) => PHASE_LABELS[phase]).join(' → ') || 'None'}
+              {PHASE_NAMES.map(phase => `${PHASE_LABELS[phase]} — ${phases.includes(phase) ? 'LangGraph' : 'HITL'}`).join(' → ')}
             </dd>
+            <dt>Analysis tools</dt><dd>{draft.config.analysis?.selections.map(s => `${ANALYSIS_LABELS[s.tool]} (${analysisConnections.data?.find(c => c.id === s.connection_id)?.name ?? s.connection_id})`).join(', ') || 'None'}</dd>
             <dt>Review policy</dt>
             <dd>{reviewPolicySummary(draft.config)}</dd>
             <dt>Test preset</dt>
@@ -211,7 +228,14 @@ export function ReviewStep({
           <p className="wizard-caption">Requested inputs, not measured results. Thresholds are evaluated after collection; they do not automatically stop a running test.</p>
         </ReviewCard>
         <ReviewCard title="Prompts" step="prompts" onEdit={onEditStep}>
-          {overrides.length === 0 ? (
+          {draft.prompt_selections ? <ul>
+            <SelectedPromptSummary label="System Prompt" selection={draft.prompt_selections.system} />
+            {phases.map(phase => <SelectedPromptSummary key={phase} label={`Phase context — ${PHASE_LABELS[phase]}`} selection={draft.prompt_selections?.phases[phase]} />)}
+            {draft.prompt_selections.application.map(item => <SelectedPromptSummary key={item.prompt_id} label="Application context" selection={item} />)}
+            {!draft.prompt_selections.application.length && <li>Application context: None</li>}
+            {draft.prompt_selections.environment.map(item => <SelectedPromptSummary key={item.prompt_id} label="Environment Context" selection={item} />)}
+            {!draft.prompt_selections.environment.length && <li>Environment Context: None</li>}
+          </ul> : overrides.length === 0 ? (
             <p className="wizard-caption">Catalog prompts (no run overrides)</p>
           ) : (
             <div className="wizard-chip-row">

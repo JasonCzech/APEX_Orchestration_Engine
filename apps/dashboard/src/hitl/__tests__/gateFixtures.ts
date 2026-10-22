@@ -84,6 +84,20 @@ export function phaseInterrupt(id = 'int-r1'): GateInterrupt {
   }
 }
 
+export function humanInterrupt(error?: string): GateInterrupt {
+  return {
+    interrupt_id: 'int-human', kind: 'human_completion', phase: 'execution',
+    payload: {
+      schema_version: 1, kind: 'human_completion', phase: 'execution',
+      task_id: 'execution-a1-human', revision: 1, actions: ['complete', 'abort'],
+      sections: ['Execution results'], artifact_ids: [], created_at: '2026-06-12T10:00:00+00:00',
+      engine: 'apex_load', requires_load_test_spec: false,
+      analysis_selections: [{ tool: 'internal_rca', connection_id: 'apex-connection' }],
+      ...(error ? { error } : {}),
+    },
+  }
+}
+
 export function engineRetryInterrupt(id = 'int-retry-1'): GateInterrupt {
   return {
     interrupt_id: id,

@@ -49,10 +49,11 @@ describe('PromptsPage', () => {
     const tree = screen.getByRole('navigation', { name: 'Namespaces' })
     const items = within(tree).getAllByRole('button')
     expect(items.map((item) => item.textContent)).toEqual([
-      'All namespaces4',
-      'Pipeline prompts2',
-      'Application requirements1',
-      'ops1',
+      'All Namespaces4',
+      'System Prompt0',
+      'Phase context2',
+      'Application context1',
+      'Environment Context0',
     ])
 
     const storyRow = within(screen.getByTestId('prompt-row-p-story'))
@@ -70,12 +71,12 @@ describe('PromptsPage', () => {
     })
 
     await screen.findByTestId('prompt-row-p-story')
-    expect(screen.getByRole('rowheader', { name: 'Pipeline prompt: Story analysis, 1 prompt' })).toBeInTheDocument()
-    expect(screen.getByRole('rowheader', { name: 'Pipeline prompt: Execution, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'Phase context: Story analysis, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'Phase context: Execution, 1 prompt' })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: /^Application requirements/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^Application context/ }))
     expect(router.state.location.search).toContain('ns=application')
-    expect(await screen.findByRole('rowheader', { name: 'Application requirements: Checkout service requirements, 1 prompt' })).toBeInTheDocument()
+    expect(await screen.findByRole('rowheader', { name: 'Application context: Checkout service, 1 prompt' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'checkout-service' })).toBeInTheDocument()
   })
 
@@ -100,14 +101,14 @@ describe('PromptsPage', () => {
     })
 
     await screen.findByTestId('prompt-row-p-story')
-    await userEvent.click(screen.getByRole('button', { name: /^ops/ }))
-    expect(router.state.location.search).toContain('ns=ops')
+    await userEvent.click(screen.getByRole('button', { name: /^Phase context/ }))
+    expect(router.state.location.search).toContain('ns=phase')
     expect(router.state.location.search).not.toContain('prompt=')
-    expect(screen.queryByTestId('prompt-row-p-story')).not.toBeInTheDocument()
-    expect(await screen.findByTestId('prompt-row-p-ops')).toBeInTheDocument()
+    expect(screen.getByTestId('prompt-row-p-story')).toBeInTheDocument()
+    expect(screen.queryByTestId('prompt-row-p-ops')).not.toBeInTheDocument()
 
     // back to all, then search server-side (q)
-    await userEvent.click(screen.getByRole('button', { name: /^All namespaces/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^All Namespaces/ }))
     await userEvent.type(screen.getByRole('searchbox', { name: 'Search prompts' }), 'summarize')
     await waitFor(() => expect(router.state.location.search).toContain('q=summarize'))
     expect(router.state.location.search).not.toContain('prompt=')
@@ -152,7 +153,7 @@ describe('PromptsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'New prompt' }))
     const dialog = within(screen.getByRole('dialog', { name: 'New prompt' }))
 
-    await userEvent.type(dialog.getByLabelText('Namespace'), 'ops')
+    await userEvent.selectOptions(dialog.getByLabelText('Category'), 'system')
     await userEvent.type(dialog.getByLabelText('Key'), 'triage/system')
     await userEvent.type(dialog.getByLabelText('Description'), 'Triage prompt')
     await userEvent.type(dialog.getByLabelText('Prompt content'), 'Sort by severity.')
@@ -160,11 +161,12 @@ describe('PromptsPage', () => {
     await userEvent.click(dialog.getByRole('button', { name: 'Create and activate prompt' }))
 
     await waitFor(() =>
-      expect(router.state.location.pathname).toBe('/prompts/ops/triage%2Fsystem'),
+      expect(router.state.location.pathname).toBe('/prompts/system/triage%2Fsystem'),
     )
     expect(catalog.calls.create).toEqual([
       {
-        namespace: 'ops',
+        namespace: 'system',
+        phase: null, application_id: null, environment_id: null, is_shared: false, is_default: false, selection_enabled: true,
         key: 'triage/system',
         content: 'Sort by severity.',
         description: 'Triage prompt',

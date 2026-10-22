@@ -64,14 +64,15 @@ async def test_seed_default_prompts_creates_only_missing_catalog_entries(
             assert commit_on_write is False
 
         async def get_by_key(self, _namespace: str, key: str) -> object | None:
-            return object() if key == "existing/system" else None
+            return object() if key in {"existing/system", "default"} else None
 
     class Catalog:
         def __init__(self, _repo: object) -> None:
             pass
 
-        async def create_prompt(self, **values: object) -> None:
+        async def create_prompt(self, **values: object):
             created.append(str(values["key"]))
+            return SimpleNamespace(id="created-prompt"), None
 
     monkeypatch.setattr(prompts_repository, "PromptRepository", Repo)
     monkeypatch.setattr(prompts_service, "PromptCatalogService", Catalog)

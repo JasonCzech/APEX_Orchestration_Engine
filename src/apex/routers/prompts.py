@@ -31,6 +31,7 @@ from apex.domain.input_limits import (
     RecordId,
     ScopeId,
 )
+from apex.domain.pipeline import Phase
 from apex.persistence.db import get_session, release_read_transactions
 from apex.persistence.models import Prompt, PromptVersion
 from apex.persistence.repositories.prompts import PromptRepository
@@ -58,8 +59,10 @@ PROMPT_TEST_TTL_MINUTES = 24 * 60
 _AMBIGUOUS_RUN_CREATE_CLIENT_STATUSES = frozenset({408, 409, 425, 429})
 
 
-def get_catalog(session: Annotated[AsyncSession, Depends(get_session)]) -> PromptCatalogService:
-    return PromptCatalogService(PromptRepository(session))
+def get_catalog(
+    session: Annotated[AsyncSession, Depends(get_session)], identity: CurrentIdentity
+) -> PromptCatalogService:
+    return PromptCatalogService(PromptRepository(session, identity=identity))
 
 
 CatalogDep = Annotated[PromptCatalogService, Depends(get_catalog)]
@@ -92,6 +95,12 @@ class ActiveVersionRef(BaseModel):
 
 
 class PromptSummary(BaseModel):
+    phase: Phase | None = None
+    application_id: str | None = None
+    environment_id: str | None = None
+    is_shared: bool = False
+    is_default: bool = False
+    selection_enabled: bool = False
     id: str
     namespace: str = Field(max_length=255)
     key: str = Field(max_length=255)
@@ -120,6 +129,12 @@ class PromptVersionDetail(PromptVersionInfo):
 
 
 class CreatePromptRequest(BaseModel):
+    phase: Phase | None = None
+    application_id: ScopeId | None = None
+    environment_id: RecordId | None = None
+    is_shared: bool = False
+    is_default: bool = False
+    selection_enabled: bool = True
     model_config = ConfigDict(extra="forbid")
 
     namespace: NoNulStr = Field(min_length=1, max_length=255)
@@ -162,6 +177,12 @@ class TestPromptResponse(BaseModel):
 
 def _summary(prompt: Prompt, active: PromptVersion | None) -> PromptSummary:
     return PromptSummary(
+        phase=Phase(prompt.phase) if prompt.phase else None,
+        application_id=prompt.application_id,
+        environment_id=prompt.environment_id,
+        is_shared=bool(prompt.is_shared),
+        is_default=bool(prompt.is_default),
+        selection_enabled=bool(prompt.selection_enabled),
         id=prompt.id,
         namespace=_safe_prompt_text(prompt.namespace, max_chars=255) or "",
         key=_safe_prompt_text(prompt.key, max_chars=255) or "",
@@ -270,12 +291,28 @@ async def list_prompts(
     catalog: CatalogDep,
     namespace: Annotated[NoNulStr | None, Query(max_length=255)] = None,
     include_archived: bool = False,
+    phase: Phase | None = None,
+    application_id: ScopeId | None = None,
+    include_shared: bool = False,
+    environment_id: RecordId | None = None,
+    selection_enabled: bool | None = None,
     q: Annotated[NoNulStr | None, Query(max_length=500)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
     offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> list[PromptSummary]:
     rows = await catalog.list_prompts(
         namespace=namespace,
+        **{
+            key: value
+            for key, value in {
+                "phase": phase,
+                "application_id": application_id,
+                "include_shared": include_shared or None,
+                "environment_id": environment_id,
+                "selection_enabled": selection_enabled,
+            }.items()
+            if value is not None
+        },
         include_archived=include_archived,
         q=q,
         allow_application=identity.is_unscoped,
@@ -300,7 +337,19 @@ async def create_prompt(
             description=body.description,
             note=body.note,
             created_by=identity.name,
+            applicability=body.model_dump(
+                include={
+                    "phase",
+                    "application_id",
+                    "environment_id",
+                    "is_shared",
+                    "is_default",
+                    "selection_enabled",
+                }
+            ),
         )
+    except ValueError:
+        failure = HTTPException(status_code=422, detail="Invalid prompt content or applicability")
     except DuplicatePromptError:
         failure = HTTPException(status_code=409, detail="prompt already exists")
     except PromptCredentialMaterialError:
@@ -346,6 +395,8 @@ async def save_prompt_version(
         )
     except PromptNotFoundError:
         failure = HTTPException(status_code=404, detail="prompt not found")
+    except ValueError:
+        failure = HTTPException(status_code=422, detail="Prompt content must not be blank")
     except PromptCredentialMaterialError:
         failure = HTTPException(status_code=422, detail="prompt contains credential material")
     if failure is not None:
@@ -417,12 +468,29 @@ async def rollback_prompt(
         failure = HTTPException(status_code=404, detail="prompt or version not found")
     except PromptVersionMismatchError:
         failure = HTTPException(status_code=409, detail="prompt version conflict")
+    except ValueError:
+        failure = HTTPException(status_code=422, detail="Prompt content must not be blank")
     except PromptCredentialMaterialError:
         failure = HTTPException(status_code=422, detail="prompt contains credential material")
     if failure is not None:
         raise failure
     if prompt is None or version is None:  # pragma: no cover - service contract invariant
         raise HTTPException(status_code=500, detail="prompt rollback returned no prompt")
+    return _detail(prompt, version)
+
+
+@router.post("/{prompt_id}/default", operation_id="setDefaultPrompt")
+async def set_default_prompt(
+    prompt_id: PromptId, identity: GlobalPromptAdmin, catalog: CatalogDep
+) -> PromptDetail:
+    try:
+        prompt, version = await catalog.set_default(prompt_id)
+    except PromptNotFoundError:
+        raise HTTPException(404, "Prompt not found") from None
+    except ValueError:
+        raise HTTPException(
+            409, "Only active selectable system and phase prompts can be defaults"
+        ) from None
     return _detail(prompt, version)
 
 
@@ -449,6 +517,8 @@ async def _set_archived(
     try:
         await catalog.set_archived(prompt_id, archived)
         prompt, active = await catalog.get_prompt(prompt_id, allow_application=True)
+    except ValueError:
+        raise HTTPException(409, "Designate a replacement default before archiving") from None
     except PromptNotFoundError:
         not_found = True
     if not_found or prompt is None:

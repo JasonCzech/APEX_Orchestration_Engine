@@ -52,6 +52,8 @@ MIN_ROLE: dict[str, str] = {
     "listPipelines": "viewer",
     "getPipeline": "viewer",
     "getPipelineActors": "viewer",
+    "getPipelineSetup": "viewer",
+    "listAnalysisConnections": "viewer",
     # Metadata-only POST; does not launch or contact a provider.
     "getPipelineExecutionReadiness": "viewer",
     "getPhasePromptReview": "viewer",
@@ -68,6 +70,7 @@ MIN_ROLE: dict[str, str] = {
     "getPromptVersion": "viewer",
     "rollbackPrompt": "admin",
     "archivePrompt": "admin",
+    "setDefaultPrompt": "admin",
     "unarchivePrompt": "admin",
     "testPrompt": "operator",
     # ── catalog ─────────────────────────────────────────────────────────────
@@ -123,6 +126,20 @@ MIN_ROLE: dict[str, str] = {
     # ── analytics ───────────────────────────────────────────────────────────
     "getUsageAnalytics": "viewer",
     "getAgentAnalytics": "viewer",  # any authenticated role; cost figures gated by admin+flag
+    "getAgentUsageHistory": "viewer",
+    "getAgentUsageEvent": "viewer",
+    "exportAgentUsage": "viewer",
+    "getAgentUsageFacets": "viewer",
+    "listModelPricing": "admin",
+    "getModelPricing": "admin",
+    "getModelPriceHistory": "admin",
+    "setModelPrice": "admin",
+    "archiveAnalyticsModel": "admin",
+    "restoreAnalyticsModel": "admin",
+    "previewModelCorrection": "admin",
+    "createModelCorrection": "admin",
+    "getModelCorrection": "admin",
+    "retryModelCorrection": "admin",
     # ── logs ────────────────────────────────────────────────────────────────
     # EXCEPTION: POST with read semantics (search request body) — viewer.
     "searchLogs": "viewer",
@@ -220,6 +237,8 @@ SCOPE: dict[str, str] = {
     "listPipelines": "project",
     "getPipeline": "project",
     "getPipelineActors": "project_app",
+    "getPipelineSetup": "project_app",
+    "listAnalysisConnections": "project",
     "getPipelineExecutionReadiness": "project_app",
     "getPhasePromptReview": "project",
     "patchPhasePromptReview": "project",
@@ -235,6 +254,7 @@ SCOPE: dict[str, str] = {
     "getPromptVersion": "none",
     "rollbackPrompt": "none",
     "archivePrompt": "none",
+    "setDefaultPrompt": "admin_scope",
     "unarchivePrompt": "none",
     "testPrompt": "none",
     # ── catalog ─────────────────────────────────────────────────────────────
@@ -284,6 +304,20 @@ SCOPE: dict[str, str] = {
     # ── analytics ───────────────────────────────────────────────────────────
     "getUsageAnalytics": "project",
     "getAgentAnalytics": "project",
+    "getAgentUsageHistory": "project_app",
+    "getAgentUsageEvent": "project_app",
+    "exportAgentUsage": "project_app",
+    "getAgentUsageFacets": "project_app",
+    "listModelPricing": "admin_scope",
+    "getModelPricing": "admin_scope",
+    "getModelPriceHistory": "admin_scope",
+    "setModelPrice": "admin_scope",
+    "archiveAnalyticsModel": "admin_scope",
+    "restoreAnalyticsModel": "admin_scope",
+    "previewModelCorrection": "admin_scope",
+    "createModelCorrection": "admin_scope",
+    "getModelCorrection": "admin_scope",
+    "retryModelCorrection": "admin_scope",
     # ── logs ────────────────────────────────────────────────────────────────
     "searchLogs": "provider_project",
     # ── inventory ───────────────────────────────────────────────────────────
@@ -386,6 +420,7 @@ OUT_OF_SCOPE_PROJECT = "proj-matrix-other"
 # the request itself. Resource-owner checks that require loading a row still live
 # in router-specific tests and return 404 to avoid existence leaks.
 SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
+    "listAnalysisConnections": {"params": {"project_id": OUT_OF_SCOPE_PROJECT}},
     "listProjectLabels": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "setProjectLabel": {"json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "Forbidden"}},
     "deleteProjectLabel": {"params": {"project": OUT_OF_SCOPE_PROJECT}},

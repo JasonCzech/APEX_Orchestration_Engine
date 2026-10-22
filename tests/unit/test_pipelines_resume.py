@@ -1741,3 +1741,270 @@ def test_environment_context_without_target_can_replay_only_for_simulation(engin
     else:
         with pytest.raises(RerunConfigurationConflictError):
             _ensure_durable_config_ownership(config, thread)
+
+
+@pytest.mark.parametrize("change_system", [False, True])
+def test_http_context_entry_edits_keep_system_locked(change_system) -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("prompt-1")
+    original = {
+        "system": "Locked shared system",
+        "user": "Phase context",
+        "system_locked": True,
+        "application": "=== APPLICATION CONTEXT: shared ===\nOriginal context",
+        "contexts": [
+            {
+                "namespace": "application",
+                "is_shared": True,
+                "key": "shared",
+                "prompt_id": "app-prompt",
+                "version_id": "app-v1",
+                "version": 1,
+                "content": "Original context",
+            }
+        ],
+        "selections": [],
+    }
+    state["tasks"][0]["interrupts"][0]["value"] = build_prompt_review_payload(
+        Phase.EXECUTION, original, {"origin": "catalog", "ref": "manifest:v1"}, [], []
+    )
+    edited = {
+        "user": "Edited phase",
+        "context_edits": [{"prompt_id": "app-prompt", "content": "Phase-local context"}],
+    }
+    if change_system:
+        edited["system"] = "Attempted replacement"
+    with TestClient(make_app(FakeClient(FakeThreads({"t-1": state}), runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/prompt-1/resume", json={"action": "modify", "prompt": edited}
+        )
+    assert response.status_code == (422 if change_system else 202)
+    if change_system:
+        assert not runs.create_calls
+    else:
+        assert runs.create_calls[0]["command"]["resume"]["prompt-1"]["prompt"] == edited
+
+
+def test_copy_setup_preserves_selected_versions_without_manifest_or_target_authority() -> None:
+    system = {
+        "namespace": "system",
+        "key": "alternative",
+        "prompt_id": "sys",
+        "version_id": "sys-v1",
+        "version": 1,
+        "content": "Frozen system",
+    }
+    phase = {
+        "namespace": "phase",
+        "phase": "story_analysis",
+        "key": "alternative",
+        "prompt_id": "phase",
+        "version_id": "phase-v2",
+        "version": 2,
+        "content": "Frozen phase",
+    }
+
+    def ref(item):
+        return {"prompt_id": item["prompt_id"], "version_id": item["version_id"]}
+
+    selections = {
+        "system": ref(system),
+        "phases": {"story_analysis": ref(phase)},
+        "application": [],
+        "environment": [],
+    }
+    manifest = {
+        "system": system,
+        "phases": {"story_analysis": phase},
+        "application": [],
+        "environment": [],
+    }
+    cfg = PipelineConfigurable.model_validate(
+        {
+            "phases": ["story_analysis"],
+            "project_id": "project-a",
+            "app_id": "app-a",
+            "prompt_selections": selections,
+            "prompt_manifest": manifest,
+        }
+    )
+    state = rerun_state(cfg.snapshot())
+    state["values"].update(title="Original test", request="Original request")
+    threads = FakeThreads(
+        {"t-1": state}, metadata={"t-1": {"project_id": "project-a", "app_id": "app-a"}}
+    )
+    with TestClient(make_app(FakeClient(threads, FakeRuns()))) as client:
+        response = client.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 200
+    exported = response.json()
+    assert exported["configurable"]["prompt_selections"]["system"] == {
+        **ref(system),
+        "override_content": None,
+    }
+    assert exported["configurable"]["prompt_selections"]["phases"]["story_analysis"] == {
+        **ref(phase),
+        "override_content": None,
+    }
+    assert "prompt_manifest" not in exported["configurable"]
+    assert "environment_target" not in exported["configurable"]
+    assert "cycle_dispatch_id" not in exported["configurable"]
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [("valid", 202), ("stale", 409), ("invalid", 422), ("viewer", 403), ("duplicate", 409)],
+)
+def test_human_completion_resume_validates_task_and_authenticated_actor(case, expected):
+    from apex.domain.prompt_catalog import PHASE_SECTIONS
+
+    phase = Phase.STORY_ANALYSIS
+    payload = {
+        "schema_version": 1,
+        "kind": "human_completion",
+        "phase": phase.value,
+        "task_id": "story_analysis-a1-human",
+        "revision": 1,
+        "actions": ["complete", "abort"],
+        "sections": list(PHASE_SECTIONS[phase]),
+        "created_at": "2026-10-22T00:00:00Z",
+        "artifact_ids": [],
+        "analysis_selections": [],
+        "requires_load_test_spec": False,
+        "engine": "sim",
+        "approved_target": None,
+    }
+    state = state_with_interrupt("human-1")
+    state["tasks"][0]["interrupts"][0]["value"] = payload
+    if case == "duplicate":
+        state["tasks"] = []
+    runs = FakeRuns()
+    app = make_app(
+        FakeClient(FakeThreads({"t-1": state}), runs),
+        role=Role.VIEWER if case == "viewer" else Role.OPERATOR,
+    )
+    body = {
+        "action": "complete",
+        "task_id": payload["task_id"],
+        "expected_revision": 999 if case == "stale" else 1,
+        "output": {
+            "deliverable": {
+                "schema_version": 1,
+                "phase": phase.value,
+                "disposition": "complete",
+                "summary": "Completed human work",
+                "sections": {key: "Completed analysis" for key in PHASE_SECTIONS[phase]},
+                "evidence": [],
+                "assumptions": [],
+                "gaps": [],
+                "blockers": [],
+                "workload": [],
+            }
+        },
+    }
+    if case == "invalid":
+        body["output"] = {}
+    with TestClient(app) as client:
+        response = client.post("/v1/pipelines/t-1/gates/human-1/resume", json=body)
+    assert response.status_code == expected, response.text
+    if expected == 202:
+        assert runs.create_calls[0]["config"]["configurable"][RUNTIME_ACTOR_ID_KEY] == "c1"
+        assert runs.create_calls[0]["command"] == {"resume": {"human-1": body}}
+    else:
+        assert not runs.create_calls
+
+
+@pytest.mark.parametrize("owner", ["langgraph", "hitl"])
+async def test_owned_phase_rerun_preserves_launch_contract_and_replays_subset(owner):
+    from apex.domain.pipeline import PHASE_ORDER
+
+    snapshot = trusted_rerun_snapshot()
+    snapshot.update(
+        engine="sim",
+        phases=[p.value for p in PHASE_ORDER],
+        phase_execution={"schema_version": 1, "owners": {p.value: owner for p in PHASE_ORDER}},
+    )
+    original = PipelineConfigurable.model_validate(snapshot)
+    threads = FakeThreads(
+        {"t-1": rerun_state(original.snapshot())},
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    runs = DurableRerunRuns()
+    service = PipelineReadService(FakeClient(threads, runs))
+    await service.rerun_pipeline(
+        "t-1",
+        phases=["reporting"],
+        gates_mode="auto",
+        idempotency_key="owned-rerun",
+        principal_id="consumer-a",
+    )
+    raw = runs.create_calls[0]["config"]["configurable"]
+    cfg = PipelineConfigurable.model_validate(raw)
+    assert cfg.phase_execution == original.phase_execution
+    assert cfg.selected_phases() == list(PHASE_ORDER)
+    assert cfg.planned_phases() == [Phase.REPORTING]
+    assert cfg.agent_phases() == ([Phase.REPORTING] if owner == "langgraph" else [])
+    assert cfg.environment_target == original.environment_target
+    assert cfg.prompt_overrides == original.prompt_overrides
+    assert cfg.analysis == original.analysis
+    replay_state = {"run_config": raw, "phases_plan": ["reporting"]}
+    assert (
+        PipelineConfigurable.from_state_for_phase(
+            replay_state, {"configurable": raw}, Phase.REPORTING
+        )
+        == cfg
+    )
+    with pytest.raises(ValueError, match="phase plan"):
+        PipelineConfigurable.from_state_for_phase(
+            replay_state, {"configurable": raw}, Phase.EXECUTION
+        )
+
+
+def test_public_launch_cannot_supply_owned_rerun_window():
+    from apex.routers.pipelines import StartPipelineRequest
+
+    with pytest.raises(ValueError, match="server-owned"):
+        StartPipelineRequest(title="Bypass full plan", configurable={"rerun_phases": ["reporting"]})
+
+
+def test_owned_rerun_keeps_full_frozen_prompt_choices_for_subsequent_reruns():
+    from apex.domain.pipeline import PHASE_ORDER
+
+    def entry(key, namespace, **kwargs):
+        return dict(
+            prompt_id=key,
+            version_id=f"{key}-v1",
+            key=key,
+            namespace=namespace,
+            version=1,
+            content="Frozen reviewed instructions",
+            **kwargs,
+        )
+
+    system = entry("system", "system")
+    phases = {p.value: entry(p.value, "phase", phase=p.value) for p in PHASE_ORDER}
+    selections = {
+        "system": {k: system[k] for k in ("prompt_id", "version_id")},
+        "phases": {p: {k: e[k] for k in ("prompt_id", "version_id")} for p, e in phases.items()},
+    }
+    cfg = PipelineConfigurable.model_validate(
+        {
+            "phase_execution": {
+                "schema_version": 1,
+                "owners": {p.value: "langgraph" for p in PHASE_ORDER},
+            },
+            "rerun_phases": ["reporting"],
+            "prompt_selections": selections,
+            "prompt_manifest": {"system": system, "phases": phases},
+        }
+    )
+    assert cfg.prompt_manifest is not None
+    assert set(cfg.prompt_manifest.phases) == set(PHASE_ORDER)
+    assert cfg.agent_phases() == [Phase.REPORTING]
+    assert (
+        PipelineConfigurable.from_state_for_phase(
+            {"run_config": cfg.snapshot(), "phases_plan": ["reporting"]},
+            {"configurable": cfg.snapshot()},
+            Phase.REPORTING,
+        ).prompt_manifest
+        == cfg.prompt_manifest
+    )

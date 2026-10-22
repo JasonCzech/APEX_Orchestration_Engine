@@ -299,7 +299,7 @@ def test_phase_usage_replay_key_is_stable_per_attempt(monkeypatch: pytest.Monkey
             {
                 "event_key": "phase:stable",
                 "consumer_name": "graph",
-            "consumer_id": None,
+                "consumer_id": None,
                 "surface": "graph",
                 "action": "phase:execution:succeeded",
                 "status": "ok",

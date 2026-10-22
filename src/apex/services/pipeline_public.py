@@ -18,6 +18,7 @@ from apex.domain.outcomes import qualified_execution_summary
 from apex.domain.pipeline import MAX_GATE_DECISION_TEXT_CHARS, PHASE_ORDER, PhaseStatus
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.graphs.pipeline.state import MAX_DURABLE_APPROVALS, MAX_DURABLE_DIALOGUE_ENTRIES
+from apex.services.prompt_selections import review_metadata
 from apex.services.public_projection import (
     public_engine_handle_summary,
     public_test_result_summary,
@@ -48,10 +49,14 @@ MAX_PUBLIC_GATE_BYTES = 256_000
 MAX_PUBLIC_GATE_NODES = 4_096
 _MAX_PUBLIC_PROMPT_PART_CHARS = 100_000
 _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS = 50_000
-# Editable prompt text must remain complete. JSON can encode one character in
-# six bytes; only these four bounded strings receive this separate allowance.
+# Editable prompt text remains complete. Selected contexts appear individually
+# and in the compatibility aggregate; both copies receive a bounded allowance.
+# Envelope validation still prevents unrelated fields borrowing this budget.
 MAX_PUBLIC_PROMPT_BODY_BYTES = 6 * (
     3 * _MAX_PUBLIC_PROMPT_PART_CHARS + _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS
+)
+MAX_PUBLIC_SELECTED_PROMPT_BODY_BYTES = 6 * (
+    2 * 500_000 + 2 * _MAX_PUBLIC_PROMPT_PART_CHARS + _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS
 )
 
 
@@ -196,7 +201,7 @@ def _public_approval(value: Any) -> JsonDict | None:
     if (
         approval_id is None
         or type(gate) is not str
-        or gate not in {"prompt_review", "phase_review"}
+        or gate not in {"prompt_review", "phase_review", "human_completion"}
         or action is None
     ):
         return None
@@ -235,12 +240,19 @@ def _public_prompt(value: Any) -> JsonDict | None:
         return None
     result: JsonDict = {}
     for field in ("system", "user", "application"):
-        item = _text(value.get(field), 100_000)
+        item = _text(
+            value.get(field),
+            500_000 if field == "application" and value.get("system_locked") else 100_000,
+        )
         if item is not None:
             result[field] = item
     source = _public_source(value.get("source"))
     if source is not None:
         result["source"] = source
+    try:
+        result.update(review_metadata(value))
+    except ValueError:
+        return None
     return result or None
 
 
@@ -351,6 +363,9 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     if type(attempt) is int:
         result["attempt"] = attempt
     for field, maximum in (
+        ("executor", 32),
+        ("completed_by", 255),
+        ("completed_at", 64),
         ("started_at", 64),
         ("ended_at", 64),
         ("summary", 20_000),
@@ -439,8 +454,14 @@ def _public_prompt_review(value: Any) -> JsonDict | None:
         "updated_at": updated_at,
         "updated_by": updated_by,
     }
-    application = _text(value.get("application"), 100_000)
+    application = _text(
+        value.get("application"), 500_000 if value.get("system_locked") else 100_000
+    )
     result["application"] = application
+    try:
+        result.update(review_metadata(value))
+    except ValueError:
+        return None
     return result
 
 
@@ -519,6 +540,8 @@ def _public_run_config(value: Any) -> JsonDict | None:
                 public_candidates["load_test"] = safe_load_test
         for field in {
             "agent_backend",
+            "phase_execution",
+            "analysis",
             "engine",
             "gates",
             "limits",
@@ -549,6 +572,10 @@ def _public_run_config(value: Any) -> JsonDict | None:
     # prompt bodies, and pre-execution context stay server-side. Reruns recover the
     # complete validated snapshot through the trusted facade instead.
     result: JsonDict = {
+        "test_scope": config.test_scope.model_dump(mode="json") if config.test_scope else None,
+        "test_scope_snapshot": {
+            k: v for k, v in (config.test_scope_snapshot or {}).items() if k != "execution_target"
+        },
         "phases": [phase.value for phase in config.phases] if config.phases else None,
         "start_phase": config.start_phase.value if config.start_phase else None,
         "stop_after": config.stop_after.value if config.stop_after else None,
@@ -557,6 +584,10 @@ def _public_run_config(value: Any) -> JsonDict | None:
         },
         "limits": config.limits.model_dump(mode="json"),
         "agent_backend": config.agent_backend,
+        "phase_execution": config.phase_execution.model_dump(mode="json")
+        if config.phase_execution
+        else None,
+        "analysis": config.analysis.model_dump(mode="json") if config.analysis else None,
     }
     engine = _text(config.engine, 64, allow_empty=False)
     if engine is not None:
@@ -652,7 +683,11 @@ def gate_budget_envelope(value: JsonDict, *, payload_only: bool = False) -> Json
         "application" not in prompt
         or (
             application is not None
-            and (type(application) is not str or len(application) > _MAX_PUBLIC_PROMPT_PART_CHARS)
+            and (
+                type(application) is not str
+                or len(application)
+                > (500_000 if prompt.get("system_locked") else _MAX_PUBLIC_PROMPT_PART_CHARS)
+            )
         )
         or type(context) is not str
         or len(context) > _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS
@@ -662,6 +697,13 @@ def gate_budget_envelope(value: JsonDict, *, payload_only: bool = False) -> Json
         **payload,
         "prompt": {
             **prompt,
+            **(
+                {"contexts": [{**item, "content": ""} for item in prompt["contexts"]]}
+                if prompt.get("system_locked")
+                and isinstance(prompt.get("contexts"), list)
+                and all(isinstance(item, dict) for item in prompt["contexts"])
+                else {}
+            ),
             "system": "",
             "user": "",
             "application": None if application is None else "",
@@ -677,9 +719,16 @@ def _within_gate_budget(value: JsonDict, *, payload_only: bool = False) -> bool:
         envelope, max_bytes=MAX_PUBLIC_GATE_BYTES, max_nodes=MAX_PUBLIC_GATE_NODES
     ):
         return False
+    payload = value if payload_only else value.get("payload", {})
+    prompt = payload.get("prompt", {}) if isinstance(payload, dict) else {}
+    body_limit = (
+        MAX_PUBLIC_SELECTED_PROMPT_BODY_BYTES
+        if isinstance(prompt, dict) and prompt.get("system_locked")
+        else MAX_PUBLIC_PROMPT_BODY_BYTES
+    )
     return envelope is value or _within_projection_budget(
         value,
-        max_bytes=MAX_PUBLIC_GATE_BYTES + MAX_PUBLIC_PROMPT_BODY_BYTES,
+        max_bytes=MAX_PUBLIC_GATE_BYTES + body_limit,
         max_nodes=MAX_PUBLIC_GATE_NODES,
     )
 
@@ -885,7 +934,11 @@ def _valid_review_payload(kind: str, phase: str, value: Any) -> bool:
         or payload_phase != phase
         or type(actions) is not list
         or any(type(action) is not str for action in actions)
-        or (kind == "prompt_review" and actions != ["approve", "modify", "skip_phase", "abort"])
+        or (
+            kind == "prompt_review"
+            and actions
+            not in (["approve", "modify", "skip_phase", "abort"], ["approve", "modify", "abort"])
+        )
         or (kind == "phase_review" and actions != ["approve", "revise", "discuss", "abort"])
     ):
         return False
@@ -902,7 +955,9 @@ def _valid_review_payload(kind: str, phase: str, value: Any) -> bool:
             return False
         if any(not _valid_public_text(prompt.get(field), 100_000) for field in ("system", "user")):
             return False
-        if not _valid_nullable_text(prompt.get("application"), 100_000):
+        if not _valid_nullable_text(
+            prompt.get("application"), 500_000 if prompt.get("system_locked") else 100_000
+        ):
             return False
         source = prompt.get("source")
         if type(source) is not dict or any(field not in source for field in ("origin", "ref")):
@@ -1044,6 +1099,34 @@ def _valid_engine_retry_payload(kind: str, phase: str, value: Any) -> bool:
 def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
     payload = value if type(value) is dict else {}
     result: JsonDict = {"schema_version": 1, "kind": kind, "phase": phase}
+    if kind == "analysis_recovery":
+        return {
+            **result,
+            "actions": ["retry", "assign_hitl", "abort"],
+            "message": _text(payload.get("message"), 4096),
+            "error": _text(payload.get("error"), 4096),
+        }
+    if kind == "human_completion":
+        return {
+            key: payload[key]
+            for key in (
+                "schema_version",
+                "kind",
+                "phase",
+                "task_id",
+                "revision",
+                "actions",
+                "sections",
+                "created_at",
+                "artifact_ids",
+                "analysis_selections",
+                "requires_load_test_spec",
+                "engine",
+                "approved_target",
+                "error",
+            )
+            if key in payload
+        }
     if kind == "prompt_review":
         result["actions"] = _public_actions(payload.get("actions"), _PROMPT_ACTIONS)
         prompt = payload["prompt"]
@@ -1052,7 +1135,11 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
             "system": None if prompt["system"] is None else _text(prompt["system"], 100_000),
             "user": None if prompt["user"] is None else _text(prompt["user"], 100_000),
             "application": (
-                None if prompt["application"] is None else _text(prompt["application"], 100_000)
+                None
+                if prompt["application"] is None
+                else _text(
+                    prompt["application"], 500_000 if prompt.get("system_locked") else 100_000
+                )
             ),
             "source": {
                 "origin": source["origin"],
@@ -1064,6 +1151,7 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
                 ),
             },
         }
+        result["prompt"].update(review_metadata(prompt))
         result["additional_context"] = _text(payload["additional_context"], 50_000)
         result["context_packets"] = [
             {
@@ -1132,9 +1220,29 @@ def public_gate(value: Any, *, include_payload: bool) -> JsonDict | None:
     if (
         interrupt_id is None
         or type(kind) is not str
-        or kind not in {"prompt_review", "phase_review", *_ENGINE_RETRY_KINDS}
+        or kind
+        not in {
+            "prompt_review",
+            "phase_review",
+            "human_completion",
+            "analysis_recovery",
+            *_ENGINE_RETRY_KINDS,
+        }
         or type(phase) is not str
         or phase not in _PHASES
+        or (
+            kind == "analysis_recovery"
+            and not (
+                type(value.get("payload")) is dict
+                and value["payload"].get("schema_version") == 1
+                and value["payload"].get("phase") == "reporting"
+                and value["payload"].get("kind") == kind
+                and value["payload"].get("actions") == ["retry", "assign_hitl", "abort"]
+                and _within_gate_budget(value["payload"], payload_only=True)
+                and not contains_credential_material(value["payload"])
+            )
+        )
+        or (kind == "human_completion" and not _valid_human_payload(phase, value.get("payload")))
         or (kind in _ENGINE_RETRY_KINDS and phase != "execution")
         or (
             kind in _ENGINE_RETRY_KINDS
@@ -1160,3 +1268,22 @@ def public_gate(value: Any, *, include_payload: bool) -> JsonDict | None:
     if not include_payload:
         result.pop("payload")
     return result
+
+
+def _valid_human_payload(phase: str, payload: Any) -> bool:
+    from apex.domain.pipeline import Phase
+    from apex.domain.prompt_catalog import PHASE_SECTIONS
+
+    return (
+        type(payload) is dict
+        and _within_gate_budget(payload, payload_only=True)
+        and payload.get("kind") == "human_completion"
+        and payload.get("phase") == phase
+        and payload.get("schema_version") == 1
+        and _meaningful_text(payload.get("task_id"), 256)
+        and type(payload.get("revision")) is int
+        and payload["revision"] >= 1
+        and payload.get("actions") == ["complete", "abort"]
+        and payload.get("sections") == list(PHASE_SECTIONS[Phase(phase)])
+        and not contains_credential_material(payload)
+    )

@@ -43,7 +43,17 @@ def test_prior_complete_snapshot_migrates_without_mutating_saved_data(old_snapsh
     original = copy.deepcopy(old_snapshot)
     state = {"values": {"run_config": old_snapshot}}
     migrated = _run_config_from_state(state)
-    assert migrated == {**original, "cycle_dispatch_id": None}
+    assert migrated == {
+        **original,
+        "cycle_dispatch_id": None,
+        "prompt_selections": None,
+        "prompt_manifest": None,
+        "phase_execution": None,
+        "analysis": None,
+        "test_scope": None,
+        "test_scope_snapshot": None,
+        "rerun_phases": None,
+    }
     assert old_snapshot == original
     assert (
         PipelineConfigurable.from_state(

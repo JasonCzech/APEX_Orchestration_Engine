@@ -1,3 +1,4 @@
+import { promptContextEdits, type ContextPrompt } from '../prompts/promptContextEdits'
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
@@ -39,9 +40,12 @@ function reviewFromState(
   const review = state.prompt_reviews?.[phase]
   if (review) {
     return {
+      system_locked: review.system_locked,
+      contexts: review.contexts,
+      selections: review.selections,
       system: review.system,
       phase_prompt: review.phase_prompt,
-      application: appOverride ?? review.application ?? null,
+      application: review.system_locked ? review.application ?? null : appOverride ?? review.application ?? null,
       additional_context: review.additional_context,
       source: review.source ?? {},
       updated_at: review.updated_at,
@@ -52,9 +56,12 @@ function reviewFromState(
   const prompt = entry?.resolved_prompt
   if (prompt?.system || prompt?.user || prompt?.application) {
     return {
+      system_locked: prompt.system_locked,
+      contexts: prompt.contexts,
+      selections: prompt.selections,
       system: prompt.system ?? '',
       phase_prompt: prompt.user ?? '',
-      application: appOverride ?? prompt.application ?? null,
+      application: prompt.system_locked ? prompt.application ?? null : appOverride ?? prompt.application ?? null,
       additional_context: '',
       source: entry?.resolved_prompt_source ?? {},
       updated_at: entry?.started_at ?? '',
@@ -88,6 +95,7 @@ function valuesOf(review: PhasePromptReview): PromptTabValues {
     phase_prompt: review.phase_prompt,
     application: review.application ?? null,
     additional_context: review.additional_context,
+    ...(review.system_locked ? { context_edits: promptContextEdits((review.contexts ?? []) as unknown as ContextPrompt[]) } : {}),
   }
 }
 
@@ -97,7 +105,8 @@ function sameValues(left: PromptTabValues | null, right: PromptTabValues | null)
     left.system === right.system &&
     left.phase_prompt === right.phase_prompt &&
     (left.application ?? '') === (right.application ?? '') &&
-    left.additional_context === right.additional_context
+    left.additional_context === right.additional_context &&
+    JSON.stringify(left.context_edits) === JSON.stringify(right.context_edits)
   )
 }
 
@@ -131,7 +140,10 @@ export function PromptReviewSection({
   const identityRef = useRef(JSON.stringify([threadId, phase]))
   const saveAttemptRef = useRef(0)
   const dirty = !sameValues(draft, baselineValues)
-  const catalogLink = catalogLinkFor(activeTab, phase, appId)
+  const selectedSource = baseline?.selections?.find(item => item.namespace === (activeTab === 'phase_prompt' ? 'phase' : activeTab))
+  const catalogLink = baseline?.system_locked
+    ? selectedSource && typeof selectedSource.namespace === 'string' && typeof selectedSource.key === 'string' ? promptPath(selectedSource.namespace, selectedSource.key) : null
+    : catalogLinkFor(activeTab, phase, appId)
 
   useEffect(() => {
     if (!userTouched) setDraft(baselineValues)
@@ -158,7 +170,8 @@ export function PromptReviewSection({
         body: {
           system: draft.system,
           phase_prompt: draft.phase_prompt,
-          application: appAvailable ? draft.application ?? '' : null,
+          ...(!baseline?.system_locked ? { application: appAvailable ? draft.application ?? '' : null } : {}),
+          ...(baseline?.system_locked ? { context_edits: draft.context_edits ?? promptContextEdits((baseline.contexts ?? []) as unknown as ContextPrompt[]) } : {}),
           additional_context: draft.additional_context,
         },
       },
@@ -245,10 +258,18 @@ export function PromptReviewSection({
       {draft ? (
         <PromptTabsEditor
           values={draft}
+          systemLocked={baseline?.system_locked === true}
+          selections={baseline?.selections ?? undefined}
+          contexts={baseline?.contexts as import('./PromptTabsEditor').PromptContextEntry[] | undefined}
           editable={canEdit && !writePending}
           appAvailable={appAvailable}
           active={activeTab}
           onActiveChange={setActiveTab}
+          onContextChange={context_edits => {
+            setSaved(false)
+            setUserTouched(true)
+            setDraft(previous => previous ? { ...previous, context_edits } : previous)
+          }}
           onChange={(field, value) => {
             setSaved(false)
             setUserTouched(true)

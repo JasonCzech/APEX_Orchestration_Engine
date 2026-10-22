@@ -152,8 +152,7 @@ describe('WorkItemsStep', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
     const project = screen.getByLabelText('Project')
-    await user.clear(project)
-    await user.type(project, 'replacement-project')
+    await user.selectOptions(project, '')
     await act(async () => {
       releaseExecute()
       await new Promise((resolve) => setTimeout(resolve, 0))

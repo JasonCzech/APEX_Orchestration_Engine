@@ -13,7 +13,7 @@ import sys
 from sqlalchemy.exc import SQLAlchemyError
 
 from apex.domain.diagnostics import safe_type_name
-from apex.domain.prompt_catalog import APPLICATION_TEMPLATE, CATALOG_REVISION
+from apex.domain.prompt_catalog import APPLICATION_TEMPLATE, CATALOG_REVISION, SHARED_SYSTEM_PROMPT
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.repositories.prompts import PromptRepository
 from apex.services.prompts import DEFAULT_PHASE_PROMPTS, PHASE_NAMESPACE, PromptCatalogService
@@ -24,6 +24,16 @@ async def main(*, upgrade_defaults: bool = False, application: str | None = None
         async with get_sessionmaker()() as session:
             repo = PromptRepository(session)
             catalog = PromptCatalogService(repo)
+            system = await repo.get_by_key("system", "default")
+            if system is None:
+                system, _ = await catalog.create_prompt(
+                    namespace="system",
+                    key="default",
+                    content=SHARED_SYSTEM_PROMPT,
+                    applicability={"selection_enabled": True},
+                )
+                if await repo.get_default("system") is None:
+                    await catalog.set_default(system.id)
             for key in sorted(DEFAULT_PHASE_PROMPTS):
                 existing = await repo.get_by_key(PHASE_NAMESPACE, key)
                 if existing is not None:
@@ -66,7 +76,14 @@ async def main(*, upgrade_defaults: bool = False, application: str | None = None
                     description=f"Built-in {part} prompt for the {phase} phase",
                     note=f"APEX canonical catalog {CATALOG_REVISION}",
                     created_by="seed_prompts",
+                    applicability={
+                        "phase": phase if part == "system" else None,
+                        "selection_enabled": part == "system",
+                    },
                 )
+                if part == "system":
+                    if await repo.get_default("phase", phase=phase) is None:
+                        await catalog.set_default(prompt.id)
                 print(f"{PHASE_NAMESPACE}/{key}: created v{version.version} (id={prompt.id})")
             if application:
                 existing = await repo.get_by_key("application", application)
@@ -78,6 +95,7 @@ async def main(*, upgrade_defaults: bool = False, application: str | None = None
                         description="Application requirements template; tailor UNKNOWN fields",
                         note=f"APEX canonical catalog {CATALOG_REVISION}",
                         created_by="seed_prompts",
+                        applicability={"application_id": application},
                     )
                     print(f"application/{application}: created v1")
                 else:

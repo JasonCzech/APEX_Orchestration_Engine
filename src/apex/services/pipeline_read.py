@@ -17,8 +17,8 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
-from uuid import NAMESPACE_URL, uuid5
+from typing import Any, Protocol, cast
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import structlog
 from langgraph_sdk.errors import APIStatusError, ConflictError, NotFoundError
@@ -38,6 +38,7 @@ from apex.domain.pipeline import (
     PhaseStatus,
     utcnow_iso,
 )
+from apex.domain.test_scope import TestScopeV1
 from apex.graphs.pipeline.configurable import (
     MAX_RECOMMENDED_RECURSION_LIMIT,
     PipelineConfigurable,
@@ -56,12 +57,14 @@ from apex.services.pipeline_public import (
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_NODES,
     MAX_PUBLIC_PROMPT_BODY_BYTES,
+    MAX_PUBLIC_SELECTED_PROMPT_BODY_BYTES,
     gate_budget_envelope,
     public_gate,
     public_pipeline_state,
     public_prompt_review,
     public_text,
 )
+from apex.services.prompt_selections import review_metadata
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_no_catalog,
@@ -78,6 +81,7 @@ from apex.services.run_validation import (
     validate_gate_payload,
     validate_prompt_parts,
 )
+from apex.settings import get_settings
 
 JsonDict = dict[str, Any]
 
@@ -269,7 +273,7 @@ def phase_display_values(
     plan = values.get("phases_plan")
     candidates = gates if thread_status == "interrupted" else []
     for gate in candidates:
-        if gate.get("kind") not in {"prompt_review", "phase_review"}:
+        if gate.get("kind") not in {"prompt_review", "phase_review", "human_completion"}:
             continue
         phase = gate.get("phase")
         if phase not in {item.value for item in PHASE_ORDER}:
@@ -281,6 +285,8 @@ def phase_display_values(
             entry["status"] = (
                 "awaiting_prompt_review"
                 if gate.get("kind") == "prompt_review"
+                else "awaiting_human_completion"
+                if gate.get("kind") == "human_completion"
                 else "awaiting_output_review"
             )
             results[phase] = entry
@@ -321,6 +327,16 @@ def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
                     "attempt": None,
                 }
             )
+    owners = ((public_values.get("run_config") or {}).get("phase_execution") or {}).get(
+        "owners", {}
+    )
+    for item in strip:
+        entry = results.get(item["phase"]) or {}
+        owner = entry.get("executor") or owners.get(item["phase"])
+        if owner:
+            item["executor"] = owner
+        if entry.get("completed_by"):
+            item["completed_by"] = entry["completed_by"]
     return strip
 
 
@@ -533,7 +549,13 @@ def _project_pending_gates(gates: list[JsonDict]) -> list[JsonDict]:
         if envelope is not projected:
             # One allowance is shared across the entire list, not multiplied by
             # its gate count. Nonbody bytes and all nodes retain their old caps.
-            remaining_body_bytes = MAX_PUBLIC_PROMPT_BODY_BYTES - used_prompt_body_bytes
+            prompt = projected.get("payload", {}).get("prompt", {})
+            body_limit = (
+                MAX_PUBLIC_SELECTED_PROMPT_BODY_BYTES
+                if prompt.get("system_locked")
+                else MAX_PUBLIC_PROMPT_BODY_BYTES
+            )
+            remaining_body_bytes = body_limit - used_prompt_body_bytes
             full_cost = _bounded_json_cost(
                 projected,
                 max_bytes=encoded_bytes + remaining_body_bytes,
@@ -577,6 +599,8 @@ def _application_override_content(values: JsonDict, app_id: str | None) -> str |
 
 
 def _with_application_override(review: JsonDict, values: JsonDict, app_id: str | None) -> JsonDict:
+    if review.get("system_locked"):
+        return review
     override = _application_override_content(values, app_id)
     if override is not None:
         return {**review, "application": override}
@@ -618,6 +642,21 @@ def _rerun_blocked_reason(values: Any) -> str | None:
     return "cycle_preparation_required" if type(binding) is str and binding else None
 
 
+def _public_test_scope(value: Any) -> JsonDict | None:
+    """Bound and validate legacy/native metadata before exposing scope identifiers."""
+    if type(value) is not dict or contains_credential_material(
+        value,
+        max_nodes=1_024,
+        max_string_chars=MAX_SCOPE_ID_CHARS,
+        max_total_chars=100_000,
+    ):
+        return None
+    try:
+        return TestScopeV1.model_validate(value).model_dump(mode="json")
+    except (TypeError, ValueError):
+        return None
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     raw_values = thread.get("values")
@@ -638,6 +677,7 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
         "title": public_values.get("title") or public_text(metadata.get("title"), 500),
         "project_id": public_text(metadata.get("project_id"), 255),
         "app_id": public_text(metadata.get("app_id"), 255),
+        "test_scope": _public_test_scope(metadata.get("test_scope")),
         "thread_status": public_text(thread.get("status"), 32),
         "current_phase": public_values.get("current_phase"),
         "phase_strip": build_phase_strip(public_values),
@@ -668,6 +708,93 @@ class PipelineReadService:
         self._client = client
         self._launch_locks = launch_locks or LaunchLockManager()
 
+    async def recover_scope_launch(
+        self,
+        *,
+        principal_id: str,
+        project_id: str,
+        app_id: str,
+        idempotency_key: str,
+        request_intent: str,
+        test_scope: JsonDict,
+    ) -> JsonDict | None:
+        """Reconcile a stamped original intent before catalog or assistant changes."""
+        thread_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                "apex-launch:"
+                + json.dumps(
+                    {
+                        "principal_id": principal_id,
+                        "project_id": project_id,
+                        "app_id": app_id,
+                        "idempotency_key": idempotency_key,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        missing = False
+        failed = False
+        thread = None
+        try:
+            thread = await self._client.threads.get(thread_id)
+        except NotFoundError:
+            missing = True
+        except Exception:
+            failed = True
+        if failed:
+            raise LaunchProviderError("pipeline claim lookup failed")
+        if missing:
+            return None
+        if not isinstance(thread, dict):
+            raise LaunchProviderError("pipeline claim lookup failed")
+        metadata = thread.get("metadata") or {}
+        if (
+            metadata.get("launch_request_intent") != request_intent
+            or metadata.get("test_scope") != test_scope
+            or metadata.get("project_id") != project_id
+            or metadata.get("app_id") != app_id
+        ):
+            raise LaunchIdempotencyConflictError("idempotency claim differs from original intent")
+        fingerprint = metadata.get("launch_idempotency_fingerprint")
+        if not isinstance(fingerprint, str):
+            raise LaunchIdempotencyConflictError("Original launch fingerprint is unavailable")
+        root = await self._find_launch_root_run(thread_id, request_fingerprint=fingerprint)
+        if root is None:
+            # No work has been submitted. Fresh admission may proceed under the
+            # same deterministic claim and existing exact-config fingerprint.
+            return None
+        run_id = validated_native_identifier(root.get("run_id"), label="pipeline launch recovery")
+        return {
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "stream_url": native_run_stream_url(thread_id, run_id),
+        }
+
+    async def assistant_launch_defaults(self, assistant_id: str | None) -> JsonDict:
+        """Resolve assistant defaults before admission, including editable system defaults."""
+        if assistant_id in (None, PIPELINE_GRAPH_ID):
+            assistant_id = str(
+                uuid5(UUID("6ba7b821-9dad-11d1-80b4-00c04fd430c8"), PIPELINE_GRAPH_ID)
+            )
+        failed = False
+        defaults = None
+        try:
+            assistant = await cast(Any, self._client).assistants.get(assistant_id)
+            if type(assistant) is not dict or assistant.get("graph_id") != PIPELINE_GRAPH_ID:
+                raise ValueError("not a pipeline assistant")
+            config = assistant.get("config") or {}
+            defaults = config.get("configurable") or {}
+            if type(defaults) is not dict:
+                raise ValueError("invalid assistant configuration")
+        except Exception:
+            failed = True
+        if failed:
+            raise LaunchValidationError("Selected pipeline assistant is unavailable")
+        return dict(defaults or {})
+
     async def start_run(
         self,
         *,
@@ -687,6 +814,8 @@ class PipelineReadService:
         principal_id: str | None = None,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None = None,
         reuse_existing_thread: bool = False,
+        recovery_only: bool = False,
+        request_intent: str | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
 
@@ -747,6 +876,8 @@ class PipelineReadService:
                 raise ValueError("pipeline configurable is invalid")
             validate_json_object(configurable, label="pipeline configurable")
             run_configurable = dict(configurable)
+            if run_configurable.get("rerun_phases") is not None:
+                raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
         if phases is not None and (
             type(phases) is not list
             or len(phases) > len(PHASE_ORDER)
@@ -800,15 +931,110 @@ class PipelineReadService:
         if resolved_gates is not None:
             run_configurable["gates"] = resolved_gates
 
+        if recovery_only:
+            # This path cannot create threads or runs. The principal participates
+            # in the deterministic ID and the exact original fingerprint below
+            # must still match before any result is returned.
+            if not idempotency_key or not principal_id:
+                raise LaunchValidationError("Legacy launch recovery requires an existing claim")
+            recovery_thread_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    "apex-launch:"
+                    + json.dumps(
+                        {
+                            "principal_id": principal_id,
+                            "project_id": project_id,
+                            "app_id": app_id,
+                            "idempotency_key": idempotency_key,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+            missing = False
+            old_thread = None
+            try:
+                old_thread = await self._client.threads.get(recovery_thread_id)
+            except NotFoundError:
+                missing = True
+            if missing or old_thread is None:
+                raise LaunchValidationError("No existing legacy launch; complete test_scope")
+            old_metadata = old_thread.get("metadata") or {}
+            if (
+                old_metadata.get("test_scope")
+                or old_metadata.get("project_id") != project_id
+                or old_metadata.get("app_id") != app_id
+            ):
+                raise LaunchIdempotencyConflictError("Legacy launch ownership differs")
+            # Recover only server-owned target stamps from the historical snapshot.
+            # Never replace caller-authored fields to make a changed intent match.
+            if (
+                run_configurable.get("environment_id") is not None
+                and run_configurable.get("engine") != "sim"
+            ):
+                state = await self._client.threads.get_state(recovery_thread_id)
+                old_config = (state.get("values") or {}).get("run_config") or {}
+                if not old_config:
+                    fingerprint = old_metadata.get("launch_idempotency_fingerprint")
+                    if not isinstance(fingerprint, str):
+                        raise LaunchIdempotencyConflictError(
+                            "Legacy claim fingerprint is unavailable"
+                        )
+                    root = await self._find_launch_root_run(
+                        recovery_thread_id, request_fingerprint=fingerprint
+                    )
+                    if root is None:
+                        raise LaunchValidationError("No submitted legacy run; complete test_scope")
+                    root_id = validated_native_identifier(
+                        root.get("run_id"), label="legacy recovery"
+                    )
+                    # The native response contains original kwargs even though
+                    # the SDK's public TypedDict omits this runtime field.
+                    stored_run = await self._client.runs.get(recovery_thread_id, root_id)
+                    if (
+                        not isinstance(stored_run, dict)
+                        or str(stored_run.get("thread_id")) != recovery_thread_id
+                        or str(stored_run.get("run_id")) != root_id
+                    ):
+                        raise LaunchIdempotencyConflictError("Legacy run binding differs")
+                    old_kwargs = stored_run.get("kwargs")
+                    old_runtime = old_kwargs.get("config") if isinstance(old_kwargs, dict) else None
+                    old_config = (
+                        old_runtime.get("configurable") if isinstance(old_runtime, dict) else None
+                    )
+                    if not isinstance(old_config, dict):
+                        raise LaunchIdempotencyConflictError(
+                            "Legacy run configuration is unavailable"
+                        )
+                if (
+                    old_config.get("environment_id") != run_configurable["environment_id"]
+                    or old_config.get("project_id") != project_id
+                    or old_config.get("app_id") != app_id
+                ):
+                    raise LaunchIdempotencyConflictError("Legacy target snapshot is unavailable")
+                for key in ("environment_target", "environment_target_version"):
+                    run_configurable.pop(key, None)
+                    if old_config.get(key) is not None:
+                        run_configurable[key] = old_config[key]
+
         # Validate the sparse layer without replacing it with model defaults: the
         # selected assistant's pinned configuration must remain able to fill fields
         # the caller omitted. Graph execution validates the final merged layer again.
         validated_config = PipelineConfigurable.model_validate(run_configurable)
         recursion_limit = (
-            recommended_recursion_limit(validated_config.limits)
+            recommended_recursion_limit(validated_config.limits, validated_config.analysis)
             if "limits" in run_configurable
             else MAX_RECOMMENDED_RECURSION_LIMIT
         )
+
+        if validated_config.test_scope is not None and not recovery_only:
+            # Freeze every effective field, including defaults absent from an
+            # assistant, so a concurrent assistant edit cannot fill an omitted
+            # engine/ownership/connection setting after admission. Keep legacy
+            # recovery sparse to reproduce its original fingerprint exactly.
+            run_configurable = validated_config.snapshot()
 
         run_input: JsonDict = {"title": title, "request": request}
         if external_results is not None:
@@ -827,6 +1053,10 @@ class PipelineReadService:
             raise ValueError("pipeline launch must not contain credential material")
 
         metadata: JsonDict = {"title": title}
+        if request_intent is not None:
+            metadata["launch_request_intent"] = request_intent
+        if run_configurable.get("test_scope"):
+            metadata["test_scope"] = run_configurable["test_scope"]
         deterministic_thread_id: str | None = None
         request_fingerprint: str | None = None
         if idempotency_key:
@@ -873,6 +1103,7 @@ class PipelineReadService:
                     recursion_limit=recursion_limit,
                     before_run_start=before_run_start,
                     reuse_existing_thread=reuse_existing_thread,
+                    recovery_only=recovery_only,
                 )
         return await self._create_or_get_run(
             metadata=metadata,
@@ -885,6 +1116,7 @@ class PipelineReadService:
             recursion_limit=recursion_limit,
             before_run_start=before_run_start,
             reuse_existing_thread=reuse_existing_thread,
+            recovery_only=recovery_only,
         )
 
     async def _create_or_get_run(
@@ -900,6 +1132,7 @@ class PipelineReadService:
         recursion_limit: int,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None,
         reuse_existing_thread: bool,
+        recovery_only: bool = False,
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
@@ -909,7 +1142,7 @@ class PipelineReadService:
         try:
             thread_response = None
             create_thread = True
-            if reuse_existing_thread and deterministic_thread_id is not None:
+            if (reuse_existing_thread or recovery_only) and deterministic_thread_id is not None:
                 create_thread = False
                 try:
                     # Reconciliation must not recreate/admit an existing Cycle
@@ -918,6 +1151,10 @@ class PipelineReadService:
                     # authority before provider work and records any refusal.
                     thread_response = await self._client.threads.get(deterministic_thread_id)
                 except NotFoundError:
+                    if recovery_only:
+                        raise LaunchValidationError(
+                            "Existing legacy launch is unavailable"
+                        ) from None
                     create_thread = True
             if create_thread:
                 thread_response = await self._client.threads.create(
@@ -976,6 +1213,9 @@ class PipelineReadService:
                     "run_id": existing_run_id,
                     "stream_url": native_run_stream_url(thread_id, existing_run_id),
                 }
+
+        if recovery_only:
+            raise LaunchValidationError("No submitted legacy run; complete test_scope")
 
         if before_run_start is not None:
             try:
@@ -1193,13 +1433,12 @@ class PipelineReadService:
     ) -> PipelineListResult:
         """Search threads and map them to pipeline summaries.
 
-        Auth scoping is enforced server-side via the forwarded key. The `project`
-        filter passes through as a metadata filter. Because thread search has no
-        free-text filter, `q` scans a bounded recent prefix and reports when the
-        result may be partial.
+        Auth scoping is enforced server-side via the forwarded key. Project and
+        text filters scan a bounded recent prefix before pagination. Project
+        matching includes every participant, including secondary systems.
         """
-        metadata = {"project_id": project} if project else None
-        if not q:
+        metadata = None
+        if not q and not project:
             threads = validated_native_mapping_page(
                 await self._client.threads.search(
                     metadata=metadata,
@@ -1219,11 +1458,11 @@ class PipelineReadService:
         # LangGraph has no free-text search. Scan a fixed, recent prefix before
         # applying the dashboard offset. The hard aggregate cap prevents one
         # no-match request from issuing hundreds of full thread searches.
-        if len(q) > MAX_PIPELINE_QUERY_CHARS:
+        if len(q or "") > MAX_PIPELINE_QUERY_CHARS:
             raise ValueError(
                 f"pipeline query must not exceed {MAX_PIPELINE_QUERY_CHARS} characters"
             )
-        needle = q.casefold()
+        needle = (q or "").casefold()
         matches: list[JsonDict] = []
         scan_offset = 0
         partial = False
@@ -1250,8 +1489,18 @@ class PipelineReadService:
             matches.extend(
                 item
                 for item in page
-                if needle in (item["title"] or "").casefold()
-                or needle in (item["thread_id"] or "").casefold()
+                if (
+                    needle in (item["title"] or "").casefold()
+                    or needle in (item["thread_id"] or "").casefold()
+                )
+                and (
+                    not project
+                    or item.get("project_id") == project
+                    or any(
+                        p.get("project_id") == project
+                        for p in (item.get("test_scope") or {}).get("participants", [])
+                    )
+                )
             )
             if len(matches) >= offset + limit:
                 break
@@ -1283,6 +1532,41 @@ class PipelineReadService:
             "interrupts": gates,
         }
 
+    async def get_test_setup(self, thread_id: str) -> JsonDict:
+        """Export editable setup, never server-owned execution authority or manifest."""
+        thread, state = await _thread_and_state_definitively(self._client, thread_id)
+        cfg = _validated_durable_replay_config(_run_config_from_state(state))
+        _ensure_durable_config_ownership(cfg, thread)
+        raw_values = state.get("values") or {}
+        if type(raw_values) is not dict:
+            raise ValueError("Stored test setup is invalid")
+        snapshot = cfg.snapshot()
+        allowed = {
+            "engine",
+            "phase_execution",
+            "analysis",
+            "phases",
+            "gates",
+            "model_by_phase",
+            "agent_backend",
+            "load_test",
+            "connections",
+            "prompt_selections",
+            "prompt_overrides",
+            "limits",
+        }
+        configurable = {key: value for key, value in snapshot.items() if key in allowed}
+        configurable["phases"] = [phase.value for phase in cfg.selected_phases()]
+        return {
+            "title": public_text(raw_values.get("title"), 500) or "Copied test",
+            "request": public_text(raw_values.get("request"), 20_000) or "",
+            "project_id": cfg.project_id,
+            "app_id": cfg.app_id,
+            "environment_id": cfg.environment_id,
+            "test_scope": cfg.test_scope.model_dump(mode="json") if cfg.test_scope else None,
+            "configurable": configurable,
+        }
+
     async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
         """Effective prompt-review draft for a phase, with old-run fallback.
 
@@ -1296,8 +1580,28 @@ class PipelineReadService:
         values = public_pipeline_state(raw_values)
         metadata = thread.get("metadata") if isinstance(thread.get("metadata"), dict) else {}
         app_id = public_text(metadata.get("app_id"), 255)
+        stored_config = raw_values.get("run_config")
+        selected_cfg = None
+        if isinstance(stored_config, dict) and stored_config.get("prompt_selections") is not None:
+            selected_cfg = PipelineConfigurable.model_validate(_run_config_from_state(state))
+            if selected_cfg.prompt_manifest is None:
+                raise ValueError("The test is missing its persisted prompt manifest")
 
-        entry = (values.get("phase_results") or {}).get(phase.value) or {}
+        selection_variables = {
+            key: raw_values[key] if raw_values.get(key) is not None else fallback
+            for key, fallback in (("title", "untitled run"), ("request", "(no request provided)"))
+        }
+
+        def project_review(candidate: JsonDict) -> JsonDict | None:
+            if selected_cfg is not None:
+                from apex.services.prompt_selections import validate_manifest_review
+
+                validate_manifest_review(candidate, phase, selected_cfg, selection_variables)
+            return public_prompt_review(candidate)
+
+        raw_results = raw_values.get("phase_results")
+        raw_entry = raw_results.get(phase.value) if isinstance(raw_results, dict) else None
+        entry = raw_entry if isinstance(raw_entry, dict) else {}
         prompt = entry.get("resolved_prompt")
         status = entry.get("status")
         # Once a phase has executed, its immutable resolved prompt is the historical
@@ -1309,8 +1613,9 @@ class PipelineReadService:
             and (prompt.get("system") or prompt.get("user"))
         ):
             source = entry.get("resolved_prompt_source")
-            public_review = public_prompt_review(
+            public_review = project_review(
                 {
+                    **review_metadata(prompt),
                     "system": prompt.get("system") or "",
                     "phase_prompt": prompt.get("user") or "",
                     "application": prompt.get("application"),
@@ -1323,19 +1628,19 @@ class PipelineReadService:
             if public_review is not None:
                 return public_review
 
-        review = (values.get("prompt_reviews") or {}).get(phase.value)
+        raw_reviews = raw_values.get("prompt_reviews")
+        review = raw_reviews.get(phase.value) if isinstance(raw_reviews, dict) else None
         if isinstance(review, dict):
-            public_review = public_prompt_review(
-                _with_application_override(dict(review), values, app_id)
-            )
+            public_review = project_review(_with_application_override(dict(review), values, app_id))
             if public_review is not None:
                 return public_review
 
         if isinstance(prompt, dict) and (prompt.get("system") or prompt.get("user")):
             source = entry.get("resolved_prompt_source")
-            public_review = public_prompt_review(
+            public_review = project_review(
                 _with_application_override(
                     {
+                        **review_metadata(prompt),
                         "system": prompt.get("system") or "",
                         "phase_prompt": prompt.get("user") or "",
                         "application": prompt.get("application"),
@@ -1354,18 +1659,21 @@ class PipelineReadService:
                 return public_review
 
         safe_project_id = public_text(metadata.get("project_id"), 255)
-        cfg = PipelineConfigurable(project_id=safe_project_id, app_id=app_id)
+        cfg = selected_cfg or PipelineConfigurable(project_id=safe_project_id, app_id=app_id)
         variables = {
             "title": (
                 values.get("title") or public_text(metadata.get("title"), 500) or "untitled run"
             ),
             "request": public_text(raw_values.get("request"), 20_000) or "(no request provided)",
         }
-        try:
-            resolved = resolve_phase_prompt_sync(phase, cfg, variables=variables)
-        except Exception:
-            resolved = resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
-        projected = public_prompt_review(
+        if selected_cfg:
+            resolved = resolve_phase_prompt_no_catalog(phase, cfg, variables=selection_variables)
+        else:
+            try:
+                resolved = resolve_phase_prompt_sync(phase, cfg, variables=variables)
+            except Exception:
+                resolved = resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
+        projected = project_review(
             _with_application_override(dict(prompt_review_from_resolved(resolved)), values, app_id)
         )
         if projected is None:
@@ -1387,7 +1695,13 @@ class PipelineReadService:
         changes it is written once under application_reviews[app_id] so the edit
         propagates to every phase of the run.
         """
-        allowed_fields = {"system", "phase_prompt", "application", "additional_context"}
+        allowed_fields = {
+            "system",
+            "phase_prompt",
+            "application",
+            "additional_context",
+            "context_edits",
+        }
         if (
             type(body) is not dict
             or len(body) > len(allowed_fields)
@@ -1479,14 +1793,47 @@ class PipelineReadService:
             if type(raw_reviews) is not dict or len(raw_reviews) > len(PHASE_ORDER):
                 raise PromptReviewConflictError("pipeline prompt-review state is invalid")
             raw_current = raw_reviews.get(phase.value)
-            projected_reviews = values.get("prompt_reviews")
-            current = (
-                projected_reviews.get(phase.value) if type(projected_reviews) is dict else None
-            )
+            # The compact overview may intentionally omit complete prompt bodies.
+            # Validate the dedicated draft directly, with its prompt-specific limits.
+            current = public_prompt_review(raw_current) if raw_current is not None else None
+            comparable_current = raw_current
+            if type(raw_current) is dict and type(raw_current.get("source")) is dict:
+                comparable_current = {
+                    **raw_current,
+                    "source": {
+                        key: value
+                        for key, value in raw_current["source"].items()
+                        if key not in {"ref", "editor"} or value is not None
+                    },
+                }
             if raw_current is not None and (
-                type(raw_current) is not dict or type(current) is not dict or current != raw_current
+                type(raw_current) is not dict
+                or type(current) is not dict
+                or current != comparable_current
             ):
                 raise PromptReviewConflictError("pipeline prompt-review draft is invalid")
+
+            stored_config = raw_values.get("run_config")
+            if (
+                isinstance(stored_config, dict)
+                and stored_config.get("prompt_selections") is not None
+            ):
+                from apex.services.prompt_selections import validate_manifest_review
+
+                cfg = _validated_durable_replay_config(_run_config_from_state(state))
+                _ensure_durable_config_ownership(cfg, thread)
+                validate_manifest_review(
+                    current or {},
+                    phase,
+                    cfg,
+                    {
+                        key: raw_values[key] if raw_values.get(key) is not None else fallback
+                        for key, fallback in (
+                            ("title", "untitled run"),
+                            ("request", "(no request provided)"),
+                        )
+                    },
+                )
 
             raw_application_reviews = raw_values.get("application_reviews")
             if raw_application_reviews is None:
@@ -1568,9 +1915,30 @@ class PipelineReadService:
                 "editor": actor,
             }
 
+            from apex.services.prompt_selections import edited_review_metadata
+
+            metadata = edited_review_metadata(
+                current or {}, system, body_application, body.get("context_edits")
+            )
+            if metadata:
+                from apex.services.prompt_selections import compose_contexts
+
+                if not phase_prompt.strip():
+                    raise ValueError("Phase context must not be blank")
+                body_application = compose_contexts(metadata["contexts"]) or None
+                if (
+                    len(system)
+                    + len(phase_prompt)
+                    + len(body_application or "")
+                    + len(additional_context)
+                    > get_settings().runs.max_model_input_chars
+                ):
+                    raise ValueError("Prompt review exceeds the model input limit")
+            elif body.get("context_edits") is not None:
+                raise ValueError("Legacy prompt reviews do not accept context entry edits")
             update_values: JsonDict = {}
             effective_application = body_application
-            if app_id:
+            if app_id and not metadata:
                 existing = _application_override_content(values, app_id)
                 prior = (
                     existing
@@ -1594,6 +1962,7 @@ class PipelineReadService:
                     effective_application = prior
 
             draft: JsonDict = {
+                **metadata,
                 "system": system,
                 "phase_prompt": phase_prompt,
                 "application": effective_application,
@@ -1678,7 +2047,23 @@ class PipelineReadService:
                 )
 
             run_config = validated.snapshot()
-            run_config["phases"] = list(phases)
+            if run_config.get("prompt_selections") and not validated.phase_execution:
+                run_config["prompt_selections"]["phases"] = {
+                    key: value
+                    for key, value in run_config["prompt_selections"]["phases"].items()
+                    if key in phases
+                }
+                run_config["prompt_manifest"]["phases"] = {
+                    key: value
+                    for key, value in run_config["prompt_manifest"]["phases"].items()
+                    if key in phases
+                }
+            if validated.phase_execution:
+                run_config["rerun_phases"] = [
+                    phase.value for phase in PHASE_ORDER if phase.value in phases
+                ]
+            else:
+                run_config["phases"] = list(phases)
             run_config["start_phase"] = None
             run_config["stop_after"] = None
             if gates_mode != "inherit":
@@ -1723,7 +2108,9 @@ class PipelineReadService:
                     input={},
                     config={
                         "configurable": run_config,
-                        "recursion_limit": recommended_recursion_limit(rerun_config.limits),
+                        "recursion_limit": recommended_recursion_limit(
+                            rerun_config.limits, rerun_config.analysis
+                        ),
                     },
                     metadata={
                         RERUN_CLAIM_METADATA_KEY: claim,
@@ -1842,6 +2229,25 @@ class PipelineReadService:
             projected_payload = projected_match.get("payload")
             if type(projected_payload) is not dict:
                 raise RerunConfigurationConflictError("pending pipeline gate payload is invalid")
+            current_prompt = projected_payload.get("prompt")
+            edit = resume.get("prompt")
+            if (
+                isinstance(current_prompt, dict)
+                and current_prompt.get("system_locked")
+                and isinstance(edit, dict)
+            ):
+                from apex.services.prompt_selections import edited_review_metadata
+
+                edited_review_metadata(
+                    current_prompt,
+                    edit.get("system", current_prompt.get("system")),
+                    edit.get("application", current_prompt.get("application")),
+                    edit.get("context_edits"),
+                )
+                if "user" in edit and (
+                    not isinstance(edit["user"], str) or not edit["user"].strip()
+                ):
+                    raise ValueError("Phase context must not be blank")
             allowed = projected_payload.get("actions")
             if type(allowed) is not list or not allowed or action not in allowed:
                 safe_allowed = (
@@ -1851,7 +2257,8 @@ class PipelineReadService:
                 )
                 raise InvalidGateActionError(action, safe_allowed)
             if (
-                projected_match.get("kind") not in {"prompt_review", "phase_review"}
+                projected_match.get("kind")
+                not in {"prompt_review", "phase_review", "human_completion", "analysis_recovery"}
                 and projected_payload.get("thread_id") != thread_id
             ):
                 raise RerunConfigurationConflictError(
@@ -1861,6 +2268,16 @@ class PipelineReadService:
             run_config = _run_config_from_state(state)
             validated_config = _validated_durable_replay_config(run_config)
             _ensure_durable_config_ownership(validated_config, thread)
+            if projected_match.get("kind") == "human_completion" and action == "complete":
+                if resume.get("task_id") != projected_payload.get("task_id") or resume.get(
+                    "expected_revision"
+                ) != projected_payload.get("revision"):
+                    raise GateSupersededError(thread_id, interrupt_id, projected_match)
+                from apex.graphs.pipeline.human_phase import validate_completion
+
+                validate_completion(
+                    projected_payload, resume, state.get("values", {}), validated_config
+                )
             assistant_id = validated_config.assistant_id
             # Attribution belongs to this request, never to the launch actor or
             # a checkpoint's runtime config. Stamp it after validating the durable
@@ -1873,7 +2290,9 @@ class PipelineReadService:
                     assistant_id,
                     config={
                         "configurable": run_config,
-                        "recursion_limit": recommended_recursion_limit(validated_config.limits),
+                        "recursion_limit": recommended_recursion_limit(
+                            validated_config.limits, validated_config.analysis
+                        ),
                     },
                     # Bind the decision to the exact interrupt observed above. A scalar
                     # resume is consumed by whichever interrupt is current when the run
@@ -2056,7 +2475,13 @@ def _ensure_durable_config_ownership(
             and (
                 validated.project_id is None
                 or validated.app_id is None
-                or (validated.engine != "sim" and validated.environment_target is None)
+                or (
+                    validated.engine != "sim"
+                    and validated.environment_target is None
+                    and (
+                        validated.test_scope is None or Phase.EXECUTION in validated.agent_phases()
+                    )
+                )
             )
         )
     ):
@@ -2095,7 +2520,7 @@ def _validated_durable_replay_config(snapshot: JsonDict) -> PipelineConfigurable
         raise RerunConfigurationConflictError(
             "durable pipeline configuration snapshot is incomplete"
         )
-    if contains_credential_material(snapshot):
+    if contains_credential_material(snapshot, max_total_chars=5_000_000):
         raise RerunConfigurationConflictError(
             "durable pipeline configuration contains credential material"
         )
@@ -2106,6 +2531,8 @@ def _validated_durable_replay_config(snapshot: JsonDict) -> PipelineConfigurable
         pass
     if validated is None:
         raise RerunConfigurationConflictError("durable pipeline configuration is invalid")
+    if validated.prompt_selections is not None and validated.prompt_manifest is None:
+        raise RerunConfigurationConflictError("The test is missing its persisted prompt manifest")
     if json.dumps(
         validated.snapshot(),
         sort_keys=True,

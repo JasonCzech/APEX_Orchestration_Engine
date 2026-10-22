@@ -9,7 +9,7 @@ export const SYSTEM_INFO: SystemInfo = {
   version: '0.0.0-test',
   environment: 'test',
   features: { engines: true, documents: true },
-  limits: { max_context_packets: 32 },
+  limits: { max_test_participants: 32, max_context_packets: 32 },
   consumer: {
     name: 'Dash Ops',
     role: 'admin',

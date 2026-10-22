@@ -6,7 +6,7 @@
  */
 import { createRef } from 'react'
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +17,7 @@ import { GateModule, type GateModuleHandle } from '@/hitl/GateModule'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
-import { gatedDetail, mutableDetailHandler, promptInterrupt, resumeHandler } from './gateFixtures'
+import { gatedDetail, humanInterrupt, mutableDetailHandler, promptInterrupt, resumeHandler } from './gateFixtures'
 
 vi.mock('@uiw/react-codemirror', async () => {
   const { createElement } = await import('react')
@@ -34,8 +34,9 @@ function renderContract(
 ) {
   const handleRef = createRef<GateModuleHandle | null>()
   const onOutcome = vi.fn()
+  const queryClient = createTestQueryClient()
   render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <GateModule
           threadId={threadId}
@@ -47,10 +48,33 @@ function renderContract(
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return { handleRef, onOutcome }
+  return { handleRef, onOutcome, queryClient }
 }
 
 describe('GateModule (inbox contract)', () => {
+  it('keeps human completion in the inbox until graph validation succeeds', async () => {
+    const threadId = 'th-contract-human'
+    const interrupt = humanInterrupt()
+    const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    server.use(handler, resumeHandler(202).handler)
+    const { handleRef, onOutcome, queryClient } = renderContract(threadId, 'int-human', interrupt)
+    await screen.findByTestId('gate-module')
+    act(() => { handleRef.current?.invoke('complete') })
+    await screen.findByText('Validating completed work…')
+    expect(onOutcome).not.toHaveBeenCalled()
+
+    ref.current = { ...gatedDetail(threadId, [humanInterrupt('Native evidence is not ready')]), updated_at: '2026-06-12T10:00:01+00:00' }
+    await act(async () => { await queryClient.invalidateQueries() })
+    await screen.findByText('Previous decision was rejected: Native evidence is not ready')
+    expect(onOutcome).not.toHaveBeenCalled()
+    expect(handleRef.current?.isActionable()).toBe(true)
+
+    ref.current = { ...gatedDetail(threadId, []), updated_at: '2026-06-12T10:00:02+00:00' }
+    act(() => { handleRef.current?.invoke('complete') })
+    await waitFor(() => expect(onOutcome).toHaveBeenCalledWith({ type: 'resumed', action: 'complete', runId: 'run-99' }))
+    expect(onOutcome).toHaveBeenCalledTimes(1)
+  })
+
   it('invoke("approve") submits through the machine and fires onOutcome resumed once', async () => {
     const threadId = 'th-contract-a'
     const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-c1')]))

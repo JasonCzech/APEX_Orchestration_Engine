@@ -38,6 +38,10 @@ from apex.services.connections import (
 )
 
 
+class CatalogInUseError(Exception):
+    """An immutable retained record still references this catalog resource."""
+
+
 class DuplicateNameError(Exception):
     """A unique (parent, name) constraint was violated."""
 
@@ -262,8 +266,7 @@ class CatalogRepository:
         return app
 
     async def delete_application(self, app: Application) -> None:
-        await self._session.delete(app)
-        await self._session.commit()
+        await self._delete_resource(app)
 
     # ── environments ────────────────────────────────────────────────────────
 
@@ -387,8 +390,7 @@ class CatalogRepository:
         return await self._reload_environment(env.id)
 
     async def delete_environment(self, env: Environment) -> None:
-        await self._session.delete(env)
-        await self._session.commit()
+        await self._delete_resource(env)
 
     async def latest_snapshot(self, environment_id: str) -> EnvironmentSnapshot | None:
         stmt = (
@@ -400,6 +402,23 @@ class CatalogRepository:
         return await self._session.scalar(stmt)
 
     # ── internals ───────────────────────────────────────────────────────────
+
+    async def _delete_resource(self, resource: Application | Environment) -> None:
+        referenced = False
+        try:
+            await self._session.delete(resource)
+            await self._session.commit()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            # Asyncpg and SQLite include these labels in bounded driver text;
+            # never retain the database diagnostic in the public conflict.
+            message = bounded_driver_message(exc.orig)
+            if "foreign key constraint" in message:
+                referenced = True
+            else:
+                raise
+        if referenced:
+            raise CatalogInUseError("catalog resource is referenced by retained records")
 
     async def _commit(self) -> None:
         duplicate_name = False

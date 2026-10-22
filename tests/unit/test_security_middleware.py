@@ -2111,7 +2111,7 @@ async def test_native_join_preserves_nested_custom_events_without_exposing_other
                     b"event: custom|execution:run-1\nid: 1700000000000-2\n"
                     b'data: {"type":"phase_status","phase":"execution","status":"running",'
                     b'"api_key":"never-publish"}\n\n'
-                    b'event: custom|execution:run-1\n'
+                    b"event: custom|execution:run-1\n"
                     b'data: {"type":"engine_poll","progress_pct":25}\n\n'
                     b'event: values\ndata: {"private":"values-secret"}\n\n'
                     b'event: debug\ndata: {"private":"debug-secret"}\n\n'

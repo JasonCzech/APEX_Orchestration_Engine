@@ -12,6 +12,8 @@ import './PhaseStrip.css'
 export interface PhaseStripSegment {
   phase: string
   status: string
+  executor?: string
+  completed_by?: string
   attempt?: number | null
 }
 
@@ -35,6 +37,7 @@ const STATUS_MODIFIERS: Record<string, string> = {
   running: 'running',
   awaiting_prompt_review: 'awaiting',
   awaiting_output_review: 'awaiting',
+  awaiting_human_completion: 'awaiting',
   pending: 'pending',
   unknown: 'unknown',
   [NONE]: 'none',
@@ -44,9 +47,11 @@ function segmentModifier(status: string): string {
   return STATUS_MODIFIERS[status] ?? 'unknown'
 }
 
-function segmentLabel(phase: PhaseName, status: string, attempt: number | null | undefined): string {
+function segmentLabel(phase: PhaseName, status: string, attempt: number | null | undefined, entry?: PhaseStripSegment): string {
   const attemptSuffix = attempt != null ? ` (attempt ${attempt})` : ''
-  return `${PHASE_LABELS[phase]} — ${pipelineStatusLabel(status)}${attemptSuffix}`
+  const owner = entry?.executor ? ` — ${entry.executor === 'hitl' ? 'HITL' : 'LangGraph'}` : ''
+  const actor = entry?.completed_by ? ` — completed by ${entry.completed_by}` : ''
+  return `${PHASE_LABELS[phase]} — ${pipelineStatusLabel(status)}${attemptSuffix}${owner}${actor}`
 }
 
 /**
@@ -71,7 +76,7 @@ export function PhaseStrip({
   if (size === 'sm') {
     const labels = PHASE_NAMES.map(phase => {
       const entry = byPhase.get(phase)
-      return segmentLabel(phase, entry?.status ?? 'unknown', entry?.attempt)
+      return segmentLabel(phase, entry?.status ?? 'unknown', entry?.attempt, entry)
     })
     return <div className="phase-strip phase-strip--sm" role="img" aria-label={`Phase progress. ${labels.join('; ')}`}>
       {PHASE_NAMES.map((phase, index) => <span key={phase} aria-hidden="true"
@@ -86,7 +91,7 @@ export function PhaseStrip({
         {visiblePhases.map((phase, index) => {
           const entry = byPhase.get(phase)
           const status = entry?.status ?? 'unknown'
-          const label = segmentLabel(phase, status, entry?.attempt)
+          const label = segmentLabel(phase, status, entry?.attempt, entry)
           const visual = pipelinePhaseVisual(status)
           const className = [
             'phase-step',
@@ -104,6 +109,7 @@ export function PhaseStrip({
               </span>
               <span className="phase-step-copy">
                 <span className="phase-step-name">{PHASE_LABELS[phase]}</span>
+                {entry?.executor && <span className="phase-step-status">{entry.executor === 'hitl' ? 'HITL' : 'LangGraph'}{entry.completed_by ? ` · ${entry.completed_by}` : ''}</span>}
                 <span className="phase-step-status">{status === NONE ? 'Not selected' : pipelineStatusLabel(status)}</span>
               </span>
             </>
@@ -140,7 +146,7 @@ export function PhaseStrip({
       {PHASE_NAMES.map((phase) => {
         const entry = byPhase.get(phase)
         const status = entry?.status ?? 'unknown'
-        const label = segmentLabel(phase, status, entry?.attempt)
+        const label = segmentLabel(phase, status, entry?.attempt, entry)
         const className = `phase-seg phase-seg--${segmentModifier(status)}`
 
         if (onSelect) {

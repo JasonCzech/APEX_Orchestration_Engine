@@ -52,10 +52,10 @@ describe('TimelinePage', () => {
     detail.values = { phase_results: {} }
     server.use(pipelineDetailHandler(detail))
     renderRunRoutes([`/runs/${THREAD_ID}/timeline?phase=reporting`])
-    expect(await screen.findByText('Reporting output awaiting review')).toBeInTheDocument()
+    expect(await screen.findByText('Reporting & Analysis output awaiting review')).toBeInTheDocument()
     expect(screen.getByText('Review time not recorded')).toBeInTheDocument()
     expect(screen.getByRole('list')).toHaveTextContent('Draft report compiled; KPI deltas within tolerance.')
-    expect(screen.queryByText('Reporting Complete')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reporting & Analysis Complete')).not.toBeInTheDocument()
   })
 
   it('derives a chronologically ascending ledger from the snapshot', () => {
@@ -67,7 +67,7 @@ describe('TimelinePage', () => {
 
     const labels = events.map((event) => event.label)
     expect(labels[0]).toBe('Story Analysis started')
-    expect(labels.at(-1)).toBe('Reporting started')
+    expect(labels.at(-1)).toBe('Reporting & Analysis started')
     // Gate decision sits between phase start and phase end.
     expect(labels.indexOf('Gate prompt_review: approve')).toBeGreaterThan(
       labels.indexOf('Story Analysis started'),

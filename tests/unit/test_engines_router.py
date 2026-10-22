@@ -77,6 +77,14 @@ APP_OPERATOR = APP_VIEWER.model_copy(
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def legacy_scope_bindings(monkeypatch):
+    async def load(_thread_id):
+        return None
+
+    monkeypatch.setattr(engine_abort_service, "load_persisted_test_scope", load)
+
+
 def _not_found() -> NotFoundError:
     request = httpx.Request("GET", "http://loopback/threads/x")
     return NotFoundError("not found", response=httpx.Response(404, request=request), body=None)
@@ -665,6 +673,125 @@ def current_execution_state(
             },
         }
     }
+
+
+def cross_project_abort_scope():
+    from apex.domain.test_scope import TestScopeV1
+
+    return TestScopeV1.model_validate(
+        {
+            "participants": [
+                {
+                    "id": "api",
+                    "project_id": "p1",
+                    "application_id": "api-app",
+                    "environment_id": "api-env",
+                    "layer": "middle",
+                },
+                {
+                    "id": "web",
+                    "project_id": "p2",
+                    "application_id": "web-app",
+                    "environment_id": "web-env",
+                    "layer": "frontend",
+                },
+                {
+                    "id": "database",
+                    "project_id": "p3",
+                    "application_id": "data-app",
+                    "environment_id": "data-env",
+                    "layer": "backend",
+                },
+            ],
+            "primary_participant_id": "api",
+            "traffic_entry_participant_id": "web",
+        }
+    )
+
+
+@pytest.mark.parametrize("checkpoint", [True, False])
+def test_cross_project_abort_routes_to_traffic_project_and_keeps_primary_ownership(
+    monkeypatch, checkpoint
+):
+    scope = cross_project_abort_scope()
+
+    async def load(thread_id):
+        assert thread_id == "combined-run"
+        return scope
+
+    monkeypatch.setattr(engine_abort_service, "load_persisted_test_scope", load)
+    repo = FakeEngineRunsRepository()
+    row = repo.seed(
+        thread_id="combined-run",
+        project_id="p1",
+        app_id="api-app",
+        handle=STATE_HANDLE,
+        external_run_id=STATE_HANDLE["external_run_id"],
+        connection_id=STATE_HANDLE["connection_id"],
+    )
+    state = current_execution_state()
+    state["values"]["run_config"] = {
+        "project_id": "p1",
+        "app_id": "api-app",
+        "test_scope": scope.model_dump(mode="json"),
+    }
+    runs = FakeRuns([{"run_id": "monitor", "status": "running"}] if checkpoint else [])
+    adapter = FakeEngineAdapter()
+    resolver = FakeResolver(adapter)
+    service = EngineAbortService(
+        FakeClient(FakeThreads({"combined-run": state} if checkpoint else {}), runs),
+        repo,
+        resolver=resolver,  # type: ignore[arg-type]
+        allowed_scopes=[ScopeRef(project_id=f"p{i}") for i in (1, 2, 3)],
+    )
+    result = asyncio.run(service.abort("combined-run"))
+    assert result.confirmed and len(adapter.aborts) == 1
+    assert resolver.calls == [
+        (PortKind.EXECUTION_ENGINE, STATE_HANDLE["connection_id"], "p2", "sim")
+    ]
+    assert (row.project_id, row.app_id) == ("p1", "api-app")
+    assert runs.cancelled == []
+    assert row.status == ("running" if checkpoint else "aborted")
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing_binding", "corrupt_binding", "primary", "traffic", "downgraded", "access"]
+)
+def test_cross_project_abort_rejects_inconsistent_binding_before_provider_io(monkeypatch, failure):
+    scope = cross_project_abort_scope()
+
+    async def load(_thread_id):
+        if failure == "missing_binding":
+            return None
+        if failure == "corrupt_binding":
+            raise ValueError("Incomplete immutable scope projection")
+        return scope
+
+    monkeypatch.setattr(engine_abort_service, "load_persisted_test_scope", load)
+    project = "wrong-primary" if failure == "primary" else "p1"
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="combined-run", project_id=project, app_id="api-app", handle=STATE_HANDLE)
+    state = current_execution_state()
+    topology = scope.model_dump(mode="json")
+    if failure == "traffic":
+        topology["traffic_entry_participant_id"] = "database"
+    state["values"]["run_config"] = {
+        "project_id": project,
+        "app_id": "api-app",
+        **({"test_scope": topology} if failure != "downgraded" else {}),
+    }
+    adapter = FakeEngineAdapter()
+    resolver = FakeResolver(adapter)
+    service = EngineAbortService(
+        FakeClient(FakeThreads({"combined-run": state}), FakeRuns()),
+        repo,
+        resolver=resolver,  # type: ignore[arg-type]
+        allowed_scopes=[ScopeRef(project_id="p1")] if failure == "access" else None,
+    )
+    with pytest.raises(EngineConnectionAffinityMissingError):
+        asyncio.run(service.abort("combined-run"))
+    assert resolver.calls == [] and adapter.aborts == []
+    assert repo.rows[0].status == "running"
 
 
 def test_abort_uses_state_handle_and_preserves_terminal_monitor() -> None:

@@ -174,6 +174,11 @@ class FakeConnectionResolver:
 @pytest.fixture(autouse=True)
 def clean_artifact_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     MemoryArtifactStore.clear()
+    # This fake repository models historical single-scope runs; combined-system
+    # authorization is exercised against the real projection in test_test_scope.
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("apex.services.test_scope.can_access_thread", AsyncMock(return_value=True))
     monkeypatch.setattr(
         artifacts_router,
         "loopback_client",
@@ -1864,3 +1869,74 @@ def test_checkpoint_artifact_affinity_rejects_hostile_scalar_without_hooks() -> 
 
     assert artifacts_router._connection_id(candidate) is None
     assert candidate.called is False
+
+
+@pytest.mark.parametrize("invalid", [None, "participant", "binding", "kind", "thread", "primary"])
+def test_analysis_artifact_requires_exact_reference_and_complete_scope(
+    monkeypatch: pytest.MonkeyPatch, invalid: str | None
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from apex.domain.test_scope import TestScopeV1
+
+    binding = TestScopeV1.model_validate(
+        {
+            "participants": [
+                {
+                    "id": "front",
+                    "project_id": "p1",
+                    "application_id": "app-a",
+                    "environment_id": "e1",
+                    "layer": "frontend",
+                },
+                {
+                    "id": "back",
+                    "project_id": "p2",
+                    "application_id": "app-b",
+                    "environment_id": "e2",
+                    "layer": "backend",
+                },
+            ],
+            "primary_participant_id": "front",
+        }
+    )
+    monkeypatch.setattr(
+        "apex.services.test_scope.load_persisted_test_scope",
+        AsyncMock(return_value=None if invalid == "binding" else binding),
+    )
+    key = "analysis/t-analysis/" + "a" * 64 + ".json"
+    content = b'{"findings":["slow endpoint"]}'
+    selected = IsolatedArtifactStore()
+    selected.objects[key] = content
+    resolver = FakeConnectionResolver(IsolatedArtifactStore())
+    resolver.stores["artifacts-p1"] = selected
+    references = FakeArtifactReferencesRepository()
+    references.rows[key] = artifact_reference_row(
+        key,
+        connection_id="artifacts-p1",
+        kind="transcript" if invalid == "kind" else "analysis",
+        thread_id="other-thread" if invalid == "thread" else "t-analysis",
+        project_id="p2" if invalid == "primary" else "p1",
+        app_id="app-b" if invalid == "primary" else "app-a",
+        size_bytes=len(content),
+        content_sha256=sha256(content).hexdigest(),
+    )
+    scopes = [ScopeRef(project_id="p1", app_id="app-a")]
+    if invalid != "participant":
+        scopes.append(ScopeRef(project_id="p2", app_id="app-b"))
+    app = make_app(
+        FakeDocumentsRepository(),
+        identity(scopes),
+        resolver=resolver,
+        artifact_references=references,
+    )
+    with TestClient(app) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+    if invalid is None:
+        assert response.status_code == 200
+        assert response.content == content
+        assert response.headers["content-type"].startswith("application/json")
+        assert resolver.calls == [(PortKind.ARTIFACT_STORE, "artifacts-p1", "p1")]
+    else:
+        assert response.status_code == 404
+        assert resolver.calls == []

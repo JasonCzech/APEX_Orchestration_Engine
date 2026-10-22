@@ -6,8 +6,9 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { emptyDraft } from '../wizardState'
 
-import { fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
+import { draftRead, fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 const { assistantsSearch, assistantsGet } = vi.hoisted(() => ({
   assistantsSearch: vi.fn(),
@@ -69,7 +70,7 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
-  it('blocks launch when the new-thread phase plan omits a hard prerequisite', async () => {
+  it('assigns deselected phases to HITL without removing prerequisites', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
@@ -78,25 +79,22 @@ describe('ConfigStep', () => {
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Config' }))
 
-    const strip = await screen.findByRole('group', { name: 'Phase subset' })
+    const strip = await screen.findByRole('group', { name: 'Phase execution' })
     const toggles = within(strip).getAllByRole('button')
     expect(toggles).toHaveLength(7)
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
 
     // Phase selection only changes the plan; prompt selection is managed in Prompts.
-    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
-    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute('aria-pressed', 'false')
-    // Reporting's prerequisite is no longer earlier in the plan.
-    const hints = await screen.findByTestId('phase-dependency-hints')
-    expect(hints).toHaveTextContent(
-      'reporting requires execution earlier in this new run',
-    )
+    await user.click(within(strip).getByRole('button', { name: /Execution —/ }))
+    expect(within(strip).getByRole('button', { name: /Execution —/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(within(strip).getByRole('button', { name: 'Execution — HITL' })).toBeInTheDocument()
+    expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()
+    expect(screen.getByText(/Execution — HITL/)).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Config' }))
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
-    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
+    await user.click(within(strip).getByRole('button', { name: /Execution —/ }))
     await waitFor(() =>
       expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument(),
     )
@@ -113,15 +111,17 @@ describe('ConfigStep', () => {
     const rendered = renderWizard()
 
     await fillScope(user, screen)
+    await user.click(screen.getByRole('button', { name: 'Clear traffic entry' }))
     await user.click(screen.getByRole('tab', { name: 'Config' }))
     await user.click(screen.getByRole('radio', { name: /APEX Load/ }))
     await user.click(screen.getByRole('tab', { name: 'Review' }))
 
     expect(screen.getByText('Execution configuration needs attention:')).toBeInTheDocument()
-    expect(screen.getByText('Select an application before external execution')).toBeInTheDocument()
+    expect(screen.queryByText('Select an application before external execution')).not.toBeInTheDocument()
     expect(screen.getByText('Select a target environment before external execution')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()
-    expect(screen.getByText('The test plan is ready; execution setup still needs attention.')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    expect(screen.getByText('Reporting & Analysis tools')).toBeInTheDocument()
     rendered.unmount()
   })
 
@@ -205,6 +205,27 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
+  it('clears the previous traffic target when a preset explicitly has no traffic entry', async () => {
+    const topology = {
+      schema_version: 1,
+      participants: [{ id: 'preset-backend', layer: 'backend', project_id: 'demo', application_id: 'app-checkout', environment_id: 'env-staging' }],
+      primary_participant_id: 'preset-backend', traffic_entry_participant_id: null,
+    }
+    assistantsSearch.mockResolvedValue([{ ...GOLDEN, config: { configurable: { engine: 'sim', test_scope: topology } } }])
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Apply test preset' })).getByRole('button', { name: 'Apply preset' }))
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    const preview = JSON.parse(screen.getByTestId('launch-payload-json').textContent!)
+    expect(preview.configurable.test_scope).toEqual(topology)
+    expect(preview.configurable.environment_id).toBeUndefined()
+    rendered.unmount()
+  })
+
   it('requires an explicit supported engine when a preset pins an unknown engine', async () => {
     assistantsSearch.mockResolvedValue([{ ...GOLDEN, config: { configurable: { engine: 'apexload' } } }])
     installWizardHandlers()
@@ -213,6 +234,7 @@ describe('ConfigStep', () => {
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Config' }))
     await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Apply test preset' })).getByRole('button', { name: 'Apply preset' }))
     expect(screen.getByText(/pins engine “apexload”/)).toBeInTheDocument()
     const engines = within(screen.getByRole('radiogroup', { name: 'Execution engine' })).getAllByRole('radio')
     expect(engines.every(engine => engine.getAttribute('aria-checked') === 'false')).toBe(true)
@@ -266,4 +288,23 @@ describe('ConfigStep', () => {
     )
     rendered.unmount()
   })
+})
+
+
+it.each([
+  { prompt_id: 'system-alternative', version_id: 'alternative-v1' },
+  { prompt_id: 'system-default', version_id: 'system-default-v1', override_content: 'Keep these customized instructions' },
+])('requires confirmation before replacing selected prompt choices: $prompt_id', async selection => {
+  assistantsSearch.mockResolvedValue([GOLDEN])
+  const draft = emptyDraft()
+  draft.prompt_selections!.system = selection
+  installWizardHandlers([draftRead({ id: 'selected-prompts', payload: draft as unknown as Record<string, unknown> })])
+  const user = userEvent.setup()
+  const rendered = renderWizard('/runs/new?draft=selected-prompts&step=config')
+  await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
+  const dialog = await screen.findByRole('dialog', { name: 'Apply test preset' })
+  expect(dialog).toHaveTextContent('prompt selections')
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByTestId('config-inherited-chip')).not.toBeInTheDocument()
+  rendered.unmount()
 })

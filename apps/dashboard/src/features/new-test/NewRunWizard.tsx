@@ -55,6 +55,7 @@ const SAVE_LABELS: Record<string, string> = {
 export interface StepProps {
   draft: import('./wizardState').WizardDraft
   onChange: (updater: import('./useDraft').DraftUpdater) => void
+  onNormalize?: (updater: import('./useDraft').DraftUpdater) => void
   draftGeneration?: number
   isDraftGenerationCurrent?: (generation: number) => boolean
   onPendingStart?: () => () => void
@@ -129,12 +130,12 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   config: {
     title: 'Execution configuration',
     description:
-      'Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated.',
+      'Choose the engine, phase ownership, analysis tools, and agent review policy. HITL phases pause for human completion.',
   },
   prompts: {
     title: 'Prompt selection',
     description:
-      'Review the focused phase system and user prompts, plus the selected application requirements prompt.',
+      'Choose the shared system prompt, required phase context, and optional application and environment context.',
   },
   review: {
     title: 'Launch preview',
@@ -147,6 +148,7 @@ function WizardStepContent({
   step,
   draft,
   onChange,
+  onNormalize,
   onEditStep,
   draftGeneration = 0,
   isDraftGenerationCurrent,
@@ -189,7 +191,7 @@ function WizardStepContent({
     case 'config':
       return <ConfigStep draft={draft} onChange={onChange} />
     case 'prompts':
-      return <PromptsStep draft={draft} onChange={onChange} />
+      return <PromptsStep draft={draft} onChange={onChange} onNormalize={onNormalize} />
     case 'review':
       return <ReviewStep draft={draft} onChange={onChange} onEditStep={onEditStep} maxContextPackets={maxContextPackets} />
   }
@@ -260,6 +262,7 @@ function NewRunWizardContent({
   const {
     draft,
     setDraft,
+    normalizeDraft,
     draftId,
     draftGeneration,
     isDraftGenerationCurrent,
@@ -298,7 +301,7 @@ function NewRunWizardContent({
         : null
   const scopeAuthorized =
     consumer === undefined ||
-    canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id)
+    (draft.scope.test_scope ? draft.scope.test_scope.participants.every(p => canMutateAudience(consumer, p.project_id, p.application_id)) : canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id))
   const { readiness, environment: targetEnvironment, execution, executionVerificationEnabled } = useWizardReadiness(draft, maxContextPackets)
   const launchRefusal = consumer === undefined ? null : pipelineLaunchRefusal(consumer)
   const issues = [
@@ -491,6 +494,7 @@ function NewRunWizardContent({
           step={step}
           draft={draft}
           onChange={updateDraft}
+          onNormalize={normalizeDraft}
           onEditStep={jumpToTab}
           draftGeneration={draftGeneration}
           isDraftGenerationCurrent={isDraftGenerationCurrent}
@@ -616,6 +620,7 @@ function NewRunWizardContent({
 
       {launch.isError && <div className="tonal-card danger" role="alert">
         <strong>Launch failed: {launch.error.message}</strong>
+        {/prompt_selections|selected prompt/i.test(launch.error.message) && <button type="button" className="btn btn-secondary" onClick={() => jumpToTab('prompts')}>Review prompt selections</button>}
         {/environment|target/i.test(launch.error.message) && draft.scope.environment_id && <p>Environment: {targetEnvironment.data?.name ?? draft.scope.environment_id}. <Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>.</p>}
         <p>Retrying unchanged inputs on this page reuses the same launch request. Recovery may be blocked after a reload or credential change; check Tests before starting another request. Editing the inputs creates a different launch request.</p>
         {isApiError(launch.error) && <details><summary>Technical details</summary><p>HTTP status: {launch.error.status}</p></details>}

@@ -254,8 +254,7 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX ix_agentevent_at_id ON apex.agent_events (at, id)")
     op.execute(
-        "CREATE INDEX ix_agentevent_model_catalog_at "
-        "ON apex.agent_events (model_catalog_id, at)"
+        "CREATE INDEX ix_agentevent_model_catalog_at ON apex.agent_events (model_catalog_id, at)"
     )
     op.execute("CREATE INDEX ix_agentevent_consumer_at ON apex.agent_events (consumer_id, at)")
     op.execute(

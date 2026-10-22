@@ -5,6 +5,7 @@
  * packets. The full configurable bundle and selected assistant id are retained.
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { legacyLaunchIntent } from './legacyLaunchIntent'
 
 import type { components } from '@apex/api-client'
 
@@ -140,12 +141,14 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   // Prior bundles omitted the default phase plan. Keep that browser-intent
   // identity so an unresolved pre-update launch remains quarantined after a
   // reload; the actual request still includes the explicit reviewed plan.
+  // Ownership is included; the redundant default plan keeps its existing intent identity.
   if (draft.config.phases === null) delete intentConfigurable.phases
   const launchIntent = {
     assistant_id: preview.assistant_id,
     title: preview.input.title,
     request: preview.input.request,
     scope: {
+      test_scope: draft.scope.test_scope,
       project_id: draft.scope.project_id.trim(),
       app_id: draft.scope.app_id,
       environment_id: draft.scope.environment_id,
@@ -156,6 +159,7 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
     context_summary_ids: [...draft.context_summary_ids],
   }
   const baseRequestPayload: WizardLaunchRequestPayload = {
+    test_scope: draft.scope.test_scope,
     assistant_id: preview.assistant_id,
     title: preview.input.title,
     request: preview.input.request,
@@ -167,6 +171,7 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   const { idempotencyKey, requestPayload } = await getDurableIdempotencyAttempt({
     storageKey: WIZARD_LAUNCH_ATTEMPT_STORAGE_KEY,
     intent: launchIntent,
+    conflictingIntents: [legacyLaunchIntent(draft)],
     createKey: createLaunchIdempotencyKey,
     createRequestPayload: async () => {
       const contextPackets = await resolveWorkItemPackets(draft)

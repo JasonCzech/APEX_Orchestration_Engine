@@ -69,6 +69,7 @@ def client(app: FastAPI) -> Iterator[TestClient]:
 def create_prompt(client: TestClient, **overrides: Any) -> dict[str, Any]:
     body = {
         "namespace": "phase",
+        "selection_enabled": False,
         "key": "story_analysis/system",
         "description": "system prompt",
         "content": "v1 content",

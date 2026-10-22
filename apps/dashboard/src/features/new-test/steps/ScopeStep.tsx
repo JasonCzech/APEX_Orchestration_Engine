@@ -1,290 +1,91 @@
-import { useEffect, useState } from 'react'
-import { Dialog } from '@/components/Dialog'
+import { useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router'
-import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
-/**
- * Step 1 — Scope: run intent (title + request) and the catalog scope chain
- * project -> application -> environment. Changing a parent resets children.
- */
+import { Dialog } from '@/components/Dialog'
 import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
-import { useOptionalConsumer } from '@/auth/AuthProvider'
-
+import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
+import { useOptionalConsumer, useOptionalAuth } from '@/auth/AuthProvider'
+import { emptyTestScope, testScopeIssues, type TestParticipant, type TestScopeV1 } from '../testScope'
 import type { StepProps } from '../NewRunWizard'
 
-export function ScopeStep({ draft, onChange }: StepProps) {
-  const [projectInput, setProjectInput] = useState(draft.scope.project_id)
-  useEffect(() => setProjectInput(draft.scope.project_id), [draft.scope.project_id])
-  const [scopeChange, setScopeChange] = useState<{ kind: 'project' | 'application'; value: string } | null>(null)
-  const [touched, setTouched] = useState({title:false, request:false})
-  const catalog = useApplicationsIndex()
+function ParticipantRow({ participant: p, primary, traffic, update, remove, choosePrimary, chooseTraffic }: {
+  participant: TestParticipant; primary: boolean; traffic: boolean
+  update: (p: TestParticipant) => void; remove: () => void
+  choosePrimary: () => void; chooseTraffic: () => void
+}) {
   const consumer = useOptionalConsumer()
-  const scoped = consumer !== null && consumer !== undefined && consumer.scopes.length > 0
-  const scopedProjects = Array.from(
-    new Set(
-      (consumer?.scopes ?? [])
-        .map((scope) => scope.project_id.trim())
-        .filter((projectId) => projectId.length > 0),
-    ),
-  ).sort()
-  const selectedProjectScopes = (consumer?.scopes ?? []).filter(
-    (scope) => scope.project_id === draft.scope.project_id,
-  )
-  const hasProjectWideScope = selectedProjectScopes.some((scope) => !scope.app_id)
-  const scopedAppIds = Array.from(
-    new Set(
-      selectedProjectScopes
-        .map((scope) => scope.app_id?.trim())
-        .filter((appId): appId is string => Boolean(appId)),
-    ),
-  ).sort()
-  const requiresApplication = scoped && selectedProjectScopes.length > 0 && !hasProjectWideScope
-  const projectAuthorized =
-    !scoped || scopedProjects.includes(draft.scope.project_id)
-  const applicationAuthorized =
-    !scoped ||
-    (projectAuthorized &&
-      (hasProjectWideScope ||
-        (draft.scope.app_id !== null && scopedAppIds.includes(draft.scope.app_id))))
-  const applications = useApplications(projectAuthorized ? draft.scope.project_id : undefined)
-  const environments = useEnvironments(
-    applicationAuthorized ? draft.scope.app_id : null,
-  )
+  const index = useApplicationsIndex()
+  const applications = useApplications(p.project_id || undefined)
+  const environments = useEnvironments(p.application_id)
+  const projects = [...new Set([...(index.data ?? []).map(a => a.project_id), ...(consumer?.scopes ?? []).map(s => s.project_id)])].sort()
+  return <fieldset className="wizard-field">
+    <legend>{p.layer === 'middle' ? 'Middle tier' : p.layer === 'frontend' ? 'Frontend' : 'Backend'} {primary && ' · Primary system'}{traffic && ' · Traffic entry'}</legend>
+    <label>Project<select className="field-select" aria-label="Project" value={p.project_id} onChange={e => update({ ...p, project_id: e.target.value, application_id: '', environment_id: '' })}>
+      <option value="">Select project…</option>{projects.map(id => <option key={id} value={id}>{id}</option>)}
+    </select></label>
+    <label>Application<select className="field-select" aria-label="Application" value={p.application_id} disabled={!p.project_id} onChange={e => update({ ...p, application_id: e.target.value, environment_id: '' })}>
+      <option value="">Select application…</option>{(applications.data ?? []).map(a => <option key={a.id} value={a.id}>{a.name} · {p.project_id}</option>)}
+    </select></label>
+    <label>Environment<select className="field-select" aria-label="Environment" value={p.environment_id} disabled={!p.application_id} onChange={e => update({ ...p, environment_id: e.target.value })}>
+      <option value="">Select environment…</option>{(environments.data ?? []).map(env => <option key={env.id} value={env.id}>{env.name}{env.target_approved ? ' · target approved' : ''}</option>)}
+    </select></label>
+    <label><input type="radio" name="primary-system" checked={primary} onChange={choosePrimary} />Primary system under test</label>
+    <label><input type="radio" name="traffic-entry" checked={traffic} onChange={chooseTraffic} />Traffic entry</label>
+    <button type="button" className="btn btn-secondary btn-sm" onClick={remove}>Remove participant</button>
+    {(applications.isError || environments.isError) && <p role="alert">Catalog could not be loaded. <button type="button" onClick={() => { void applications.refetch(); void environments.refetch() }}>Retry</button></p>}
+  </fieldset>
+}
 
-  const applicationOptions = hasProjectWideScope || !scoped
-    ? (applications.data ?? [])
-    : scopedAppIds.map((appId) => applications.data?.find((app) => app.id === appId) ?? {
-        id: appId,
-        name: appId,
-      })
-  const selectedApp = applications.data?.find((app) => app.id === draft.scope.app_id)
-  const selectedEnv = environments.data?.find((env) => env.id === draft.scope.environment_id)
-
-  function hasDependentChanges(kind: 'project' | 'application') {
-    return draft.document_ids.length > 0 || Boolean(draft.scope.environment_id) ||
-      Object.keys(draft.prompt_overrides).length > 0 || Boolean(draft.config.golden_config_id) ||
-      (kind === 'project' && (draft.work_items.length > 0 || draft.context_summary_ids.length > 0))
+export function ScopeStep({ draft, onChange }: StepProps) {
+  const auth = useOptionalAuth()
+  const maxParticipants = auth?.state.status === 'authenticated' ? auth.state.systemInfo.limits.max_test_participants : 32
+  const queryClient = useQueryClient()
+  const scope = draft.scope.test_scope ?? emptyTestScope()
+  const [pending, setPending] = useState<TestScopeV1 | null>(null)
+  function apply(next: TestScopeV1) {
+    const primary = next.participants.find(p => p.id === next.primary_participant_id)
+    const traffic = next.participants.find(p => p.id === next.traffic_entry_participant_id)
+    onChange(prev => {
+      const ownerChanged = primary?.project_id !== prev.scope.project_id
+      return { ...prev,
+        scope: { test_scope: next, project_id: primary?.project_id ?? '', app_id: primary?.application_id || null, environment_id: traffic?.environment_id || null },
+        // Document ownership is verified again by the knowledge step and server.
+        ...(ownerChanged ? { work_items: [], context_summary_ids: [], config: { ...prev.config, golden_config_id: null } } : {}),
+      }
+    })
+    setPending(null)
   }
-
-  function requestScopeChange(kind: 'project' | 'application', value: string) {
-    if (value === (kind === 'project' ? draft.scope.project_id : draft.scope.app_id ?? '')) return
-    if (hasDependentChanges(kind)) setScopeChange({ kind, value })
-    else applyScopeChange(kind, value)
+  function change(next: TestScopeV1) {
+    const changedMembers = scope.participants.some(p => !next.participants.some(n => n.id === p.id && n.application_id === p.application_id && n.environment_id === p.environment_id))
+    const ownerChanged = next.participants.find(p => p.id === next.primary_participant_id)?.project_id !== draft.scope.project_id
+    if ((changedMembers && (draft.document_ids.length > 0 || Object.keys(draft.prompt_overrides).length > 0)) || (ownerChanged && (draft.work_items.length > 0 || draft.context_summary_ids.length > 0 || draft.config.golden_config_id))) setPending(next)
+    else apply(next)
   }
-
-  function cancelScopeChange() {
-    setProjectInput(draft.scope.project_id)
-    setScopeChange(null)
+  function add(layer: TestParticipant['layer']) {
+    change({ ...scope, participants: [...scope.participants, { id: crypto.randomUUID(), layer, project_id: !draft.scope.test_scope ? draft.scope.project_id : '', application_id: !draft.scope.test_scope ? draft.scope.app_id ?? '' : '', environment_id: !draft.scope.test_scope ? draft.scope.environment_id ?? '' : '' }] })
   }
-
-  function applyScopeChange(kind: 'project' | 'application', value: string) {
-    if (kind === 'project') changeProject(value)
-    else onChange((prev) => ({
-      ...prev,
-      document_ids: [],
-      prompt_overrides: Object.fromEntries(Object.entries(prev.prompt_overrides).filter(([key]) => !key.startsWith('application/') || key === `application/${value}`)),
-      scope: { ...prev.scope, app_id: value || null, environment_id: null },
-    }))
-  }
-
-  function changeProject(projectId: string) {
-    const nextScopes = (consumer?.scopes ?? []).filter((scope) => scope.project_id === projectId)
-    const nextHasProjectWideScope = nextScopes.some((scope) => !scope.app_id)
-    const nextScopedApps = Array.from(
-      new Set(
-        nextScopes
-          .map((scope) => scope.app_id?.trim())
-          .filter((appId): appId is string => Boolean(appId)),
-      ),
-    )
-    const appId =
-      scoped && !nextHasProjectWideScope && nextScopedApps.length === 1
-        ? nextScopedApps[0] ?? null
-        : null
-    onChange((prev) => ({
-      ...prev,
-      scope: { project_id: projectId, app_id: appId, environment_id: null },
-      // These selections are project-owned; never carry them into a
-      // different project where their ids/keys may resolve differently.
-      document_ids: [],
-      work_items: [],
-      context_summary_ids: [],
-      prompt_overrides: {},
-      prompt_override_removals: [],
-      config: {
-        ...prev.config,
-        golden_config_id: null,
-        golden_configurable: null,
-      },
-    }))
-  }
-
-  return (
-    <section className="wizard-step wizard-scope" aria-label="Scope">
-      {scopeChange && <Dialog ariaLabel="Change test scope" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={cancelScopeChange}>
-        <h2>Change {scopeChange.kind}?</h2>
-        <p>This clears {draft.document_ids.length} attached documents, the selected environment and {scopeChange.kind === 'project' ? 'all prompt overrides, work items and preset selections' : 'application prompt overrides'}. Saved documents remain available to attach again.</p>
-        <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={cancelScopeChange}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => { applyScopeChange(scopeChange.kind, scopeChange.value); setScopeChange(null) }}>Change {scopeChange.kind}</button></div>
-      </Dialog>}
-      <div className="wizard-field">
-        <label className="wizard-label" htmlFor="wizard-title">
-          Title
-        </label>
-        <small id="title-required" className="wizard-caption">{touched.title && !draft.title.trim() ? 'Title is required' : 'Required'}</small>
-        <input
-          id="wizard-title"
-          required
-          aria-required="true"
-          aria-invalid={touched.title && !draft.title.trim()}
-          aria-describedby="title-required"
-          onBlur={() => setTouched(previous => ({...previous, title:true}))}
-          className="field-input"
-          value={draft.title}
-          placeholder="Checkout latency soak"
-          onChange={(event) =>
-            onChange((prev) => ({ ...prev, title: event.target.value }))
-          }
-        />
-      </div>
-
-      <div className="wizard-field">
-        <label className="wizard-label" htmlFor="wizard-request">
-          Request
-        </label>
-        <small id="request-required" className="wizard-caption">{touched.request && !draft.request.trim() ? 'Request is required' : 'Required'}</small>
-        <textarea
-          id="wizard-request"
-          required
-          aria-required="true"
-          aria-invalid={touched.request && !draft.request.trim()}
-          aria-describedby="request-required"
-          onBlur={() => setTouched(previous => ({...previous, request:true}))}
-          className="field-input wizard-textarea"
-          rows={4}
-          value={draft.request}
-          placeholder="What should this run test, and what does success look like?"
-          onChange={(event) =>
-            onChange((prev) => ({ ...prev, request: event.target.value }))
-          }
-        />
-      </div>
-
-      <div className="wizard-field">
-        <label className="wizard-label" htmlFor="wizard-project">
-          Project
-        </label>
-        {scoped ? (
-          <select
-            id="wizard-project"
-            required
-            aria-required="true"
-            className="field-select"
-            value={scopedProjects.includes(draft.scope.project_id) ? draft.scope.project_id : ''}
-            onChange={(event) => requestScopeChange('project', event.target.value)}
-          >
-            <option value="" disabled>
-              Select an authorized project…
-            </option>
-            {scopedProjects.map((projectId) => (
-              <option key={projectId} value={projectId}>
-                {projectId}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            id="wizard-project"
-            required
-            aria-required="true"
-            list="known-projects"
-            className="field-input"
-            value={projectInput}
-            onChange={(event) => {
-              setProjectInput(event.target.value)
-              if (!hasDependentChanges('project')) requestScopeChange('project', event.target.value)
-            }}
-            onBlur={() => requestScopeChange('project', projectInput)}
-          />
-        )}
-        <datalist id="known-projects">{Array.from(new Set((catalog.data ?? []).map(app => app.project_id))).sort().map(id => <option key={id} value={id} />)}</datalist>
-        {!scoped && <p className="wizard-caption">Choose a known project ID from suggestions, or enter its exact ID. Project names are not matched across applications.</p>}
-        {scoped && scopedProjects.length === 0 && (
-          <p className="wizard-caption wizard-caption--danger">
-            No valid project scopes are assigned to this consumer.
-          </p>
-        )}
-      </div>
-
-      <div className="wizard-field">
-        <label className="wizard-label" htmlFor="wizard-application">
-          Application
-        </label>
-        <select
-          id="wizard-application"
-          className="field-select"
-          value={
-            applicationOptions.some((app) => app.id === draft.scope.app_id)
-              ? draft.scope.app_id ?? ''
-              : ''
-          }
-          onChange={(event) => requestScopeChange('application', event.target.value)}
-        >
-          <option value="" disabled={requiresApplication}>
-            {requiresApplication ? 'Select an authorized application…' : '— none —'}
-          </option>
-          {applicationOptions.map((app) => (
-            <option key={app.id} value={app.id}>
-              {app.name}
-            </option>
-          ))}
-        </select>
-        {requiresApplication && !draft.scope.app_id && (
-          <p className="wizard-caption">An application is required by your assigned scope.</p>
-        )}
-        {applications.isError && (
-          <p className="wizard-caption wizard-caption--danger">Applications failed to load. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void applications.refetch()}>Retry applications</button></p>
-        )}
-        {selectedApp?.description && <p className="wizard-caption">{selectedApp.description}</p>}
-      </div>
-
-      <div className="wizard-field">
-        <label className="wizard-label" htmlFor="wizard-environment">
-          Environment
-        </label>
-        <select
-          id="wizard-environment"
-          className="field-select"
-          value={draft.scope.environment_id ?? ''}
-          disabled={!draft.scope.app_id}
-          aria-describedby="environment-hint"
-          onChange={(event) =>
-            onChange((prev) => ({
-              ...prev,
-              scope: { ...prev.scope, environment_id: event.target.value || null },
-            }))
-          }
-        >
-          <option value="">— none —</option>
-          {(environments.data ?? []).map((env) => (
-            <option key={env.id} value={env.id}>
-              {env.name} · {env.target_approved ? `Target approved (v${env.target_version})` : 'Target not approved'}
-            </option>
-          ))}
-        </select>
-        <p id="environment-hint" className="wizard-caption">{!draft.scope.app_id ? 'Choose an application to see its environments.' : draft.config.engine === 'sim' ? 'Optional context for a simulated run. Simulation does not use or require approval of this environment’s live target.' : 'Choose an approved target for this application. A global administrator can review target approval on the environment page.'}</p>
-        <p className="wizard-caption">
-          Missing a choice? <Link to="/environments">Manage applications and environments</Link>.
-        </p>
-        {environments.isError && (
-          <p className="wizard-caption wizard-caption--danger">Environments failed to load. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void environments.refetch()}>Retry environments</button></p>
-        )}
-        {selectedEnv && (
-          <p className="wizard-caption">
-            {selectedEnv.kind ?? 'environment'}
-            {selectedEnv.base_url ? ` · ${selectedEnv.base_url}` : ''}
-            {' · '}<Link to={`/environments/${encodeURIComponent(selectedEnv.id)}`}>Review target approval</Link>
-          </p>
-        )}
-      </div>
-    </section>
-  )
+  const issues = testScopeIssues(scope, maxParticipants)
+  return <section className="wizard-step wizard-scope" aria-label="Scope">
+    {pending && <Dialog className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" ariaLabel="Change test scope" onClose={() => setPending(null)}>
+      <h2>Change test scope?</h2><p>Context tied to removed systems must be revalidated. Changing the owning project clears tickets, context summaries, and the selected preset.</p>
+      <button type="button" onClick={() => setPending(null)}>Cancel</button><button type="button" onClick={() => apply(pending)}>Change scope</button>
+    </Dialog>}
+    <label className="wizard-field">Title<input id="wizard-title" className="field-input" required value={draft.title} onChange={e => onChange(p => ({ ...p, title: e.target.value }))} /></label>
+    <label className="wizard-field">Request<textarea id="wizard-request" className="field-input" required rows={4} value={draft.request} onChange={e => onChange(p => ({ ...p, request: e.target.value }))} /></label>
+    <p>Define one end-to-end system. Choose a primary system for objectives and reporting, and a separate traffic entry for live execution.</p>
+    <p>Owning project: <strong>{draft.scope.project_id || 'Choose a primary system'}</strong></p>
+    {!draft.scope.test_scope && draft.scope.app_id && <p role="status">Legacy selection: {draft.scope.project_id} / {draft.scope.app_id} / {draft.scope.environment_id ?? 'no environment'}. Add it below and explicitly assign its layer and primary role.</p>}
+    {(['frontend', 'middle', 'backend'] as const).map(layer => <section key={layer} aria-label={`${layer} systems`}>
+      <h2>{layer === 'middle' ? 'Middle tier · optional, multiple' : layer === 'frontend' ? 'Frontend · optional, one maximum' : 'Backend · exactly one'}</h2>
+      {scope.participants.filter(p => p.layer === layer).map(p => <ParticipantRow key={p.id} participant={p} primary={scope.primary_participant_id === p.id} traffic={scope.traffic_entry_participant_id === p.id}
+        update={participant => change({ ...scope, participants: scope.participants.map(row => row.id === p.id ? participant : row) })}
+        remove={() => change({ ...scope, participants: scope.participants.filter(row => row.id !== p.id), primary_participant_id: scope.primary_participant_id === p.id ? '' : scope.primary_participant_id, traffic_entry_participant_id: scope.traffic_entry_participant_id === p.id ? null : scope.traffic_entry_participant_id })}
+        choosePrimary={() => change({ ...scope, primary_participant_id: p.id })} chooseTraffic={() => change({ ...scope, traffic_entry_participant_id: p.id })} />)}
+      <button type="button" className="btn btn-secondary" disabled={scope.participants.length >= maxParticipants || (layer !== 'middle' && scope.participants.some(p => p.layer === layer))} onClick={() => add(layer)}>Add {layer === 'middle' ? 'middle-tier system' : layer}</button>
+    </section>)}
+    {scope.traffic_entry_participant_id && <button type="button" onClick={() => change({ ...scope, traffic_entry_participant_id: null })}>Clear traffic entry</button>}
+    <button type="button" className="btn btn-secondary" onClick={() => void queryClient.invalidateQueries({ queryKey: ['test-participant-catalog'] })}>Retry participant verification</button>
+    {issues.length > 0 && <ul aria-label="Scope requirements">{issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
+    <p><Link to="/environments">Manage applications and environments</Link></p>
+  </section>
 }

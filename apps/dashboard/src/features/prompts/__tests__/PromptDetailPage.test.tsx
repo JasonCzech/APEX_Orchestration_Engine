@@ -186,6 +186,8 @@ describe('PromptDetailPage', () => {
 
   it('archives optimistically and reverts on a 500', async () => {
     const catalog = promptCatalog()
+    const prompt = catalog.prompts.find(item => item.id === 'p-story')
+    if (prompt) prompt.is_default = false
     server.use(...catalog.handlers)
     server.use(
       http.post('*/v1/prompts/p-story/archive', async () => {

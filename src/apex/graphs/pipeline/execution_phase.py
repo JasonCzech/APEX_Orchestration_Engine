@@ -462,7 +462,7 @@ _ENGINE_OPTION_FIELDS = {
 }
 
 
-def recommended_recursion_limit(limits: Limits) -> int:
+def recommended_recursion_limit(limits: Limits, analysis=None) -> int:
     """Recursion-limit hint for runs that include the execution phase."""
     # Revalidate even if a caller manufactured a model with model_construct().
     checked = Limits.model_validate(limits.model_dump(mode="python"))
@@ -470,7 +470,16 @@ def recommended_recursion_limit(limits: Limits) -> int:
     # Reserve a second full polling window for durable asynchronous abort
     # confirmation. Cleanup no longer competes with the normal poll loop for the
     # same recursion budget.
-    return min(cycles * 2 + SPINE_SUPERSTEPS + 25, MAX_RECOMMENDED_RECURSION_LIMIT)
+    # Analysis runs after execution and needs its own checkpoint polling budget.
+    analysis_steps = 0
+    if analysis is not None:
+        from apex.domain.phase_execution import AnalysisConfiguration
+
+        checked_analysis = AnalysisConfiguration.model_validate(analysis.model_dump(mode="python"))
+        analysis_steps = len(checked_analysis.selections) * (
+            math.ceil(checked_analysis.timeout_s / 30) + 10
+        )
+    return min(cycles * 2 + analysis_steps + SPINE_SUPERSTEPS + 25, MAX_RECOMMENDED_RECURSION_LIMIT)
 
 
 def execution_idempotency_key(thread_id: str, attempt: int) -> str:
@@ -1072,7 +1081,7 @@ async def _resolve_engine(
             resolved = await resolve_with_metadata(
                 PortKind.EXECUTION_ENGINE,
                 connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
-                project_id=cfg.project_id,
+                project_id=cfg.traffic_project_id,
                 expected_provider=cfg.engine,
                 options_overlay=engine_options,
             )
@@ -1082,7 +1091,7 @@ async def _resolve_engine(
         adapter, _resolved_connection_id = await resolver.resolve_with_connection_id(
             PortKind.EXECUTION_ENGINE,
             connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
-            project_id=cfg.project_id,
+            project_id=cfg.traffic_project_id,
             expected_provider=cfg.engine,
             options_overlay=engine_options,
         )
@@ -1216,8 +1225,8 @@ async def _resolve_catalog_target(cfg: PipelineConfigurable) -> str | None:
         target = await resolve_environment_target(
             CatalogRepository(session),
             cfg.environment_id,
-            project_id=cfg.project_id,
-            app_id=cfg.app_id,
+            project_id=cfg.traffic_project_id,
+            app_id=cfg.traffic_app_id,
         )
     return _verified_stamped_target(
         cfg,
@@ -1239,7 +1248,7 @@ def _verified_stamped_target(
             "environment target was not authorized and stamped at run creation; "
             "select environment_id in the run configuration"
         )
-    if cfg.app_id is None or cfg.app_id != current_app_id:
+    if cfg.traffic_app_id is None or cfg.traffic_app_id != current_app_id:
         raise ValueError(
             "approved environment target application scope does not match the run configuration"
         )

@@ -607,10 +607,22 @@ async def record_engine_run(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
+                    execution_project_id = project_id
+                    if connection is not None and connection.project_id not in (None, project_id):
+                        from apex.persistence.models import RunParticipant
+
+                        traffic_project = await session.scalar(
+                            select(RunParticipant.project_id).where(
+                                RunParticipant.thread_id == thread_id,
+                                RunParticipant.is_traffic_entry.is_(True),
+                            )
+                        )
+                        if isinstance(traffic_project, str):
+                            execution_project_id = traffic_project
                     connection = _verify_execution_connection_reservation(
                         connection,
                         engine=engine,
-                        project_id=project_id,
+                        project_id=execution_project_id,
                     )
                     if connection.runtime_version != connection_version:
                         raise EngineRunReservationRejectedError(
@@ -756,10 +768,22 @@ async def prepare_engine_start(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
+                    execution_project_id = project_id
+                    if connection is not None and connection.project_id not in (None, project_id):
+                        from apex.persistence.models import RunParticipant
+
+                        traffic_project = await session.scalar(
+                            select(RunParticipant.project_id).where(
+                                RunParticipant.thread_id == thread_id,
+                                RunParticipant.is_traffic_entry.is_(True),
+                            )
+                        )
+                        if isinstance(traffic_project, str):
+                            execution_project_id = traffic_project
                     connection = _verify_execution_connection_reservation(
                         connection,
                         engine=engine,
-                        project_id=project_id,
+                        project_id=execution_project_id,
                     )
                     if connection.runtime_version != connection_version:
                         raise EngineRunReservationRejectedError(
@@ -905,10 +929,22 @@ async def prepare_engine_provision(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
+                    execution_project_id = project_id
+                    if connection is not None and connection.project_id not in (None, project_id):
+                        from apex.persistence.models import RunParticipant
+
+                        traffic_project = await session.scalar(
+                            select(RunParticipant.project_id).where(
+                                RunParticipant.thread_id == thread_id,
+                                RunParticipant.is_traffic_entry.is_(True),
+                            )
+                        )
+                        if isinstance(traffic_project, str):
+                            execution_project_id = traffic_project
                     connection = _verify_execution_connection_reservation(
                         connection,
                         engine=engine,
-                        project_id=project_id,
+                        project_id=execution_project_id,
                     )
                     if connection.runtime_version != connection_version:
                         raise EngineRunReservationRejectedError(

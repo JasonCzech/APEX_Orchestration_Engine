@@ -90,10 +90,15 @@ export function PromptReviewPanel({
             phase_prompt: draft.user,
             application: draft.application ?? null,
             additional_context: note ?? payload.additional_context ?? '',
+            context_edits: draft.context_edits,
           }}
+          systemLocked={payload.prompt.system_locked}
+          contexts={payload.prompt.contexts}
+          selections={payload.prompt.selections}
           editable={editable}
           appAvailable={appAvailable}
           onChange={editField}
+          onContextChange={context_edits => onEdit({ prompt: { context_edits } })}
         />
       </div>
 

@@ -337,6 +337,8 @@ export interface UseDraftResult {
   draft: WizardDraft
   /** Update the draft and schedule an autosave. */
   setDraft: (updater: DraftUpdater) => void
+  /** Resolve catalog defaults/validation without treating a page load as an edit. */
+  normalizeDraft: (updater: DraftUpdater) => void
   /** Server id once created/loaded; null while the draft is purely local. */
   draftId: string | null
   /** Stable logical-record generation; server creation does not rotate it. */
@@ -621,6 +623,20 @@ export function useDraft({
     },
     [queryClient, scheduleSave],
   )
+
+  const normalizeDraft = useCallback((updater: DraftUpdater) => {
+    if (!mountedRef.current || loadingRef.current) return
+    const previous = draftRef.current
+    const next = typeof updater === 'function' ? updater(previous) : updater
+    draftRef.current = next
+    setDraftState(next)
+    if (idRef.current !== null && JSON.stringify(previous.prompt_selections) !== JSON.stringify(next.prompt_selections)) {
+      dirtyRef.current = true
+      scheduleSave()
+    }
+    const handoff = getFreshDraftHandoff(queryClient, authRevisionRef.current, sessionRevisionRef.current)
+    if (idRef.current === null && handoff) handoff.snapshot = next
+  }, [queryClient, scheduleSave])
 
   const loadDraft = useCallback(
     async (id: string): Promise<boolean> => {
@@ -969,6 +985,7 @@ export function useDraft({
   return {
     draft,
     setDraft,
+    normalizeDraft,
     draftId,
     draftGeneration,
     isDraftGenerationCurrent,

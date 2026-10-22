@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from langgraph_sdk import Auth
 from langgraph_sdk.errors import NotFoundError
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
@@ -20,7 +20,6 @@ from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
-    MAX_RECORD_ID_CHARS,
     NoNulStr,
     ResourceId,
     ScopeId,
@@ -32,7 +31,10 @@ from apex.domain.pipeline import (
     ContextPacket,
     EngineConnectionAffinityMissingError,
     ExternalResults,
+    Phase,
 )
+from apex.domain.prompt_selection import PromptContextEdit, launch_config_json_schema
+from apex.domain.test_scope import TestScopeV1
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.db import get_session, release_read_transactions
 from apex.persistence.repositories.catalog import CatalogRepository
@@ -55,8 +57,6 @@ from apex.services.engine_abort import (
 from apex.services.environments import (
     EnvironmentTargetNotApprovedError,
     EnvironmentTargetNotFoundError,
-    resolve_environment_context,
-    resolve_environment_target,
 )
 from apex.services.execution_readiness import (
     ExecutionReadiness,
@@ -217,6 +217,7 @@ class PipelineEngineInfo(BaseModel):
 
 
 class PipelineSummary(BaseModel):
+    test_scope: dict[str, Any] | None = None
     thread_id: str
     title: str | None = None
     project_id: str | None = None
@@ -247,6 +248,7 @@ class StartPipelineRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    test_scope: TestScopeV1 | None = None
     title: NoNulStr = Field(min_length=1, max_length=500)
     idempotency_key: NoNulStr | None = Field(default=None, min_length=1, max_length=128)
     request: NoNulStr = Field(default="", max_length=20000)
@@ -258,10 +260,12 @@ class StartPipelineRequest(BaseModel):
     )
     project_id: ScopeId | None = None
     app_id: ScopeId | None = None
-    configurable: dict[str, Any] | None = Field(
-        default=None,
-        max_length=64,
-        description="Full per-run PipelineConfigurable layer retained by the selected assistant.",
+    configurable: Annotated[dict[str, Any], WithJsonSchema(launch_config_json_schema())] | None = (
+        Field(
+            default=None,
+            max_length=64,
+            description=("Full per-run configuration retained by the selected assistant."),
+        )
     )
     phases: list[PhaseInput] | None = Field(default=None, max_length=len(PHASE_ORDER))
     gates: dict[str, Any] | None = Field(default=None, max_length=len(PHASE_ORDER))
@@ -279,6 +283,10 @@ class StartPipelineRequest(BaseModel):
     def validate_configurable(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         if value is None:
             return None
+        if value.get("rerun_phases") is not None:
+            raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
+        if value.get("prompt_manifest") is not None:
+            raise ValueError("prompt_manifest is server-owned")
         return validate_json_object(value, label="pipeline configurable")
 
     @field_validator("gates")
@@ -334,6 +342,7 @@ class StartPipelineResponse(BaseModel):
 
 
 class ExecutionReadinessRequest(BaseModel):
+    test_scope: TestScopeV1 | None = None
     """The caller's selected contract, with preset values already resolved."""
 
     model_config = ConfigDict(extra="forbid")
@@ -362,8 +371,18 @@ class PipelineDetail(PipelineSummary):
     interrupts: list[GateInterrupt] = Field(default_factory=list)
 
 
+class PipelineSetupConfiguration(BaseModel):
+    title: str
+    request: str
+    project_id: str | None
+    app_id: str | None
+    environment_id: str | None
+    configurable: Annotated[dict[str, Any], WithJsonSchema(launch_config_json_schema())]
+
+
 class GatePromptEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    context_edits: list[PromptContextEdit] | None = Field(default=None, max_length=64)
 
     system: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
     user: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
@@ -374,6 +393,9 @@ class ResumeGateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: NoNulStr = Field(min_length=1, max_length=32)
+    task_id: NoNulStr | None = Field(default=None, max_length=256)
+    expected_revision: int | None = Field(default=None, ge=1)
+    output: dict[str, Any] | None = None
     prompt: GatePromptEdit | None = None
     instructions: NoNulStr | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
     message: NoNulStr | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
@@ -413,6 +435,9 @@ class AbortPipelineResponse(BaseModel):
 
 
 class PhasePromptReview(BaseModel):
+    system_locked: bool | None = None
+    contexts: list[dict[str, Any]] | None = None
+    selections: list[dict[str, Any]] | None = None
     system: str
     phase_prompt: str
     application: str | None = None
@@ -423,6 +448,7 @@ class PhasePromptReview(BaseModel):
 
 
 class PhasePromptReviewUpdate(BaseModel):
+    context_edits: list[PromptContextEdit] | None = Field(default=None, max_length=64)
     model_config = ConfigDict(extra="forbid")
 
     system: NoNulStr = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
@@ -443,6 +469,11 @@ async def get_pipeline_execution_readiness(
     body: ExecutionReadinessRequest, identity: CurrentIdentity, catalog: CatalogRepo
 ) -> ExecutionReadiness:
     """Check scoped connection metadata, without testing provider connectivity."""
+    if body.test_scope:
+        from apex.services.test_scope import allows_test_scope
+
+        if not allows_test_scope(identity, body.test_scope):
+            raise HTTPException(403, "Access to every test participant is required")
     project_id, app_id = await _resolve_pipeline_scope(
         identity, project_id=body.project_id, app_id=body.app_id, catalog=catalog
     )
@@ -453,6 +484,7 @@ async def get_pipeline_execution_readiness(
             {
                 "project_id": project_id,
                 "app_id": app_id,
+                "test_scope": body.test_scope,
                 "engine": body.engine,
                 "phases": body.phases,
                 "connections": {
@@ -470,6 +502,64 @@ async def get_pipeline_execution_readiness(
     if config is None:
         raise HTTPException(status_code=422, detail="invalid execution readiness configuration")
     return await execution_readiness(config)
+
+
+async def _recover_legacy_launch(body, identity, documents, request):
+    """Read-only retry of a pre-topology launch, never admission of a new run."""
+    config = dict(body.configurable or {})
+    metadata = {
+        key: value
+        for key, value in {
+            "project_id": body.project_id or config.get("project_id"),
+            "app_id": body.app_id or config.get("app_id"),
+        }.items()
+        if value is not None
+    }
+    ensure_thread_scope(identity, metadata, action="pipelines.create")
+    project_id, app_id = metadata.get("project_id"), metadata.get("app_id")
+    if any(
+        body_value and config.get(key) and body_value != config[key]
+        for key, body_value in (("project_id", body.project_id), ("app_id", body.app_id))
+    ):
+        raise HTTPException(409, "pipeline launch conflict")
+    for key in ("environment_target", "environment_target_version"):
+        config.pop(key, None)
+    packets = [packet.model_dump(mode="json") for packet in (body.context_packets or [])]
+    if body.document_ids:
+        packets += await _documents_to_packets(documents, identity, body.document_ids)
+    await release_read_transactions(documents)
+    service = _pipeline_read_service_after_scope(request)
+    error = None
+    result = None
+    try:
+        result = await service.start_run(
+            title=body.title,
+            request=body.request,
+            idempotency_key=body.idempotency_key,
+            assistant_id=body.assistant_id,
+            project_id=project_id,
+            app_id=app_id,
+            configurable=config,
+            phases=body.phases,
+            gates=body.gates,
+            agent_backend=body.agent_backend,
+            model_by_phase=body.model_by_phase,
+            external_results=body.external_results.model_dump(mode="json")
+            if body.external_results
+            else None,
+            context_packets=packets or None,
+            principal_id=identity.consumer_id,
+            recovery_only=True,
+        )
+    except LaunchIdempotencyConflictError:
+        error = (409, "pipeline launch conflict")
+    except ValueError:
+        error = (422, "test_scope is required; no matching legacy launch can be recovered")
+    except LaunchProviderError:
+        error = (503, "pipeline launch recovery unavailable")
+    if error:
+        raise HTTPException(*error)
+    return result
 
 
 @router.post(
@@ -498,6 +588,105 @@ async def create_pipeline_run(
         raise HTTPException(
             422, "Cycle dispatch bindings are server-owned; use the cycle dispatch endpoint"
         )
+    from apex.services.test_scope import resolve_test_scope
+
+    raw_scope = body.test_scope or run_configurable.get("test_scope")
+    if raw_scope is None:
+        claimed_scope = {
+            key: value
+            for key, value in {
+                "project_id": body.project_id or run_configurable.get("project_id"),
+                "app_id": body.app_id or run_configurable.get("app_id"),
+            }.items()
+            if value is not None
+        }
+        denied = False
+        try:
+            if claimed_scope:
+                ensure_thread_scope(identity, claimed_scope, action="pipelines.create")
+        except Auth.exceptions.HTTPException:
+            denied = True
+        if denied:
+            raise HTTPException(403, "pipeline scope is not authorized")
+        if body.idempotency_key:
+            return await _recover_legacy_launch(body, identity, documents, request)
+        raise HTTPException(
+            422, "test_scope is required; select layers, a backend and a primary system"
+        )
+    import hashlib
+    import json
+
+    request_intent = hashlib.sha256(
+        json.dumps(
+            body.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+    scope_error: tuple[int, str] | None = None
+    snapshot: dict[str, Any] = {}
+    topology: TestScopeV1 | None = None
+    try:
+        topology = TestScopeV1.model_validate(raw_scope)
+        from apex.services.test_scope import allows_test_scope
+
+        if not allows_test_scope(identity, topology):
+            raise HTTPException(403, "Access to every participating application is required")
+        if body.idempotency_key:
+            service = _pipeline_read_service_after_scope(request)
+            recovered = await service.recover_scope_launch(
+                principal_id=identity.consumer_id,
+                project_id=topology.primary.project_id,
+                app_id=topology.primary.application_id,
+                idempotency_key=body.idempotency_key,
+                request_intent=request_intent,
+                test_scope=topology.model_dump(mode="json"),
+            )
+            if recovered is not None:
+                return StartPipelineResponse(**recovered)
+        topology.validate_admission()
+        service = _pipeline_read_service_after_scope(request)
+        defaults = await service.assistant_launch_defaults(body.assistant_id)
+        run_configurable = {**defaults, **run_configurable}
+        effective = PipelineConfigurable.model_validate(
+            {
+                **run_configurable,
+                "test_scope": topology,
+                "test_scope_snapshot": None,
+                "project_id": topology.primary.project_id,
+                "app_id": topology.primary.application_id,
+                **{
+                    key: value
+                    for key, value in {
+                        "phases": body.phases,
+                        "gates": body.gates,
+                        "agent_backend": body.agent_backend,
+                        "model_by_phase": body.model_by_phase,
+                    }.items()
+                    if value is not None
+                },
+            }
+        )
+        live = effective.engine != "sim" and Phase.EXECUTION in effective.agent_phases()
+        snapshot = await resolve_test_scope(catalog, identity, topology, live=live)
+    except LaunchIdempotencyConflictError:
+        scope_error = (409, "pipeline launch conflict")
+    except LaunchProviderError:
+        scope_error = (503, "pipeline launch recovery unavailable")
+    except ValueError:
+        scope_error = (422, "invalid pipeline configuration")
+    except EnvironmentTargetNotApprovedError:
+        scope_error = (422, "Traffic entry requires an approved target")
+    except EnvironmentTargetNotFoundError:
+        scope_error = (404, "Test participant is unavailable")
+    if scope_error:
+        raise HTTPException(*scope_error)
+    assert topology is not None
+    run_configurable["test_scope"] = topology.model_dump(mode="json")
+    run_configurable["test_scope_snapshot"] = snapshot
+    run_configurable["project_id"] = topology.primary.project_id
+    run_configurable["app_id"] = topology.primary.application_id
+    run_configurable["environment_id"] = (
+        topology.traffic_entry.environment_id if topology.traffic_entry else None
+    )
     configured_project = run_configurable.get("project_id")
     configured_app = run_configurable.get("app_id")
     if configured_project is not None and not isinstance(configured_project, str):
@@ -545,62 +734,11 @@ async def create_pipeline_run(
                     "inline load_test.script_refs are not allowed; select an approved environment"
                 ),
             )
-    environment_id = run_configurable.get("environment_id")
-    # Environment targets are server-owned; never honor values inherited from a
-    # client-side golden bundle when the current scope omits the environment.
     run_configurable.pop("environment_target", None)
     run_configurable.pop("environment_target_version", None)
-    if environment_id is not None:
-        normalized_environment_id = (
-            environment_id.strip() if isinstance(environment_id, str) else ""
-        )
-        if not normalized_environment_id or len(normalized_environment_id) > MAX_RECORD_ID_CHARS:
-            raise HTTPException(
-                status_code=422,
-                detail=("configurable.environment_id must be a non-empty catalog identifier"),
-            )
-        target = None
-        environment = None
-        simulated = run_configurable.get("engine") == "sim"
-        environment_not_found = False
-        environment_not_approved = False
-        try:
-            environment = await resolve_environment_context(
-                catalog, normalized_environment_id, project_id=project_id, app_id=app_id
-            )
-            if not simulated:
-                target = await resolve_environment_target(
-                    catalog,
-                    normalized_environment_id,
-                    project_id=project_id,
-                    app_id=app_id,
-                )
-        except EnvironmentTargetNotApprovedError:
-            environment_not_approved = True
-        except EnvironmentTargetNotFoundError:
-            environment_not_found = True
-        if environment_not_approved:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Selected environment has no approved execution target. "
-                    "Ask a platform administrator to approve its target on the environment page."
-                ),
-            )
-        if environment_not_found or environment is None:
-            raise HTTPException(status_code=404, detail="environment target not found")
-        if app_id is not None and environment.application_id != app_id:
-            # The resolver already enforces this; retain the invariant at the
-            # stamping boundary for injected/internal repository implementations.
-            raise HTTPException(status_code=404, detail="environment target not found")
-        project_id = environment.application.project_id
-        app_id = environment.application_id
-        run_configurable["project_id"] = project_id
-        run_configurable["app_id"] = app_id
-        run_configurable["environment_id"] = normalized_environment_id
-        if target is not None:
-            run_configurable["environment_target"] = target.base_url
-            run_configurable["environment_target_version"] = target.version
+    if target := snapshot.get("execution_target"):
+        run_configurable["environment_target"] = target["base_url"]
+        run_configurable["environment_target_version"] = target["version"]
     service = _pipeline_read_service_after_scope(request)
     context_packets = [packet.model_dump(mode="json") for packet in (body.context_packets or [])]
     if body.document_ids:
@@ -621,7 +759,16 @@ async def create_pipeline_run(
             # unrelated top-level overrides may have cleared inherited values.
             **{
                 key: run_configurable[key]
-                for key in ("engine", "connections", "phases", "start_phase", "stop_after")
+                for key in (
+                    "engine",
+                    "connections",
+                    "phases",
+                    "start_phase",
+                    "stop_after",
+                    "phase_execution",
+                    "analysis",
+                    "test_scope",
+                )
                 if key in run_configurable
             },
             "project_id": project_id,
@@ -630,8 +777,15 @@ async def create_pipeline_run(
         }
 
     async def check_execution_before_start(_thread_id: str) -> None:
+        from apex.services.test_scope import persist_test_scope
+
+        await persist_test_scope(_thread_id, topology)
         if readiness_config is not None:
-            await require_execution_readiness(PipelineConfigurable.model_validate(readiness_config))
+            checked = PipelineConfigurable.model_validate(readiness_config)
+            from apex.services.analysis_readiness import require_analysis_readiness
+
+            await require_analysis_readiness(checked)
+            await require_execution_readiness(checked)
 
     result = None
     launch_error: HTTPException | None = None
@@ -653,9 +807,8 @@ async def create_pipeline_run(
             ),
             context_packets=context_packets or None,
             principal_id=identity.consumer_id,
-            before_run_start=(
-                check_execution_before_start if readiness_config is not None else None
-            ),
+            request_intent=request_intent if body.idempotency_key else None,
+            before_run_start=(check_execution_before_start),
         )
     except LaunchIdempotencyConflictError:
         launch_error = HTTPException(status_code=409, detail="pipeline launch conflict")
@@ -717,6 +870,49 @@ async def list_pipelines(
     }
 
 
+class AnalysisConnectionChoice(BaseModel):
+    id: str
+    name: str
+    provider: str
+    kind: str
+
+
+@router.get(
+    "/analysis/connections",
+    operation_id="listAnalysisConnections",
+    response_model=list[AnalysisConnectionChoice],
+)
+async def list_analysis_connections(
+    project_id: ScopeId,
+    identity: CurrentIdentity,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Any:
+    from sqlalchemy import or_, select
+
+    from apex.persistence.models import Connection
+
+    ensure_scope(identity, project_id=project_id)
+    rows = (
+        await session.scalars(
+            select(Connection)
+            .where(
+                Connection.enabled.is_(True),
+                or_(Connection.project_id == project_id, Connection.project_id.is_(None)),
+                or_(
+                    Connection.kind == "analysis",
+                    (Connection.kind == "execution_engine") & (Connection.provider == "apex_load"),
+                ),
+            )
+            .order_by(Connection.name)
+            .limit(200)
+        )
+    ).all()
+    return [
+        AnalysisConnectionChoice(id=row.id, name=row.name, provider=row.provider, kind=row.kind)
+        for row in rows
+    ]
+
+
 @router.get("/{thread_id}", operation_id="getPipeline", response_model=PipelineDetail)
 async def get_pipeline(
     thread_id: ThreadId, identity: CurrentIdentity, service: PipelineService
@@ -746,6 +942,24 @@ async def get_pipeline_actors(
 ) -> PipelineActors:
     snapshot = await get_pipeline(thread_id, identity, service)
     return await pipeline_actor_names(snapshot, session, identity)
+
+
+@router.get(
+    "/{thread_id}/setup",
+    operation_id="getPipelineSetup",
+    response_model=PipelineSetupConfiguration,
+)
+async def get_pipeline_setup(
+    thread_id: ThreadId,
+    identity: CurrentIdentity,
+    service: PipelineService,
+) -> Any:
+    try:
+        return await service.get_test_setup(thread_id)
+    except NotFoundError:
+        raise HTTPException(404, "Pipeline thread not found") from None
+    except (ValueError, RerunConfigurationConflictError):
+        raise HTTPException(409, "The stored setup cannot be copied safely") from None
 
 
 @router.get(
@@ -898,7 +1112,12 @@ async def resume_gate(
             interrupt_id,
             body.action,
             {
-                "prompt": body.prompt.model_dump(mode="json") if body.prompt else None,
+                "prompt": body.prompt.model_dump(mode="json", exclude_unset=True)
+                if body.prompt
+                else None,
+                "task_id": body.task_id,
+                "expected_revision": body.expected_revision,
+                "output": body.output,
                 "instructions": body.instructions,
                 "message": body.message,
                 "note": body.note,

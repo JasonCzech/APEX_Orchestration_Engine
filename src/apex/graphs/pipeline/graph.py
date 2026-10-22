@@ -117,7 +117,9 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     # so validate the final state immediately before any phase can spend resources.
     validate_pipeline_input(state)
     cfg = PipelineConfigurable.from_config(config)
-    selected = cfg.selected_phases()
+    if cfg.prompt_selections is not None and cfg.prompt_manifest is None:
+        raise ValueError("This test is missing its persisted prompt manifest")
+    selected = cfg.planned_phases()
     if not selected:
         raise ValueError("Pipeline phase plan is empty")
     if type(config) is not dict:
@@ -236,7 +238,15 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         existing_reviews = {}
     if type(existing_reviews) is not dict:
         raise ValueError("checkpointed prompt reviews are invalid")
-    missing_review_phases = [phase for phase in PHASE_ORDER if phase.value not in existing_reviews]
+    missing_review_phases = [
+        phase
+        for phase in (
+            cfg.agent_phases()
+            if cfg.phase_execution
+            else (selected if cfg.prompt_selections else PHASE_ORDER)
+        )
+        if phase.value not in existing_reviews
+    ]
     seeded_reviews: dict[str, JsonDict] = {}
     if missing_review_phases:
         resolved_reviews = resolve_phase_prompts_sync(
@@ -345,7 +355,7 @@ def route_next_phase(
         else:
             effective_config = config
         cfg = PipelineConfigurable.from_state(state, effective_config)
-        expected_plan = [phase.value for phase in cfg.selected_phases()]
+        expected_plan = [phase.value for phase in cfg.planned_phases()]
         if plan != expected_plan:
             raise ValueError(
                 "checkpointed pipeline phase plan does not match its durable configuration"

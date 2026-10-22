@@ -445,6 +445,7 @@ class RunControlSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
+    max_test_participants: int = Field(default=32, ge=1, le=32)
     max_context_packets: int = Field(default=32, ge=1, le=64)
     # Counts the complete serialized packet payload: ids, source, title, summary,
     # refs, text, keys, and separators. Rendering applies a second cap below.

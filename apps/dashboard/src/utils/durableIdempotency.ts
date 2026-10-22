@@ -480,19 +480,26 @@ export async function getDurableIdempotencyKey(
 export async function getDurableIdempotencyAttempt<T>({
   storageKey,
   intent,
+  conflictingIntents = [],
   createKey,
   createRequestPayload,
   validateRequestPayload,
 }: {
   storageKey: string
   intent: unknown
+  // Older intent schemas may identify the same unresolved operation. They are
+  // quarantine-only aliases: never replay an older body under a new contract.
+  conflictingIntents?: readonly unknown[]
   createKey: () => string
   createRequestPayload: () => Promise<T>
   validateRequestPayload: (value: unknown) => value is T
 }): Promise<DurableIdempotencyAttempt<T>> {
   const keyRevision = getApiKeyRevision()
   const sessionRevision = getSessionRevision()
-  const signature = await idempotencyPayloadSignature(intent)
+  const [signature, ...conflictingSignatures] = await Promise.all(
+    [intent, ...conflictingIntents].map(idempotencyPayloadSignature),
+  )
+  if (!signature) throw new Error(SAFE_RETRY_STORAGE_ERROR)
   if (!revisionsAreCurrent(keyRevision, sessionRevision)) {
     throw new Error('Credentials changed while preparing the request; please retry.')
   }
@@ -531,6 +538,16 @@ export async function getDurableIdempotencyAttempt<T>({
       )
     ) {
       throw new Error(SAFE_RETRY_RECOVERY_ERROR)
+    }
+    for (const alias of conflictingSignatures) {
+      if (alias === signature) continue
+      const prior = state.attemptsByPayload[alias]
+      const retired = retiredAttempts.get(retirementIdentity(storageKey, alias, keyRevision))
+      if (blockedInCurrentLifecycle(state.blockedPayloads[alias], keyRevision) ||
+          (prior && recordDisposition(prior, keyRevision) !== 'replaced-session' &&
+           prior.idempotencyKey !== retired)) {
+        throw new Error(SAFE_RETRY_RECOVERY_ERROR)
+      }
     }
     return restore(state.attemptsByPayload[signature])
   }

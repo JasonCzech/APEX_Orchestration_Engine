@@ -311,3 +311,23 @@ describe('buildResumeBody', () => {
     expect(buildResumeBody('abort', {})).toEqual({ action: 'abort' })
   })
 })
+
+
+it('keeps selected context prose structured through dirty detection and resume', () => {
+  const gate = structuredClone(promptGate)
+  if (gate.payload?.kind !== 'prompt_review') throw new Error('Expected prompt gate')
+  const content = 'Example:\n\n=== ENVIRONMENT CONTEXT: staging ===\nKeep inside application.'
+  gate.payload.prompt.system_locked = true
+  gate.payload.prompt.contexts = [
+    { namespace: 'application', key: 'checkout', prompt_id: 'app', version_id: 'app-v1', version: 1, content },
+    { namespace: 'environment', key: 'staging', prompt_id: 'env', version_id: 'env-v1', version: 1, content: 'Environment baseline' },
+  ]
+  const draft = initialDraftFor(gate)
+  expect(isPromptDirty(gate, draft)).toBe(false)
+  draft.prompt!.context_edits![1]!.content = 'Edited environment'
+  expect(isPromptDirty(gate, draft)).toBe(true)
+  expect(buildResumeBody('modify', draft, gate).prompt).toEqual({
+    system: gate.payload.prompt.system, user: gate.payload.prompt.user,
+    context_edits: [{ prompt_id: 'app', content }, { prompt_id: 'env', content: 'Edited environment' }],
+  })
+})
