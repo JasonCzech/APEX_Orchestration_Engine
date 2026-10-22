@@ -128,6 +128,7 @@ describe('dev-data store', () => {
   it('seeds the complete provider-bound telecom catalog', async () => {
     const store = createDevDataStore()
     expect(store.getFixtureStats()).toMatchObject(TELECOM_DATASET_REQUIREMENTS)
+    expect(store.getFixtureStats().phaseMetricEvents).toBeGreaterThan(4_000)
     const environment = await jsonOf<{ name: string; options: { dependencies: Array<{ application: string; environment: string }> } }>(
       await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-acc-perf-acc-perfhyper2')),
     )
@@ -558,6 +559,60 @@ describe('dev-data store', () => {
   })
 })
 
+
+it('serves one usage history so shorter analytics windows nest inside longer ones', async () => {
+  const store = createDevDataStore()
+  const to = new Date().toISOString()
+  const totals = async (days: number, bucket: 'hour' | 'day') => (await jsonOf<{ totals: { events: number; total_tokens: number; cost_usd: number } }>(await store.handleApexRequest(new Request(
+    `http://localhost/v1/analytics/agents?bucket=${bucket}&from=${new Date(Date.now() - days * 86_400_000).toISOString()}&to=${to}`,
+  )))).totals
+  const day = await totals(1, 'hour')
+  const week = await totals(7, 'day')
+  const month = await totals(30, 'day')
+  expect(day.events).toBeGreaterThan(0)
+  expect(day.events).toBeLessThan(week.events)
+  expect(week.events).toBeLessThan(month.events)
+  expect(day.cost_usd).toBeLessThan(week.cost_usd)
+  // The bucket only changes chart granularity, never which events are counted.
+  expect((await totals(7, 'hour')).events).toBe(week.events)
+})
+
+it('keeps archived models reviewable alongside the current multi-lab catalog', async () => {
+  const store = createDevDataStore()
+  const models = async (status: string) => jsonOf<{ items: Array<{ id: string; model_key: string; provider: string; availability: string; current_price: unknown }>; total: number }>(
+    await store.handleApexRequest(new Request(`http://localhost/v1/analytics/models?status=${status}&limit=100`)),
+  )
+  const active = await models('active')
+  expect(active.total).toBe(10)
+  expect(new Set(active.items.map((model) => model.provider)).size).toBeGreaterThanOrEqual(5)
+  expect(active.items.every((model) => model.current_price)).toBe(true)
+  const archived = await models('archived')
+  expect(archived.items.map((model) => model.model_key).sort()).toEqual(['claude-3-5-haiku-20241022', 'claude-opus-4-20250514', 'claude-sonnet-4-20250514'])
+  const quarter = await jsonOf<{ breakdown: Array<{ model_id?: string | null; archived?: boolean | null }> }>(await store.handleApexRequest(new Request(
+    `http://localhost/v1/analytics/agents?group_by=model&limit=100&from=${new Date(Date.now() - 90 * 86_400_000).toISOString()}`,
+  )))
+  expect(quarter.breakdown.filter((row) => row.archived).map((row) => row.model_id).sort()).toEqual(archived.items.map((model) => model.id).sort())
+  const recent = await jsonOf<{ breakdown: Array<{ archived?: boolean | null }> }>(await store.handleApexRequest(new Request('http://localhost/v1/analytics/agents?group_by=model&limit=100')))
+  expect(recent.breakdown.some((row) => row.archived)).toBe(false)
+  const history = await jsonOf<{ items: unknown[] }>(await store.handleApexRequest(new Request('http://localhost/v1/analytics/models/mdl-claude-opus-5-5/prices')))
+  expect(history.items).toHaveLength(2)
+})
+
+it('opens historical runs referenced by usage analytics without listing them as active tests', async () => {
+  const store = createDevDataStore()
+  const tests = await jsonOf<{ breakdown: Array<{ key: string; thread_id?: string | null }> }>(await store.handleApexRequest(new Request(
+    `http://localhost/v1/analytics/agents?group_by=test&limit=100&from=${new Date(Date.now() - 30 * 86_400_000).toISOString()}`,
+  )))
+  const historical = tests.breakdown.find((row) => row.key.startsWith('hist-'))
+  expect(historical?.thread_id).toBe(historical?.key)
+  const detail = await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${historical!.key}`))
+  expect(detail?.status).toBe(200)
+  const list = await jsonOf<{ items: Array<{ thread_id: string }> }>(await store.handleApexRequest(new Request('http://localhost/v1/pipelines?limit=100')))
+  expect(list.items.some((item) => item.thread_id.startsWith('hist-'))).toBe(false)
+  const page = await jsonOf<{ items: Array<{ id: string }>; next_cursor: string | null }>(await store.handleApexRequest(new Request('http://localhost/v1/analytics/agents/events?limit=5')))
+  expect(page.items).toHaveLength(5)
+  expect(page.next_cursor).toBe('5')
+})
 
 it('rejects retired ADO imports in demo mode without redirecting them to Jira', async () => {
   const store = createDevDataStore()

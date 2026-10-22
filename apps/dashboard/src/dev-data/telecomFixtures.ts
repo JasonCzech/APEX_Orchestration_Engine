@@ -22,7 +22,6 @@ export const TELECOM_DATASET_REQUIREMENTS = {
   prompts: 84,
   seededRuns: 8,
   logs: 40,
-  phaseMetricEvents: 56,
   usageDays: 14,
   artifacts: 51,
 } as const
