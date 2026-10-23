@@ -197,9 +197,9 @@ describe('catalog prompt selections', () => {
     const assembled = () => region.querySelector('pre.wizard-prompt-content:not(details pre)')!
     await waitFor(() => expect(assembled()).toHaveTextContent('Content for env-one'))
     const text = assembled().textContent ?? ''
-    // Same order as compose_selected_system: system, phase, then application and environment context.
-    const order = ['=== SHARED SYSTEM PROMPT ===', 'Content for system-default', '=== PHASE CONTEXT ===', 'Content for analysis-default',
-      '=== APPLICATION CONTEXT: app-one ===', 'Content for app-one', '=== ENVIRONMENT CONTEXT: env-one ===', 'Content for env-one'].map(part => text.indexOf(part))
+    // Same order as compose_selected_system: system, application and environment context, then the phase.
+    const order = ['=== SHARED SYSTEM PROMPT ===', 'Content for system-default', '=== APPLICATION CONTEXT: app-one ===', 'Content for app-one',
+      '=== ENVIRONMENT CONTEXT: env-one ===', 'Content for env-one', '=== PHASE CONTEXT ===', 'Content for analysis-default'].map(part => text.indexOf(part))
     expect(order.every(index => index >= 0)).toBe(true)
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(within(region).queryByRole('button', { name: 'Override for this test' })).not.toBeInTheDocument()

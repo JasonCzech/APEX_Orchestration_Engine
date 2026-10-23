@@ -10,10 +10,10 @@ import { PromptEditor } from '@/features/prompts/PromptEditor'
 import { PLATFORM_SYSTEM_POLICY } from '@/features/prompts/platformPolicy'
 import type { StepProps } from '../NewRunWizard'
 import { isRecord, selectedPhases, withPhaseOwner } from '../wizardState'
+import { promptSlotTarget, tabKey, type PromptTabId } from './promptSlots'
 
 const LOADING_VERSIONS = 'Loading selected prompt versions…'
 
-type PromptTabId = 'system' | 'application' | 'environment' | `phase:${PhaseName}`
 type PromptTabStatus = 'ok' | 'attention' | 'pending' | 'empty' | 'bypassed'
 interface PromptTab {
   id: PromptTabId
@@ -26,7 +26,6 @@ interface PromptTab {
 }
 const STATUS_GLYPHS: Partial<Record<PromptTabStatus, string>> = { ok: '✓', attention: '!', pending: '…', bypassed: '–' }
 const STATUS_TEXT: Partial<Record<PromptTabStatus, string>> = { attention: 'Needs attention', pending: 'Loading', bypassed: 'Bypassed, completed by a person' }
-const tabKey = (id: PromptTabId) => id.replace(':', '-')
 
 function refFor(row: PromptSummary): PromptSelection {
   return { prompt_id: row.id, version_id: row.active_version!.id }
@@ -226,8 +225,8 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
   const activeRows = rows.filter(row => !row.archived_at && row.active_version && row.selection_enabled)
 
   // The phase's system prompt as the runtime assembles it (compose_selected_system):
-  // shared system prompt, this phase's context, then application and environment
-  // context, each with the scope line the runtime adds when the test has a scope.
+  // shared system prompt, application and environment context (each with the scope
+  // line the runtime adds when the test has a scope), then this phase's context.
   type Assembled = { state: 'ready'; text: string } | { state: 'pending' | 'error' | 'missing' }
   function scopeLabel(row: PromptSummary | undefined): string | null {
     const scope = draft.scope.test_scope
@@ -255,13 +254,13 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
       const label = scopeLabel(row)
       return `=== ${(row?.namespace ?? 'context').toUpperCase()} CONTEXT: ${row?.key ?? item!.prompt_id} ===\n${label ? `${label}\n` : ''}${textOf(item!)}`
     })
-    return { state: 'ready', text: `=== SHARED SYSTEM PROMPT ===\n${textOf(parts[0]).trim()}\n=== PHASE CONTEXT ===\n${textOf(parts[1])}${contexts.length ? `\n\n${contexts.join('\n\n')}` : ''}` }
+    return { state: 'ready', text: `=== SHARED SYSTEM PROMPT ===\n${textOf(parts[0]).trim()}${contexts.length ? `\n\n${contexts.join('\n\n')}` : ''}\n=== PHASE CONTEXT ===\n${textOf(parts[1])}` }
   }
   function assembledView(phase: PhaseName) {
     const assembled = assembledPrompt(phase)
     return <section className="wizard-prompt-assembled" aria-label={`Assembled prompt for ${PHASE_LABELS[phase]}`}>
       <h4>System prompt the agent receives</h4>
-      <p className="wizard-caption">Read-only, in the order the runtime sends it: the phase's output contract and the platform policy, then the parts below. The application and environment context follow the phase context. Template variables are filled in at launch, and the test request and upstream results are sent separately.</p>
+      <p className="wizard-caption">Read-only, in the order the runtime sends it: the phase's output contract and the platform policy, then the parts below. The application and environment context come before the phase context. Template variables are filled in at launch, and the test request and upstream results are sent separately.</p>
       <details className="wizard-prompt-assembled-policy">
         <summary>Platform policy (sent first, after the phase's output contract)</summary>
         <pre className="wizard-prompt-content">{PLATFORM_SYSTEM_POLICY}</pre>
@@ -328,7 +327,8 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
     return <button key={tab.id} type="button" role="tab" id={`${tabsId}-tab-${tabKey(tab.id)}`}
       className={`wizard-prompt-tab wizard-prompt-tab--${tab.status}`}
       aria-selected={tab.id === active.id} aria-controls={`${tabsId}-panel`} tabIndex={tab.id === active.id ? 0 : -1}
-      onClick={() => selectTab(tab.id)} onKeyDown={event => moveTab(event, index)}>
+      data-focus-alias={promptSlotTarget(tab.id)}
+      onClick={() => selectTab(tab.id)} onFocus={() => setActiveTab(tab.id)} onKeyDown={event => moveTab(event, index)}>
       <span className="wizard-prompt-tab-marker" aria-hidden="true">{STATUS_GLYPHS[tab.status] ?? phaseNumber ?? '•'}</span>
       <span className="wizard-prompt-tab-text">
         <span className="wizard-prompt-tab-label">{tab.label}</span>
@@ -345,7 +345,7 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
     phase: bypassed
       ? { kicker: `Bypassed · phase ${phaseTabs.indexOf(active) + 1} of ${phaseTabs.length}`, description: 'Completed by a person, so no agent runs it and its context is not sent.' }
       : { kicker: `Required · phase ${phaseTabs.indexOf(active) + 1} of ${phaseTabs.length}`, description: `Context sent only to the ${active.label} agent.` },
-    context: { kicker: 'Optional · all agent phases', description: active.id === 'application' ? 'Application knowledge added to every agent phase, in the order listed.' : 'Environment knowledge added to every agent phase, in the order listed.' },
+    context: { kicker: 'Optional · all agent phases', description: active.id === 'application' ? 'Application knowledge placed ahead of every agent phase\'s context, in the order listed.' : 'Environment knowledge placed ahead of every agent phase\'s context, in the order listed.' },
   }
 
   if (!phases.length) return <section className="wizard-step" aria-label="Prompts">
