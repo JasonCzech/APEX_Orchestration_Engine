@@ -4,6 +4,7 @@
  * and shared by ComparePage + the runs-grid selection affordance.
  */
 import { formatPercentRate } from '@/utils/metrics'
+import { engineLabel, judgesPerRow, thresholdMet } from '../runs/acceptanceThresholds'
 import type { TestResultSummary } from '@apex/pipeline-events'
 
 /** The compare view renders 2–4 side-by-side run columns. */
@@ -137,4 +138,56 @@ export function kpiDifference(value: number | null, baseline: number | null, def
   const better = def.better === 'higher' ? delta > 0 : delta < 0
   const absolute = def.key === 'error_rate' ? `${(Math.abs(delta) * 100).toFixed(2)} percentage points` : def.format(Math.abs(delta))
   return `${delta > 0 ? '+' : '−'}${absolute} (${percent}) · ${better ? 'Better' : 'Worse'}`
+}
+
+/** Acceptance thresholds a run can be launched with, shown under their KPI row. */
+export const COMPARE_THRESHOLDS: Record<string, string> = {
+  tps_avg: 'Minimum throughput',
+  p95_ms: 'Maximum P95',
+  error_rate: 'Maximum error rate',
+}
+
+export interface ThresholdInput {
+  /** The execution's test_summary, any status; absent means no collected result. */
+  summary: TestResultSummary | undefined
+  /** Applied acceptance thresholds from the public execution entry. */
+  thresholds: Record<string, number> | null | undefined
+  /** The test_summary of a succeeded execution — the KPIs Compare shows. */
+  collected: TestResultSummary | undefined
+}
+
+export type ThresholdCell =
+  | { kind: 'unavailable' }
+  | { kind: 'engine-native'; engine: string }
+  | { kind: 'none' }
+  | { kind: 'limit'; limit: number; met: boolean | null; assessedBy: string | null }
+
+/**
+ * One run's threshold cell. Per-row Met/Not met only for the simulator (F-06);
+ * real engines get the limit plus who assessed it, never a verdict of ours.
+ */
+export function thresholdCell(key: string, { summary, thresholds, collected }: ThresholdInput): ThresholdCell {
+  if (!summary) return { kind: 'unavailable' }
+  const limit = thresholds?.[key]
+  if (limit === undefined) {
+    // LoadRunner applies its own SLA settings, which APEX never sees.
+    return !thresholds && summary.engine === 'loadrunner' ? { kind: 'engine-native', engine: 'LoadRunner' } : { kind: 'none' }
+  }
+  if (judgesPerRow(summary)) return { kind: 'limit', limit, met: thresholdMet(key, limit, kpiValue(collected, key)), assessedBy: null }
+  return { kind: 'limit', limit, met: null, assessedBy: engineLabel(summary.engine) ?? 'the engine' }
+}
+
+/** True when runs with a collected result were held to different limits for this key. */
+export function thresholdsDiffer(key: string, inputs: ReadonlyArray<ThresholdInput>): boolean {
+  const limits = inputs.filter(input => input.summary).map(input => input.thresholds?.[key] ?? null)
+  return limits.length > 1 && limits.some(limit => limit !== limits[0])
+}
+
+/**
+ * A simulated failure no applied threshold explains (e.g. an injected fault);
+ * the engine's Failed stands, and the rows must not read as the reason.
+ */
+export function unexplainedSimFailure({ collected, thresholds }: ThresholdInput): boolean {
+  if (!collected || collected.passed !== false || !judgesPerRow(collected)) return false
+  return !Object.keys(COMPARE_THRESHOLDS).some(key => thresholdMet(key, thresholds?.[key], kpiValue(collected, key)) === false)
 }

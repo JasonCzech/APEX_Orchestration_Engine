@@ -13,9 +13,9 @@
 >   - `langgraph dev`;
 >   - the production Compose stack (Postgres runtime), after the fixes in PRs #29 and #30. See [PRODUCTION_RUNTIME_CHECK.md](PRODUCTION_RUNTIME_CHECK.md).
 > - The [completeness check](#completeness-check--what-a-tester-needs-vs-what-exists) has a column with the current status.
+> - Compare now shows each run's acceptance thresholds next to its KPIs.
 > - Still open:
 >   - the APEX Load handoff is unexercised;
->   - Compare doesn't show acceptance thresholds;
 >   - there is no automated `/v1`-to-runtime integration test.
 
 ---
@@ -256,7 +256,7 @@ Severity: **P0** blocks the workflow · **P1** major usability or trust problem 
 | See KPIs against thresholds | **✕ F-06** | ✓ Requested vs observed table ([after-03](screens/after-03-run-complete-kpis-1024.jpg)) |
 | Understand a failure | **✕ F-02, F-04** | ✓ reason on Overview and Timeline; run-scoped Logs ([after-05](screens/after-05-failed-run-relaunch.jpg)) |
 | Recover: edit and relaunch / re-run phases | **✕ F-03** · clone works only for completed runs (F-10) | ✓ **Edit and relaunch** for failed runs; clones keep their topology (F-10) |
-| Compare runs | `Compare` exists on the Tests list (not exercised here) | ◐ Exercised: select 2–4 runs, then per-phase timing, KPI deltas against a chosen baseline, and artifact/warning counts ([after-06](screens/after-06-compare.jpg)). **Gap:** requested thresholds are not shown, so you can't see whether a delta crosses an acceptance limit. |
+| Compare runs | `Compare` exists on the Tests list (not exercised here) | ✓ Exercised: select 2–4 runs, then per-phase timing, KPI deltas against a chosen baseline, and artifact/warning counts ([after-06](screens/after-06-compare.jpg)). Each KPI row is followed by the run's applied threshold (Minimum throughput, Maximum P95, Maximum error rate). Simulated runs show Met/Not met; real engines show who assessed the limit, and their verdict stays on the Result row. "None set" marks a run launched without that limit, and "Limits differ" marks rows where runs had different limits. Checked at 1024 px with four runs ([after-07](screens/after-07-compare-thresholds.jpg)). |
 | Hand off to APEX Load for real execution | engine card and "Load integration" links exist (not exercised; Simulated only) | **Not exercised.** It needs a live APEX Load connection; only the Simulated engine has been run. |
 
 ---

@@ -14,6 +14,7 @@ import { ComparePage } from '../ComparePage'
 import {
   COMPARE_DETAIL_A,
   COMPARE_DETAIL_B,
+  COMPARE_DETAIL_C,
   compareDetailHandler,
   compareListHandler,
   RUN_A_ID,
@@ -247,4 +248,98 @@ it('does not rank failed collections or give omitted phases measured zero counts
   expect(screen.getByRole('option', { name: /no collected result/ })).toBeDisabled()
   expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).toHaveTextContent('Not available')
   expect(screen.getByTestId(`compare-counts-test_planning-${RUN_B_ID}`)).toHaveTextContent('—')
+})
+
+describe('ComparePage acceptance thresholds', () => {
+  type Execution = { status: string; acceptance_thresholds?: Record<string, number>; test_summary: { engine: string; passed?: boolean; sla_breaches?: string[] } }
+  const executionOf = (detail: typeof COMPARE_DETAIL_A) =>
+    (detail.values as { phase_results: { execution: Execution } }).phase_results.execution
+
+  /** A: simulated, passed. B: APEX Load, collected and failed by the engine. */
+  function seed(thresholdsA?: Record<string, number>, thresholdsB?: Record<string, number>) {
+    const a = structuredClone(COMPARE_DETAIL_A)
+    const b = structuredClone(COMPARE_DETAIL_B)
+    if (thresholdsA) executionOf(a).acceptance_thresholds = thresholdsA
+    const executionB = executionOf(b)
+    executionB.status = 'succeeded'
+    executionB.test_summary.engine = 'apex_load'
+    if (thresholdsB) executionB.acceptance_thresholds = thresholdsB
+    return [a, b]
+  }
+  const cell = (key: string, id: string) => within(screen.getByTestId(`compare-threshold-${key}-${id}`))
+
+  it('shows each threshold under its KPI and judges only the simulator per row', async () => {
+    server.use(compareDetailHandler(seed(
+      { p95_ms: 250, error_rate: 0.01, tps_avg: 60 },
+      { p95_ms: 250, error_rate: 0.01 },
+    )))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    const labels = screen.getAllByRole('rowheader').map((header) => header.firstChild?.textContent)
+    expect(labels.slice(labels.indexOf('Result'), labels.indexOf('VUsers peak') + 1)).toEqual([
+      'Result', 'TPS avg', 'Minimum throughput', 'p95', 'Maximum P95', 'Error rate', 'Maximum error rate', 'VUsers peak',
+    ])
+    // Simulator: limit plus Met/Not met in the metric's direction.
+    expect(cell('p95_ms', RUN_A_ID).getByText('≤ 250 ms')).toBeInTheDocument()
+    expect(cell('p95_ms', RUN_A_ID).getByText('Met')).toHaveClass('status-badge', 'success')
+    expect(cell('error_rate', RUN_A_ID).getByText('≤ 1.00%')).toBeInTheDocument()
+    expect(cell('tps_avg', RUN_A_ID).getByText('≥ 60 TPS')).toBeInTheDocument()
+    expect(cell('tps_avg', RUN_A_ID).getByText('Not met')).toHaveClass('status-badge', 'danger')
+    // Real engine: p95 350 ms is over 250 ms, but only APEX Load's verdict is shown.
+    expect(cell('p95_ms', RUN_B_ID).getByText('≤ 250 ms')).toBeInTheDocument()
+    expect(cell('p95_ms', RUN_B_ID).getByText('Assessed by APEX Load')).toBeInTheDocument()
+    expect(cell('p95_ms', RUN_B_ID).queryByText(/Met/)).not.toBeInTheDocument()
+    expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).toHaveTextContent('Failed')
+  })
+
+  it('marks limits that differ between runs and runs launched without one', async () => {
+    server.use(compareDetailHandler(seed({ p95_ms: 250, tps_avg: 60 }, { p95_ms: 400 })))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    const label = (name: string) => screen.getByRole('rowheader', { name: new RegExp(`^${name}`) })
+    expect(label('Maximum P95')).toHaveTextContent('Limits differ')
+    expect(label('Minimum throughput')).toHaveTextContent('Limits differ')
+    expect(label('Maximum error rate')).toHaveTextContent('Acceptance limit')
+    expect(cell('p95_ms', RUN_B_ID).getByText('≤ 400 ms')).toBeInTheDocument()
+    expect(cell('tps_avg', RUN_B_ID).getByText('None set')).toBeInTheDocument()
+    expect(cell('error_rate', RUN_A_ID).getByText('None set')).toBeInTheDocument()
+  })
+
+  it('collapses to one row when no run was launched with thresholds', async () => {
+    server.use(compareDetailHandler(seed()))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    expect(screen.getByRole('rowheader', { name: 'Acceptance thresholds' })).toBeInTheDocument()
+    expect(screen.getByTestId(`compare-thresholds-${RUN_A_ID}`)).toHaveTextContent('None set')
+    expect(screen.getByTestId(`compare-thresholds-${RUN_B_ID}`)).toHaveTextContent('None set')
+    expect(screen.queryByRole('rowheader', { name: /^Maximum P95/ })).not.toBeInTheDocument()
+  })
+
+  it('shows no thresholds for a run without a collected result', async () => {
+    const [a] = seed({ p95_ms: 250 })
+    server.use(compareDetailHandler([a!, COMPARE_DETAIL_C]))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_C_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    expect(screen.getByTestId(`compare-threshold-p95_ms-${RUN_C_ID}`)).toHaveTextContent('No collected result')
+    expect(screen.getByRole('rowheader', { name: /^Maximum P95/ })).toHaveTextContent('Acceptance limit')
+  })
+
+  it('keeps a simulated failure the limits do not explain from reading as Met', async () => {
+    const [a, b] = seed({ p95_ms: 250 }, { p95_ms: 250 })
+    executionOf(a!).test_summary.passed = false
+    executionOf(a!).test_summary.sla_breaches = ['run failed before completion (injected failure)']
+    server.use(compareDetailHandler([a!, b!]))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    const result = within(screen.getByTestId(`compare-passed-${RUN_A_ID}`))
+    expect(result.getByText('Failed')).toBeInTheDocument()
+    expect(result.getByText('Not explained by thresholds')).toHaveAttribute('title', 'run failed before completion (injected failure)')
+    expect(cell('p95_ms', RUN_A_ID).getByText('Met')).toBeInTheDocument()
+    expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).not.toHaveTextContent('Not explained')
+  })
 })
