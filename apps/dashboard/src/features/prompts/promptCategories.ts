@@ -2,7 +2,7 @@ import type { PhaseName } from '@apex/pipeline-events'
 
 export const PROMPT_CATEGORIES = ['system', 'phase', 'application', 'environment'] as const
 export const PROMPT_LABELS: Record<string, string> = {
-  system: 'System Prompt', phase: 'Phase context', application: 'Application context', environment: 'Environment Context',
+  system: 'System prompt', phase: 'Phase context', application: 'Application context', environment: 'Environment context',
 }
 export interface PromptSelection {
   prompt_id: string

@@ -28,6 +28,7 @@ export type PromptVersionDetail = components['schemas']['PromptVersionDetail']
 export type CreatePromptRequest = components['schemas']['CreatePromptRequest']
 export type TestPromptRequest = components['schemas']['TestPromptRequest']
 export type TestPromptResponse = components['schemas']['TestPromptResponse']
+export type PromptUsage = components['schemas']['PromptUsageOut']
 
 export interface PromptPlaygroundRun {
   runId: string
@@ -278,6 +279,26 @@ export function usePromptVersions(
     queryKey: queryKeys.prompts.versions(ns, key),
     queryFn: ({ signal }) => fetchPromptVersions(promptId ?? '', signal),
     staleTime: STALE_TIMES.prompts,
+    enabled: Boolean(promptId),
+  })
+}
+
+/** Tests that pinned this prompt, newest first and limited to the caller's scopes. */
+export function usePromptUsage(promptId: string | undefined): UseQueryResult<PromptUsage, Error> {
+  return useQuery({
+    queryKey: queryKeys.prompts.usage(promptId ?? ''),
+    queryFn: async ({ signal }) => {
+      const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}/usage', {
+        params: { path: { prompt_id: promptId ?? '' }, query: { limit: 5 } },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(response.status, errorMessageOf(error, `Prompt usage failed (${response.status})`), error)
+      }
+      return data
+    },
+    // Usage grows with every launch; don't serve a long-cached list.
+    staleTime: 15_000,
     enabled: Boolean(promptId),
   })
 }

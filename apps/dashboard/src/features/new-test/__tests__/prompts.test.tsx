@@ -45,7 +45,7 @@ describe('catalog prompt selections', () => {
     server.use(...handlers())
     const view = setup()
     await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
-    expect(screen.getByLabelText('System Prompt')).toHaveValue('system-default')
+    expect(screen.getByLabelText('System prompt')).toHaveValue('system-default')
     await openTab(/Story Analysis/)
     expect(screen.getByLabelText('Phase context — Story Analysis')).toHaveValue('analysis-default')
     const payload = buildConfigurable(view.draft())
@@ -58,7 +58,7 @@ describe('catalog prompt selections', () => {
     const view = setup()
     const user = userEvent.setup()
     await screen.findByRole('option', { name: 'system-alternative' })
-    await user.selectOptions(screen.getByLabelText('System Prompt'), 'system-alternative')
+    await user.selectOptions(screen.getByLabelText('System prompt'), 'system-alternative')
     await user.click(tab(/Story Analysis/))
     const phase = screen.getByLabelText('Phase context — Story Analysis')
     expect(within(phase).queryByRole('option', { name: /planning-default/ })).not.toBeInTheDocument()
@@ -68,8 +68,8 @@ describe('catalog prompt selections', () => {
     expect(within(app).queryByRole('option', { name: 'app-hidden' })).not.toBeInTheDocument()
     await user.selectOptions(app, 'app-one')
     await user.selectOptions(app, 'app-shared')
-    await user.click(tab(/Environment Context/))
-    await user.selectOptions(screen.getByLabelText('Add Environment Context'), 'env-one')
+    await user.click(tab(/Environment context/))
+    await user.selectOptions(screen.getByLabelText('Add Environment context'), 'env-one')
     expect(view.draft().prompt_selections?.application.map(item => item.prompt_id)).toEqual(['app-one', 'app-shared'])
     await user.click(tab(/Application context/))
     await user.click(within(screen.getByRole('region', { name: 'Application context' })).getAllByRole('button', { name: 'Move up' })[1]!)
@@ -132,7 +132,7 @@ describe('catalog prompt selections', () => {
     await waitFor(() => expect(tab(/System prompt/)).toHaveTextContent('system-default'))
     // Shared context sits under the system prompt; every phase follows in pipeline order.
     expect(screen.getAllByRole('tab').map(item => item.textContent)).toEqual([
-      expect.stringContaining('System prompt'), expect.stringContaining('Application context'), expect.stringContaining('Environment Context'),
+      expect.stringContaining('System prompt'), expect.stringContaining('Application context'), expect.stringContaining('Environment context'),
       expect.stringContaining('Story Analysis'), expect.stringContaining('Test Planning'), expect.stringContaining('Env Triage'),
       expect.stringContaining('Script & Scenario'), expect.stringContaining('Execution'), expect.stringContaining('Reporting & Analysis'),
       expect.stringContaining('Postmortem'),
@@ -190,8 +190,8 @@ describe('catalog prompt selections', () => {
     await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
     await user.click(tab(/Application context/))
     await user.selectOptions(screen.getByLabelText('Add Application context'), 'app-one')
-    await user.click(tab(/Environment Context/))
-    await user.selectOptions(screen.getByLabelText('Add Environment Context'), 'env-one')
+    await user.click(tab(/Environment context/))
+    await user.selectOptions(screen.getByLabelText('Add Environment context'), 'env-one')
     await user.click(tab(/Story Analysis/))
     const region = screen.getByRole('region', { name: 'Assembled prompt for Story Analysis' })
     const assembled = () => region.querySelector('pre.wizard-prompt-content:not(details pre)')!

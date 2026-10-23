@@ -12,13 +12,14 @@
 
 .prompts-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 12px 16px;
   padding: 12px 16px;
 }
 
 .prompts-search {
-  flex: 1;
+  flex: 1 1 240px;
   max-width: 360px;
 }
 
@@ -35,42 +36,89 @@
   margin-left: auto;
 }
 
-.prompts-layout {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+.prompts-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-sm);
 }
 
-.prompts-main {
-  min-width: 0;
+.prompts-sort .field-input {
+  width: auto;
 }
 
-.prompts-tree {
+.prompts-used-by {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+}
+
+.prompts-used-by h3 {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.prompts-used-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-size-sm);
+}
+
+.prompts-used-note {
+  font-size: var(--font-size-xs);
+}
+
+.prompt-copy-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompts-intro,
+.prompts-category-help {
+  margin: -4px 4px 0;
+  max-width: 90ch;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+/* Category filter: chips that wrap instead of scrolling out of view. */
+.prompts-tree {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
 }
 
 .prompts-tree-item {
-  display: flex;
-  justify-content: space-between;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 6px 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: 999px;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--font-size-base);
-  text-align: left;
   cursor: pointer;
 }
 
 .prompts-tree-item:hover {
   background: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.prompts-tree-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .prompts-tree-item.active {
@@ -87,74 +135,127 @@
   padding: 1px 8px;
 }
 
+.prompts-main {
+  min-width: 0;
+}
+
 .prompts-browser {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 0.9fr);
   gap: 16px;
   align-items: start;
 }
 
-.prompts-browser .data-table-wrap {
+.prompts-browser--narrow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* List: two-line rows (title + chips, then key · applicability · updated). */
+.prompts-list {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  padding: 6px 0;
 }
 
-.prompts-row-selected td {
-  background: var(--accent-soft);
+.prompts-group + .prompts-group {
+  border-top: 1px solid var(--border-subtle, var(--border));
+  margin-top: 4px;
+  padding-top: 4px;
 }
 
-.prompts-table-group + .prompts-table-group .prompts-group-heading th {
-  border-top: 10px solid var(--bg-primary);
-}
-
-.prompts-group-heading th {
-  padding: 10px 12px 8px;
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg-secondary));
-  color: var(--text-primary);
-  text-align: left;
-}
-
-.prompts-group-label {
-  display: block;
-  margin-bottom: 2px;
-  color: var(--accent-text);
+.prompts-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 16px 4px;
+  color: var(--text-muted);
   font-size: var(--font-size-xs);
   font-weight: 700;
-  letter-spacing: var(--label-tracking, 0.09em);
+  letter-spacing: var(--label-tracking, 0.06em);
   text-transform: var(--label-case, uppercase);
 }
 
-.prompts-group-title {
-  font-size: var(--font-size-base);
-  font-weight: 650;
+.prompts-group-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
-.prompts-group-count {
-  float: right;
+.prompts-group-note {
+  margin: 0;
+  padding: 0 16px 4px;
+  font-size: var(--font-size-xs);
+}
+
+.prompts-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prompts-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 16px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prompts-item:hover {
+  background: var(--bg-hover);
+}
+
+.prompts-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.prompts-row-selected .prompts-item {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.prompts-row-archived .prompts-item {
+  opacity: 0.6;
+}
+
+.prompts-item-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.prompts-item-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.prompts-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
   color: var(--text-muted);
   font-size: var(--font-size-xs);
-  font-weight: 500;
 }
 
-.prompts-row-archived td {
-  opacity: 0.55;
-}
-
-.prompts-key {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  color: var(--accent-text);
-  cursor: pointer;
-  text-align: left;
+.prompts-item-key {
   font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
 }
 
-.prompts-key:hover,
-.prompts-key:focus-visible {
-  text-decoration: underline;
-}
-
+/* Preview: header with title, key, one meta line and the actions. */
 .prompts-preview {
   position: sticky;
   top: 16px;
@@ -170,40 +271,15 @@
   margin: 0;
 }
 
-.prompts-preview h2,
-.prompts-key,
-.prompts-key-meta {
+.prompts-preview h2 {
+  font-size: var(--font-size-lg, 1.15rem);
   overflow-wrap: anywhere;
 }
 
-.prompts-key-meta {
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-}
-
-.prompts-preview-header,
-.prompts-preview-footer {
+.prompts-preview-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.prompts-preview-meta {
-  display: flex;
-  align-items: flex-end;
   flex-direction: column;
   gap: 6px;
-  font-size: var(--font-size-sm);
-  white-space: nowrap;
-}
-
-.prompts-preview-footer {
-  align-items: center;
-}
-
-.prompts-preview-footer .btn {
-  white-space: nowrap;
 }
 
 .prompts-preview-kicker {
@@ -212,64 +288,61 @@
   font-weight: 600;
 }
 
+.prompts-key-meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.prompts-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: var(--font-size-sm);
+}
+
+.prompts-pending-chip {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.prompts-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.prompts-preview-body,
+.prompts-preview-error {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
 .prompts-preview .code-viewer {
   max-height: 520px;
   overflow: auto;
 }
 
-.prompts-preview-empty {
-  min-height: 160px;
+/* Narrow pages: the preview opens as a sheet over the list. */
+/* Two classes: the shared modal overlay later in this file centres its panel. */
+.prompt-modal-overlay.prompts-sheet-overlay {
+  align-items: flex-end;
 }
 
-@media (max-width: 1440px) {
-  .prompts-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .prompts-tree {
-    flex-direction: row;
-    overflow-x: auto;
-  }
-
-  .prompts-tree-item {
-    flex: 0 0 auto;
-  }
-
-  .prompts-table {
-    table-layout: fixed;
-  }
-
-  .prompts-table th:first-child {
-    width: 38%;
-  }
-
-  .prompts-table th:nth-child(3) {
-    width: 74px;
-  }
-
-  .prompts-table thead th:last-child,
-  .prompts-table .prompts-time {
-    display: none;
-  }
+.prompts-sheet {
+  position: static;
+  width: min(720px, 100%);
+  max-height: 88vh;
+  overflow: auto;
 }
 
-@media (max-width: 900px) {
-  .prompts-browser {
-    grid-template-columns: 1fr;
-  }
-
-  .prompts-preview {
-    position: static;
-    order: -1;
-  }
-}
-
-.prompts-description {
-  color: var(--text-secondary);
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.prompts-sheet-close {
+  align-self: flex-end;
 }
 
 .prompts-badges {
@@ -284,11 +357,6 @@
 
 .prompts-archived-chip {
   color: var(--text-muted);
-}
-
-.prompts-time {
-  color: var(--text-muted);
-  white-space: nowrap;
 }
 
 .prompts-muted {
@@ -357,6 +425,48 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.prompt-field-help {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.prompt-field-help--error {
+  color: var(--danger-text, var(--warning-text));
+}
+
+.prompt-field--check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+}
+
+.prompt-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-copy-from {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+}
+
+.prompt-copy-from .field-input {
+  width: auto;
+  max-width: 280px;
+}
+
+/* Room to write: prompts usually run to dozens of lines. */
+.prompt-modal .prompt-editor .cm-editor {
+  min-height: 240px;
 }
 
 /* ── Detail ──────────────────────────────────────────────────────────────── */
@@ -614,7 +724,6 @@
 }
 
 @media (max-width: 960px) {
-  .prompts-layout,
   .prompt-playground-split,
   .prompt-form-grid {
     grid-template-columns: 1fr;

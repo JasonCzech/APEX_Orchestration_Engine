@@ -272,7 +272,11 @@ async def _seed_default_prompts(
             namespace=PHASE_NAMESPACE,
             key=key,
             content=DEFAULT_PHASE_PROMPTS[key],
-            description=f"Built-in {part} prompt for the {phase} phase",
+            description=(
+                f"Phase context for the {phase.replace('_', ' ')} phase"
+                if part == "system"
+                else f"Legacy request template for the {phase.replace('_', ' ')} phase"
+            ),
             note="seeded by apex.bootstrap",
             created_by="apex.bootstrap",
             applicability={

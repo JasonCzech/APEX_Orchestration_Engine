@@ -67,6 +67,7 @@ MIN_ROLE: dict[str, str] = {
     "getPrompt": "viewer",
     "savePromptVersion": "admin",
     "listPromptVersions": "viewer",
+    "getPromptUsage": "viewer",
     "getPromptVersion": "viewer",
     "rollbackPrompt": "admin",
     "archivePrompt": "admin",
@@ -251,6 +252,8 @@ SCOPE: dict[str, str] = {
     "getPrompt": "none",
     "savePromptVersion": "none",
     "listPromptVersions": "none",
+    # No project parameter: each usage row is filtered by the caller's scopes.
+    "getPromptUsage": "none",
     "getPromptVersion": "none",
     "rollbackPrompt": "none",
     "archivePrompt": "none",
