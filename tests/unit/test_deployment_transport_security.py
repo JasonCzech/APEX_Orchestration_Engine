@@ -1122,7 +1122,7 @@ def test_every_production_readiness_consumer_uses_the_dynamic_probe() -> None:
     assert "startupProbe:\n  httpGet:\n    path: /ok" in values
     assert "http://localhost:8000/ready" in compose
     assert "http://localhost:8000/ready" in compose_ha
-    assert "http://localhost:8123/ready" in compose_ha
+    assert "http://127.0.0.1:8123/ready" in compose_ha
     assert "/ready" in HELM_TEST.read_text()
     assert '"https://$APEX_HOSTNAME/ready"' in workflow
     assert "|ok|ready)(/|" in dashboard_entrypoint
@@ -1846,3 +1846,33 @@ def test_every_infrastructure_setup_action_uses_the_canonical_version_source() -
         "hashicorp/setup-terraform@": 5,
         "azure/setup-helm@": 3,
     }
+
+
+def _compose_default(value: str) -> str:
+    return re.sub(r"\$\{[A-Z0-9_]+:-([^}]*)\}", r"\1", value)
+
+
+def test_compose_deploy_clis_reach_postgres_over_an_accepted_transport() -> None:
+    from apex.settings import database_uri_has_safe_transport
+
+    for path in (COMPOSE, COMPOSE_HA):
+        services = yaml.safe_load(path.read_text())["services"]
+        for name in ("migrate", "bootstrap"):
+            service = services[name]
+            environment = service["environment"]
+            uri = _compose_default(environment["APEX_DATABASE__URI"])
+
+            assert service["network_mode"] == "service:postgres", (path.name, name)
+            assert database_uri_has_safe_transport(uri, environment["APEX_DATABASE__SSL_MODE"]), (
+                path.name,
+                name,
+            )
+
+
+def test_compose_wget_health_checks_use_ipv4_loopback() -> None:
+    # Alpine wget resolves localhost to ::1 first; these nginx servers listen on IPv4.
+    for path in (COMPOSE, COMPOSE_HA):
+        for name, service in yaml.safe_load(path.read_text())["services"].items():
+            test = service.get("healthcheck", {}).get("test", [])
+            if "wget" in test:
+                assert not any("//localhost" in part for part in test), (path.name, name)
