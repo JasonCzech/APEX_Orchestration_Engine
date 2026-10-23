@@ -93,4 +93,18 @@ describe('RunDetailPage gate mounting (D3)', () => {
       }),
     )
   })
+
+  it('confirms an accepted decision inside Run detail with a visible receipt', async () => {
+    server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
+    const resume = resumeHandler(202)
+    server.use(resume.handler)
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
+
+    await user.click(await screen.findByRole('button', { name: /Accept phase output & continue/i }))
+    const receipt = await screen.findByText('Decision recorded')
+    expect(receipt.closest('[role="status"]')).toHaveTextContent(
+      /Accepted phase output and continued the run · Reporting & Analysis/,
+    )
+  })
 })

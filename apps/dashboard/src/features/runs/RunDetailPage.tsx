@@ -33,6 +33,7 @@ import { rerunRestriction } from './rerunCapability'
 import { RerunGuidance } from './RerunGuidance'
 import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, withLiveRunningPhase, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
+import { decisionOutcomeLabel } from '@/hitl/decisionOutcome'
 import './run-detail.css'
 import './live.css'
 
@@ -126,6 +127,21 @@ export function RunWorkspace({
   // Busy-run abort always probes the engine kill switch first; the backend can
   // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
+  // Run detail confirms its own decisions; the review queue (embedded) keeps
+  // its receipt above the queue instead.
+  const [receipt, setReceipt] = useState<{ label: string; phase: PhaseName | null; at: string } | null>(null)
+  const lastGate = useRef(hitl.gate)
+  if (hitl.gate) lastGate.current = hitl.gate
+  const accepted = hitl.lastAccepted
+  useEffect(() => {
+    if (embedded || !accepted || accepted.action === 'discuss' || accepted.action === 'modify') return
+    const gate = lastGate.current?.interrupt_id === accepted.interruptId ? lastGate.current : null
+    setReceipt({
+      label: decisionOutcomeLabel(accepted.action, gate?.kind),
+      phase: gate && isPhaseName(gate.phase) ? gate.phase : null,
+      at: new Date().toISOString(),
+    })
+  }, [accepted, embedded])
   // Opening a run that already waits on a decision lands on it; a gate that
   // appears while someone reads the overview must not move them.
   const firstSnapshot = useRef(true)
@@ -332,6 +348,13 @@ export function RunWorkspace({
         )}
         </div>
       </header>
+      {receipt && (
+        <div className="tonal-card success run-decision-receipt" role="status">
+          <strong>Decision recorded</strong>
+          <span>{receipt.label}{receipt.phase ? ` · ${PHASE_LABELS[receipt.phase]}` : ''} · {formatTimestamp(receipt.at)}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setReceipt(null)}>Dismiss</button>
+        </div>
+      )}
       {abortRun.isError && (
         <div className="tonal-card danger" role="alert">
           Abort failed: {abortRun.error.message}

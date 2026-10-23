@@ -886,3 +886,12 @@
   font-weight: 700;
 }
 .ux-section-link:hover { color: var(--text-primary); }
+
+.run-decision-receipt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 12px;
+}
+.run-decision-receipt > .btn { margin-left: auto; }
