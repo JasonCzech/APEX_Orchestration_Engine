@@ -9410,6 +9410,74 @@
         "title": "PromptSummary",
         "type": "object"
       },
+      "PromptTestUsageOut": {
+        "properties": {
+          "recorded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded At"
+          },
+          "slot": {
+            "title": "Slot",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "thread_id",
+          "version",
+          "slot"
+        ],
+        "title": "PromptTestUsageOut",
+        "type": "object"
+      },
+      "PromptUsageOut": {
+        "description": "Tests that pinned this prompt, newest first, limited to the caller's scopes.",
+        "properties": {
+          "tests": {
+            "items": {
+              "$ref": "#/components/schemas/PromptTestUsageOut"
+            },
+            "title": "Tests",
+            "type": "array"
+          },
+          "total_tests": {
+            "title": "Total Tests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_tests",
+          "tests"
+        ],
+        "title": "PromptUsageOut",
+        "type": "object"
+      },
       "PromptVersionDetail": {
         "properties": {
           "content": {
@@ -21960,6 +22028,65 @@
           }
         },
         "summary": "Unarchive Prompt",
+        "tags": [
+          "prompts"
+        ]
+      }
+    },
+    "/v1/prompts/{prompt_id}/usage": {
+      "get": {
+        "operationId": "getPromptUsage",
+        "parameters": [
+          {
+            "description": "Prompt id",
+            "in": "path",
+            "name": "prompt_id",
+            "required": true,
+            "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Prompt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptUsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Usage",
         "tags": [
           "prompts"
         ]

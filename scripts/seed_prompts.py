@@ -73,7 +73,11 @@ async def main(*, upgrade_defaults: bool = False, application: str | None = None
                     namespace=PHASE_NAMESPACE,
                     key=key,
                     content=DEFAULT_PHASE_PROMPTS[key],
-                    description=f"Built-in {part} prompt for the {phase} phase",
+                    description=(
+                        f"Phase context for the {phase.replace('_', ' ')} phase"
+                        if part == "system"
+                        else f"Legacy request template for the {phase.replace('_', ' ')} phase"
+                    ),
                     note=f"APEX canonical catalog {CATALOG_REVISION}",
                     created_by="seed_prompts",
                     applicability={

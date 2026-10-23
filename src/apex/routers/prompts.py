@@ -380,6 +380,53 @@ async def get_prompt(
     return _detail(prompt, active)
 
 
+class PromptTestUsageOut(BaseModel):
+    thread_id: str
+    title: str | None = None
+    version: int
+    slot: str
+    recorded_at: datetime | None = None
+
+
+class PromptUsageOut(BaseModel):
+    """Tests that pinned this prompt, newest first, limited to the caller's scopes."""
+
+    total_tests: int
+    tests: list[PromptTestUsageOut]
+
+
+@router.get("/{prompt_id}/usage", operation_id="getPromptUsage")
+async def get_prompt_usage(
+    prompt_id: PromptId,
+    identity: CurrentIdentity,
+    catalog: CatalogDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> PromptUsageOut:
+    from apex.services.prompt_usage import list_prompt_usage
+
+    # Same visibility as reading the prompt itself.
+    try:
+        await catalog.get_prompt(prompt_id, allow_application=identity.is_unscoped)
+    except PromptNotFoundError:
+        raise HTTPException(status_code=404, detail="prompt not found") from None
+    # Don't hold the catalog session open while the usage index is read.
+    await release_read_transactions(catalog)
+    total, tests = await list_prompt_usage(prompt_id, identity, limit=limit)
+    return PromptUsageOut(
+        total_tests=total,
+        tests=[
+            PromptTestUsageOut(
+                thread_id=test.thread_id,
+                title=test.title,
+                version=test.version,
+                slot=test.slot,
+                recorded_at=test.recorded_at,
+            )
+            for test in tests
+        ],
+    )
+
+
 @router.post("/{prompt_id}/versions", operation_id="savePromptVersion", status_code=201)
 async def save_prompt_version(
     prompt_id: PromptId,

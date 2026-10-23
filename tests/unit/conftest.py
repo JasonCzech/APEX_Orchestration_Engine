@@ -42,3 +42,16 @@ def isolate_model_admission(monkeypatch: pytest.MonkeyPatch) -> None:
         return dict(configurable.get("model_by_phase") or {})
 
     monkeypatch.setattr("apex.services.pipeline_read.admit_models", admit)
+
+
+@pytest.fixture(autouse=True)
+def isolate_prompt_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Launches index pinned prompts in the database; unit tests are hermetic.
+
+    Prompt usage has its own database-backed tests that restore the recorder.
+    """
+
+    async def record(thread_id, configurable, *, title=None):
+        return None
+
+    monkeypatch.setattr("apex.services.pipeline_read.record_prompt_usage", record)

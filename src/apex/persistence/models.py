@@ -1295,3 +1295,24 @@ class RunParticipant(Base):
     layer: Mapped[str] = mapped_column(String(16))
     is_primary: Mapped[bool] = mapped_column(Boolean)
     is_traffic_entry: Mapped[bool] = mapped_column(Boolean)
+
+
+class PromptUsage(Base):
+    """Which prompt versions a launched test pinned, for the catalog's "Used by".
+
+    Written best-effort when a launch creates its run; one row per pinned slot.
+    """
+
+    __tablename__ = "prompt_usages"
+    __table_args__ = (Index("ix_prompt_usages_prompt_recorded", "prompt_id", "recorded_at"),)
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    prompt_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    slot: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    title: Mapped[str | None] = mapped_column(String(500))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

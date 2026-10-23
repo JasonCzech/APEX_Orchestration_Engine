@@ -5,6 +5,8 @@ invariants (immutability, monotonic version numbers, pointer semantics) live in
 PromptCatalogService so they are enforced identically over fakes in tests.
 """
 
+import re
+
 from sqlalchemy import and_, false, func, or_, select, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +21,16 @@ from apex.persistence.repositories._conflicts import (
 
 class DuplicatePromptKeyError(Exception):
     """The database rejected a duplicate ``(namespace, key)`` prompt."""
+
+
+def search_pattern(q: str) -> str:
+    """A case-insensitive LIKE pattern for catalog search.
+
+    ``%`` and ``\\`` match literally. Spaces, underscores and hyphens all match
+    one another, so "env triage" finds the ``env_triage`` key.
+    """
+    escaped = q.strip().replace("\\", "\\\\").replace("%", "\\%")
+    return "%" + re.sub(r"[\s_-]+", "_", escaped) + "%"
 
 
 class PromptRepository:
@@ -162,12 +174,21 @@ class PromptRepository:
         if not include_archived:
             stmt = stmt.where(Prompt.archived_at.is_(None))
         if q:
-            like = f"%{q}%"
+            like = search_pattern(q)
+            active_text = (
+                select(PromptVersion.id)
+                .where(
+                    PromptVersion.id == Prompt.active_version_id,
+                    PromptVersion.content.ilike(like, escape="\\"),
+                )
+                .exists()
+            )
             stmt = stmt.where(
                 or_(
-                    Prompt.key.ilike(like),
-                    Prompt.namespace.ilike(like),
-                    Prompt.description.ilike(like),
+                    Prompt.key.ilike(like, escape="\\"),
+                    Prompt.namespace.ilike(like, escape="\\"),
+                    Prompt.description.ilike(like, escape="\\"),
+                    active_text,
                 )
             )
         return list((await self._session.scalars(stmt.limit(limit).offset(offset))).all())
