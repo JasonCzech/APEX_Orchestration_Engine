@@ -21,10 +21,13 @@ import {
   statusLabel,
   statusVisual,
 } from '../runs/runDisplay'
+import { engineVerdict } from '../runs/acceptanceThresholds'
 import {
   COMPARE_KPIS,
   COMPARE_THRESHOLDS,
   type CompareKpiDef,
+  completedSummary,
+  formatLimit,
   kpiDifference,
   MAX_COMPARE_RUNS,
   bestWorst,
@@ -160,7 +163,7 @@ function ThresholdRow({ thresholdKey, label, def, runs, inputs }: {
               <span className="compare-muted">Set in {cell.engine}</span>
             ) : (
               <div className="compare-phase-cell">
-                <span className="compare-kpi-value">{minimum ? '≥' : '≤'} {def.format(cell.limit)}{thresholdKey === 'tps_avg' ? ' TPS' : ''}</span>
+                <span className="compare-kpi-value">{minimum ? '≥' : '≤'} {formatLimit(thresholdKey, cell.limit)}</span>
                 {cell.met !== null && (
                   <span className={`status-badge ${cell.met ? 'success' : 'danger'}`}>{cell.met ? 'Met' : 'Not met'}</span>
                 )}
@@ -282,10 +285,13 @@ export function ComparePage() {
   )
   const baselineId = eligibleBaselineIds.includes(chosenBaseline ?? '') ? chosenBaseline : eligibleBaselineIds[0]
   const baselineIndex = ids.indexOf(baselineId ?? '')
-  const hasEngineKpis = summaries.some(Boolean)
+  // Failed-verdict runs are judged against their limits but not ranked:
+  // KPI ranking and the baseline stay limited to succeeded executions.
+  const completed = runs.map((run) => completedSummary(run.query.data?.state.phase_results?.execution))
+  const hasEngineKpis = completed.some(Boolean)
   const thresholdInputs: ThresholdInput[] = runs.map((run, index) => {
     const execution = run.query.data?.state.phase_results?.execution
-    return { summary: execution?.test_summary, thresholds: execution?.acceptance_thresholds, collected: summaries[index] }
+    return { summary: execution?.test_summary, thresholds: execution?.acceptance_thresholds, collected: completed[index] }
   })
   const hasThresholdRows = thresholdInputs.some((input) => input.summary)
   const anyThresholds = thresholdInputs.some((input) =>
@@ -300,7 +306,7 @@ export function ComparePage() {
     <section className="compare-page animate-enter">
       <header className="compare-toolbar glass-panel">
         <span className="compare-caption">{runs.length} runs</span>
-        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : ' (no collected result)'}</option>)}</select></label>
+        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : completed[ids.indexOf(run.id)] ? ' (execution failed)' : ' (no collected result)'}</option>)}</select></label>
         <span className="spacer" />
         <AddRunPicker ids={ids} onAdd={(id) => setIds([...ids, id])} />
         <Link to="/runs" className="btn btn-ghost btn-sm">
@@ -395,12 +401,13 @@ export function ComparePage() {
                   </th>
                   {runs.map((run, index) => {
                     const snapshot = run.query.data
-                    const result = snapshot ? executionResultLabel(snapshot.detail, snapshot.state) : 'Not available'
+                    const failedVerdict = summaries[index] ? undefined : completed[index]
+                    const result = !snapshot ? 'Not available' : failedVerdict ? engineVerdict(failedVerdict) : executionResultLabel(snapshot.detail, snapshot.state)
                     return (
                       <td key={run.id} data-testid={`compare-passed-${run.id}`}>
                         <span className={`status-badge ${result === 'Passed' ? 'success' : result === 'Failed' ? 'danger' : 'neutral'}`}>{result}</span>
                         {result === 'Failed' && unexplainedSimFailure(thresholdInputs[index]!) && (
-                          <small className="compare-difference" title={summaries[index]?.sla_breaches?.join('; ') || undefined}>
+                          <small className="compare-difference" title={completed[index]?.sla_breaches?.join('; ') || undefined}>
                             Not explained by thresholds
                           </small>
                         )}
@@ -454,7 +461,9 @@ export function ComparePage() {
                             data-testid={`compare-kpi-${def.key}-${run.id}`}
                             className={tint}
                           >
-                            {value === null ? (
+                            {value === null && kpiValue(completed[index], def.key) !== null ? (
+                              <><span className="compare-kpi-value">{def.format(kpiValue(completed[index], def.key)!)}</span><small className="compare-difference">Not ranked · execution failed</small></>
+                            ) : value === null ? (
                               <span className="compare-muted">{EM_DASH}<small className="compare-difference">No collected result</small></span>
                             ) : (
                               <><span className="compare-kpi-value">{def.format(value)}</span><small className="compare-difference">{index === baselineIndex ? 'Baseline' : kpiDifference(value, values[baselineIndex] ?? null, def)}</small></>

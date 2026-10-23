@@ -242,11 +242,13 @@ it('does not rank failed collections or give omitted phases measured zero counts
   server.use(compareDetailHandler([COMPARE_DETAIL_A, uncollected]))
   renderCompare(`/runs/compare?ids=${RUN_B_ID},${RUN_A_ID}`)
   const cell = await screen.findByTestId(`compare-kpi-p95_ms-${RUN_B_ID}`)
-  expect(cell).toHaveTextContent('No collected result')
+  // The engine's own Failed stands, but its values are neither ranked nor a baseline.
+  expect(cell).toHaveTextContent('0 msNot ranked · execution failed')
   expect(cell).not.toHaveClass('compare-cell--best')
+  expect(screen.getByTestId(`compare-kpi-tps_avg-${RUN_B_ID}`)).toHaveTextContent('No collected result')
   expect(screen.getByRole('combobox', { name: 'Comparison baseline' })).toHaveValue(RUN_A_ID)
-  expect(screen.getByRole('option', { name: /no collected result/ })).toBeDisabled()
-  expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).toHaveTextContent('Not available')
+  expect(screen.getByRole('option', { name: /execution failed/ })).toBeDisabled()
+  expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).toHaveTextContent('Failed')
   expect(screen.getByTestId(`compare-counts-test_planning-${RUN_B_ID}`)).toHaveTextContent('—')
 })
 
@@ -326,6 +328,41 @@ describe('ComparePage acceptance thresholds', () => {
 
     expect(screen.getByTestId(`compare-threshold-p95_ms-${RUN_C_ID}`)).toHaveTextContent('No collected result')
     expect(screen.getByRole('rowheader', { name: /^Maximum P95/ })).toHaveTextContent('Acceptance limit')
+  })
+
+  it('judges a simulated SLA failure, which ends execution as failed', async () => {
+    // execution_phase ends the phase failed when summary.passed is False, keeping the summary.
+    const a = structuredClone(COMPARE_DETAIL_A)
+    const b = structuredClone(COMPARE_DETAIL_A)
+    b.thread_id = RUN_B_ID
+    const failed = executionOf(b)
+    failed.status = 'failed'
+    failed.test_summary.passed = false
+    failed.test_summary.sla_breaches = ['p95_ms 200 > 150']
+    failed.acceptance_thresholds = { p95_ms: 150, error_rate: 0.05 }
+    executionOf(a).acceptance_thresholds = { p95_ms: 250, error_rate: 0.05 }
+    server.use(compareDetailHandler([a, b]))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    expect(within(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).getByText('Failed')).toHaveClass('status-badge', 'danger')
+    expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).not.toHaveTextContent('Not explained')
+    expect(cell('p95_ms', RUN_B_ID).getByText('≤ 150 ms')).toBeInTheDocument()
+    expect(cell('p95_ms', RUN_B_ID).getByText('Not met')).toHaveClass('status-badge', 'danger')
+    expect(cell('error_rate', RUN_B_ID).getByText('Met')).toBeInTheDocument()
+    expect(screen.getByTestId(`compare-kpi-p95_ms-${RUN_B_ID}`)).toHaveTextContent('200 msNot ranked · execution failed')
+    expect(screen.getByTestId(`compare-kpi-p95_ms-${RUN_B_ID}`)).not.toHaveClass('compare-cell--worst')
+  })
+
+  it('shows fractional limits as applied instead of rounding them', async () => {
+    server.use(compareDetailHandler(seed({ p95_ms: 211.9, tps_avg: 22.25, error_rate: 0.0125 }, { p95_ms: 212.1 })))
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
+    await screen.findByText('Engine KPIs')
+
+    expect(cell('p95_ms', RUN_A_ID).getByText('≤ 211.9 ms')).toBeInTheDocument()
+    expect(cell('p95_ms', RUN_B_ID).getByText('≤ 212.1 ms')).toBeInTheDocument()
+    expect(cell('tps_avg', RUN_A_ID).getByText('≥ 22.25 TPS')).toBeInTheDocument()
+    expect(cell('error_rate', RUN_A_ID).getByText('≤ 1.25%')).toBeInTheDocument()
   })
 
   it('keeps a simulated failure the limits do not explain from reading as Met', async () => {

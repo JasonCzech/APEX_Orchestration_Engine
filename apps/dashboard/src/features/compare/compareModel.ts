@@ -4,7 +4,7 @@
  * and shared by ComparePage + the runs-grid selection affordance.
  */
 import { formatPercentRate } from '@/utils/metrics'
-import { engineLabel, judgesPerRow, thresholdMet } from '../runs/acceptanceThresholds'
+import { engineLabel, engineVerdict, judgesPerRow, thresholdMet } from '../runs/acceptanceThresholds'
 import type { TestResultSummary } from '@apex/pipeline-events'
 
 /** The compare view renders 2–4 side-by-side run columns. */
@@ -147,12 +147,42 @@ export const COMPARE_THRESHOLDS: Record<string, string> = {
   error_rate: 'Maximum error rate',
 }
 
+/**
+ * The engine's collected summary when its verdict is final. An SLA failure
+ * ends the execution phase as failed but keeps the summary the engine
+ * collected, so a failed execution counts only when the engine itself says
+ * Failed; anything else (aborted, a failed run that claims a pass) does not.
+ */
+export function completedSummary(
+  execution: { status?: string | undefined; test_summary?: TestResultSummary | undefined } | undefined,
+): TestResultSummary | undefined {
+  const summary = execution?.test_summary
+  if (!summary) return undefined
+  if (execution.status === 'succeeded') return summary
+  return execution.status === 'failed' && engineVerdict(summary) === 'Failed' ? summary : undefined
+}
+
+/**
+ * A threshold exactly as applied. The KPI formatters round (p95 to whole ms),
+ * which would show a 211.9 ms limit as 212 ms beside an observed 212 ms.
+ */
+export function formatLimit(key: string, limit: number): string {
+  const exact = (value: number) => String(Number(value.toPrecision(12)))
+  if (key === 'error_rate') {
+    const percent = Number((limit * 100).toPrecision(12))
+    return `${Number.isInteger(percent * 100) ? percent.toFixed(2) : exact(percent)}%`
+  }
+  if (key === 'p95_ms') return `${exact(limit)} ms`
+  if (key === 'tps_avg') return `${exact(limit)} TPS`
+  return exact(limit)
+}
+
 export interface ThresholdInput {
   /** The execution's test_summary, any status; absent means no collected result. */
   summary: TestResultSummary | undefined
   /** Applied acceptance thresholds from the public execution entry. */
   thresholds: Record<string, number> | null | undefined
-  /** The test_summary of a succeeded execution — the KPIs Compare shows. */
+  /** completedSummary() of the execution: the KPIs the engine judged. */
   collected: TestResultSummary | undefined
 }
 

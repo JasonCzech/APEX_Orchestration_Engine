@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TestResultSummary } from '@apex/pipeline-events'
-import { COMPARE_KPIS, kpiDifference, bestWorst, thresholdCell, thresholdsDiffer, unexplainedSimFailure } from './compareModel'
+import { COMPARE_KPIS, kpiDifference, bestWorst, completedSummary, formatLimit, thresholdCell, thresholdsDiffer, unexplainedSimFailure } from './compareModel'
 
 describe('accessible KPI differences', () => {
   const latency = COMPARE_KPIS.find((metric) => metric.key === 'p95_ms')!
@@ -52,5 +52,24 @@ describe('acceptance threshold cells', () => {
     expect(unexplainedSimFailure({ summary: failed, thresholds: { tps_avg: 60 }, collected: failed })).toBe(false)
     const real = { ...failed, engine: 'apex_load' }
     expect(unexplainedSimFailure({ summary: real, thresholds: { p95_ms: 250 }, collected: real })).toBe(false)
+  })
+})
+
+describe('completed summaries and exact limits', () => {
+  it('counts a failed execution only when the engine itself says Failed', () => {
+    const failed = { engine: 'sim', passed: false }
+    expect(completedSummary({ status: 'succeeded', test_summary: failed })).toBe(failed)
+    expect(completedSummary({ status: 'failed', test_summary: failed })).toBe(failed)
+    expect(completedSummary({ status: 'failed', test_summary: { engine: 'sim', passed: true } })).toBeUndefined()
+    expect(completedSummary({ status: 'aborted', test_summary: failed })).toBeUndefined()
+    expect(completedSummary({ status: 'failed' })).toBeUndefined()
+  })
+  it('keeps every digit of the applied limit', () => {
+    expect(formatLimit('p95_ms', 211.9)).toBe('211.9 ms')
+    expect(formatLimit('p95_ms', 300)).toBe('300 ms')
+    expect(formatLimit('tps_avg', 22.25)).toBe('22.25 TPS')
+    expect(formatLimit('error_rate', 0.05)).toBe('5.00%')
+    expect(formatLimit('error_rate', 0.0125)).toBe('1.25%')
+    expect(formatLimit('error_rate', 0.01255)).toBe('1.255%')
   })
 })
