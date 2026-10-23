@@ -179,7 +179,7 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
       <label className="wizard-label">{label} (required)<select className="field-input" aria-label={label} value={item?.prompt_id ?? ''} onChange={event => { const row = options.find(row => row.id === event.target.value); if (row?.active_version) update(refFor(row)) }}>
         <option value="">Select a prompt</option>
         {item && !options.some(row => row.id === item.prompt_id) && <option value={item.prompt_id}>Unavailable selection</option>}
-        {options.map(row => <option key={row.id} value={row.id}>{row.key}{row.is_default ? ' (default)' : ''}</option>)}
+        {options.map(row => <option key={row.id} value={row.id}>{row.key}{row.is_default && row.key !== 'default' ? ' (default)' : ''}</option>)}
       </select></label>
       {!item && catalog.isSuccess && <p role="alert">{options.length ? 'No catalog default is available. Choose a prompt.' : 'No eligible prompt is available. Ask an administrator to create one.'}</p>}
       {item && preview(item, update)}
@@ -267,14 +267,14 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
   const phaseTabs = tabs.filter(tab => tab.group === 'phase')
   const activePhase = active.id.startsWith('phase:') ? active.id.slice('phase:'.length) as PhaseName : null
   const panelCopy: Record<PromptTab['group'], { kicker: string; description: string }> = {
-    pipeline: { kicker: 'Required · all phases', description: 'Shared instructions every LangGraph phase receives before its own context.' },
+    pipeline: { kicker: 'Required · all phases', description: 'Shared instructions every agent phase receives before its own context.' },
     phase: { kicker: `Required · phase ${phaseTabs.indexOf(active) + 1} of ${phaseTabs.length}`, description: `Context sent only to the ${active.label} agent.` },
     context: { kicker: 'Optional · all phases', description: active.id === 'application' ? 'Application knowledge added to every phase, in the order listed.' : 'Environment knowledge added to every phase, in the order listed.' },
   }
 
-  if (!phases.length) return <section className="wizard-step" aria-label="Prompts"><p>All phases are assigned to HITL. No agent prompts are required. Saved prompt edits will be restored when a phase is assigned to LangGraph.</p></section>
+  if (!phases.length) return <section className="wizard-step" aria-label="Prompts"><p>All phases are assigned to a person. No agent prompts are required. Saved prompt edits are restored when a phase is assigned to an agent.</p></section>
   return <section className="wizard-step" aria-label="Prompts">
-    <p className="wizard-step-hint">Choose one system prompt for the pipeline and one context prompt for each LangGraph phase. Selected versions are pinned when this test launches.</p>
+    <p className="wizard-step-hint">Choose one system prompt for the pipeline and one context prompt for each agent phase. Selected versions are pinned when this test launches.</p>
     {notice && <p role="status">{notice}</p>}
     {catalog.isError && <p role="alert">Prompt catalog could not be loaded. <button type="button" onClick={() => void catalog.refetch()}>Retry</button></p>}
     {unresolved.length > 0 && <section className="tonal-card wizard-prompt-legacy" aria-label="Legacy prompt compatibility"><h3>Legacy prompts need review</h3><p>These overrides cannot be mapped automatically. Copy any required instructions into the appropriate selected prompt override before removing the legacy entry.</p>{unresolved.map(([key, value]) => <div key={key}><strong>{key}</strong><pre style={{ whiteSpace: 'pre-wrap' }}>{isRecord(value) ? String(value['content'] ?? '') : String(value)}</pre><button type="button" onClick={() => onChange(current => ({ ...current, prompt_overrides: Object.fromEntries(Object.entries(current.prompt_overrides).filter(([name]) => name !== key)), prompt_override_removals: [...current.prompt_override_removals, key] }))}>Remove legacy override {key}</button></div>)}</section>}
@@ -287,7 +287,7 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
           <span className="wizard-prompt-nav-group" aria-hidden="true">Optional context</span>
           {tabs.filter(tab => tab.group === 'context').map(renderTab)}
         </div>
-        {hitlPhases.length > 0 && <p className="wizard-caption wizard-prompt-nav-note">HITL, no prompt needed: {hitlPhases.map(phase => PHASE_LABELS[phase]).join(', ')}</p>}
+        {hitlPhases.length > 0 && <p className="wizard-caption wizard-prompt-nav-note">Completed by a person, no prompt needed: {hitlPhases.map(phase => PHASE_LABELS[phase]).join(', ')}</p>}
       </nav>
       <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-tab-${tabKey(active.id)}`} className="glass-panel wizard-prompt-tabpanel">
         <header className="wizard-prompt-tabpanel-head">

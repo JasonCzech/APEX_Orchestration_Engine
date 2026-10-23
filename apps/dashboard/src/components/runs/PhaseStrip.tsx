@@ -49,7 +49,7 @@ function segmentModifier(status: string): string {
 
 function segmentLabel(phase: PhaseName, status: string, attempt: number | null | undefined, entry?: PhaseStripSegment): string {
   const attemptSuffix = attempt != null ? ` (attempt ${attempt})` : ''
-  const owner = entry?.executor ? ` — ${entry.executor === 'hitl' ? 'HITL' : 'LangGraph'}` : ''
+  const owner = entry?.executor ? ` — ${entry.executor === 'hitl' ? 'Person' : 'Agent'}` : ''
   const actor = entry?.completed_by ? ` — completed by ${entry.completed_by}` : ''
   return `${PHASE_LABELS[phase]} — ${pipelineStatusLabel(status)}${attemptSuffix}${owner}${actor}`
 }
@@ -109,7 +109,7 @@ export function PhaseStrip({
               </span>
               <span className="phase-step-copy">
                 <span className="phase-step-name">{PHASE_LABELS[phase]}</span>
-                {entry?.executor && <span className="phase-step-status">{entry.executor === 'hitl' ? 'HITL' : 'LangGraph'}{entry.completed_by ? ` · ${entry.completed_by}` : ''}</span>}
+                {entry?.executor && <span className="phase-step-status">{entry.executor === 'hitl' ? 'Person' : 'Agent'}{entry.completed_by ? ` · ${entry.completed_by}` : ''}</span>}
                 <span className="phase-step-status">{status === NONE ? 'Not selected' : pipelineStatusLabel(status)}</span>
               </span>
             </>

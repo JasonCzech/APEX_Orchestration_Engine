@@ -9,7 +9,8 @@ export function UsageFacetControls({ filters, isAdmin, onChange }: { filters: An
   const query = { from: filters.from, to: filters.to, project: filters.project, view: filters.view ?? (isAdmin ? 'authorized' as const : 'mine' as const), q: search }
   const facets = useQuery({ queryKey: ['analytics', 'facets', query], queryFn: async () => {
     const r = await getApexClient().GET('/v1/analytics/agents/facets', { params: { query } })
-    if (!r.data) throw new Error('Usage filter choices could not be loaded.')
+    // A malformed response must surface as this control's error, never crash the page.
+    if (!r.data || !Array.isArray(r.data.applications) || !Array.isArray(r.data.users)) throw new Error('Usage filter choices could not be loaded.')
     return r.data
   } })
   const selectedApp = filters.project && filters.app ? `${filters.project.length}:${filters.project}${filters.app.length}:${filters.app}` : ''

@@ -31,9 +31,9 @@ import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { PreflightModal } from './PreflightModal'
 import { rerunRestriction } from './rerunCapability'
 import { RerunGuidance } from './RerunGuidance'
-import { runReviewPath } from './reviewPath'
 import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, withLiveRunningPhase, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
+import { decisionOutcomeLabel } from '@/hitl/decisionOutcome'
 import './run-detail.css'
 import './live.css'
 
@@ -127,6 +127,24 @@ export function RunWorkspace({
   // Busy-run abort always probes the engine kill switch first; the backend can
   // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
+  // Run detail confirms its own decisions; the review queue (embedded) keeps
+  // its receipt above the queue instead.
+  const [receipt, setReceipt] = useState<{ label: string; phase: PhaseName | null; at: string } | null>(null)
+  const lastGate = useRef(hitl.gate)
+  if (hitl.gate) lastGate.current = hitl.gate
+  const accepted = hitl.lastAccepted
+  useEffect(() => {
+    if (embedded || !accepted || accepted.action === 'discuss' || accepted.action === 'modify') return
+    const gate = lastGate.current?.interrupt_id === accepted.interruptId ? lastGate.current : null
+    setReceipt({
+      label: decisionOutcomeLabel(accepted.action, gate?.kind),
+      phase: gate && isPhaseName(gate.phase) ? gate.phase : null,
+      at: new Date().toISOString(),
+    })
+  }, [accepted, embedded])
+  // Opening a run that already waits on a decision lands on it; a gate that
+  // appears while someone reads the overview must not move them.
+  const firstSnapshot = useRef(true)
 
 
   useEffect(() => {
@@ -176,11 +194,21 @@ export function RunWorkspace({
   if (!embedded && overview && new URLSearchParams(search).has('tab')) {
     return <Navigate to={`/runs/${threadId}/phases/${selectedPhase}${search}`} replace />
   }
+  // A run waiting on a decision opens on that decision (the gate is pinned
+  // above its phase workspace); ?view=overview keeps the overview reachable.
+  const gatePhase = detail.pending_gate && isPhaseName(detail.pending_gate.phase) ? detail.pending_gate.phase : null
+  const openOnDecision = firstSnapshot.current && !embedded && overview && gatePhase && new URLSearchParams(search).get('view') !== 'overview'
+  firstSnapshot.current = false
+  if (openOnDecision) {
+    return <Navigate to={`/runs/${threadId}/phases/${gatePhase}`} replace />
+  }
+  // Links back to the overview must not land on a pending decision instead.
+  const overviewPath = `/runs/${threadId}${gatePhase || hitl.gate ? '?view=overview' : ''}`
 
   const logsSearchParams = new URLSearchParams({
     thread: threadId,
     run: detail.title ?? threadId,
-    returnTo: embedded ? `${pathname}${search}` : `/runs/${threadId}`,
+    returnTo: `${pathname}${search}`,
   })
   if (detail.created_at) logsSearchParams.set('from', detail.created_at)
   if (detail.updated_at) logsSearchParams.set('to', detail.updated_at)
@@ -215,6 +243,7 @@ export function RunWorkspace({
       />
     ))
 
+  const reviewing = !embedded && section === 'workspace' && Boolean(hitl.gate) && hitl.gate?.phase === selectedPhase
   const currentSearchParams = new URLSearchParams(search)
   const workspaceTab = currentSearchParams.get('tab')
   const workspacePath = `/runs/${threadId}/phases/${selectedPhase}${workspaceTab ? `?tab=${encodeURIComponent(workspaceTab)}` : ''}`
@@ -222,7 +251,7 @@ export function RunWorkspace({
   if (workspaceTab) timelineSearchParams.set('tab', workspaceTab)
   const timelinePath = `/runs/${threadId}/timeline?${timelineSearchParams}`
   const expandedPath = overview
-    ? `/runs/${threadId}`
+    ? overviewPath
     : timeline
       ? timelinePath
       : workspacePath
@@ -240,6 +269,7 @@ export function RunWorkspace({
         Some recorded evidence was omitted from this snapshot because it exceeds the display limit. The displayed history may be incomplete.
       </p>}
       <header className="run-detail-header">
+        <div className="run-detail-summary">
         <div className="run-detail-heading">
           {embedded && <span className="run-workspace-kicker">Run workspace</span>}
           <h2 ref={headingRef} tabIndex={embedded ? -1 : undefined} className="run-detail-title">
@@ -260,7 +290,9 @@ export function RunWorkspace({
             schema drift
           </span>
         )}
-        <span className="spacer" />
+        </div>
+        {/* Actions keep one position beside the summary, whatever the title length. */}
+        <div className="run-detail-actions">
         {(!embedded || showEmbeddedControls) && <RequireRole role="operator">
           <CopyTestSetupButton key={threadId} threadId={threadId} />
           {!hitl.gate && detail.thread_status === 'busy' ? (
@@ -271,7 +303,9 @@ export function RunWorkspace({
               onConfirm={() => abortRun.mutate()}
             />
           ) : null}
-          {rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <span className="split-button">
+          {/* A run that failed before its plan resolved has nothing to re-run;
+              the overview offers Edit and relaunch instead. */}
+          {detail.failure && !progress.planRecorded ? null : rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <span className="split-button">
             <button
               type="button"
               className="btn btn-secondary btn-sm split-button-main"
@@ -312,7 +346,15 @@ export function RunWorkspace({
             </button>
           </>
         )}
+        </div>
       </header>
+      {receipt && (
+        <div className="tonal-card success run-decision-receipt" role="status">
+          <strong>Decision recorded</strong>
+          <span>{receipt.label}{receipt.phase ? ` · ${PHASE_LABELS[receipt.phase]}` : ''} · {formatTimestamp(receipt.at)}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setReceipt(null)}>Dismiss</button>
+        </div>
+      )}
       {abortRun.isError && (
         <div className="tonal-card danger" role="alert">
           Abort failed: {abortRun.error.message}
@@ -341,9 +383,9 @@ export function RunWorkspace({
           </>
         ) : (
           <>
-            {hitl.gate && <Link className="ux-section-link" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Review</Link>}
-            <Link className="ux-section-link" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
-            <Link className="ux-section-link" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
+            {hitl.gate && isPhaseName(hitl.gate.phase) && <Link className="ux-section-link" aria-current={reviewing ? 'page' : undefined} to={`/runs/${threadId}/phases/${hitl.gate.phase}`}>Review</Link>}
+            <Link className="ux-section-link" aria-current={overview ? 'page' : undefined} to={overviewPath}>Overview</Link>
+            <Link className="ux-section-link" aria-current={section === 'workspace' && !reviewing ? 'page' : undefined} to={workspacePath}>Workspace</Link>
             <Link className="ux-section-link" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
           </>
         )}
@@ -353,12 +395,12 @@ export function RunWorkspace({
           detail={detail}
           state={state}
           progress={progress}
-          returnTo={embedded ? `${pathname}${search}` : undefined}
+          returnTo={embedded ? `${pathname}${search}` : overviewPath}
           onOpenPhase={embedded ? (phase) => onSectionChange?.('workspace', phase) : undefined}
           onReviewGate={embedded && hitl.gate ? () => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase) : undefined}
         />
       ) : timeline ? (
-        <RunTimeline state={state} gate={pendingGate} />
+        <RunTimeline state={state} gate={pendingGate} failure={detail.failure ? { ...detail.failure, at: detail.updated_at } : null} />
       ) : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Test progress">
         <div className="run-pipeline-hero-head">

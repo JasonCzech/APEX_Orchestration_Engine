@@ -54,7 +54,7 @@ const ENGINE_CAPTIONS: Record<EngineId, { label: string; caption: string }> = {
 
 const GATES_MODES: { id: GatesMode; label: string; caption: string }[] = [
   { id: 'all_gated', label: 'Review every phase', caption: 'Every phase pauses for both reviews' },
-  { id: 'all_auto', label: 'Run automatically', caption: 'Agent phases run without review pauses; HITL completion is still required' },
+  { id: 'all_auto', label: 'Run automatically', caption: 'Agent phases run without review pauses; phases a person completes still wait for them' },
   { id: 'custom', label: 'Custom', caption: 'Pick per phase and per gate' },
 ]
 
@@ -340,7 +340,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       <WorkloadFields draft={draft} onChange={onChange} />
       <div className="wizard-field">
         <span className="wizard-label">Phase execution</span>
-        <p className="wizard-caption">All phases are completed in order. Selected phases are executed by LangGraph. Unselected phases wait for human completion.</p>
+        <p id="wizard-phase-execution-hint" className="wizard-caption">All phases are completed in order. Pressed phases are run by an agent; the others wait for a person to complete them.</p>
         <div className="wizard-phase-strip" role="group" aria-label="Phase execution">
           {PHASE_NAMES.map((phase) => (
             <button
@@ -349,16 +349,17 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               className={`wizard-phase-toggle${
                 phases.includes(phase) ? ' wizard-phase-toggle--on' : ''
               }${promptFocus === phase ? ' wizard-phase-toggle--focused' : ''}`}
-              aria-label={`${phaseLabel(phase)} — ${phases.includes(phase) ? 'LangGraph' : 'HITL'}`}
+              aria-label={phaseLabel(phase)}
+              aria-describedby="wizard-phase-execution-hint"
               aria-pressed={phases.includes(phase)}
               aria-current={promptFocus === phase ? 'step' : undefined}
               onClick={() => togglePhase(phase)}
             >
-              {phaseLabel(phase)}<span className="wizard-caption">{phases.includes(phase) ? 'LangGraph' : 'HITL'}</span>
+              {phaseLabel(phase)}<span className="wizard-caption" aria-hidden="true">{phases.includes(phase) ? 'Agent' : 'Person'}</span>
             </button>
           ))}
         </div>
-        {config.migrated_phase_ownership && <p className="tonal-card">This saved setup now assigns previously deselected phases to HITL. Each will pause for human completion.</p>}
+        {config.migrated_phase_ownership && <p className="tonal-card">This saved setup now assigns previously deselected phases to a person. Each will pause until they complete it.</p>}
         {hints.length > 0 && (
           <ul className="wizard-hint-list" data-testid="phase-dependency-hints">
             {hints.map((hint) => (

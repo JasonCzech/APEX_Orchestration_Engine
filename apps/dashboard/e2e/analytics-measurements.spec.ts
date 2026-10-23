@@ -11,6 +11,8 @@ test('analytics keeps missing measurements distinct from zero and preserves char
     if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: {}, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Analytics reviewer', role: 'admin', scopes: [] } }
     else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Analytics reviewer', consumer_type: 'dashboard', role: 'admin', scopes: [], is_unscoped: true, capabilities: {} }
     else if (path === '/v1/pipelines') json = { items: [], limit: 20, offset: 0 }
+    else if (path === '/v1/analytics/agents/events') json = { items: [], next_cursor: null, cost_visible: true }
+    else if (path === '/v1/analytics/agents/facets') json = { applications: [], users: [], truncated: false }
     else if (path === '/v1/analytics/agents') json = {
       window: { from: '2026-10-15T00:00:00Z', to: '2026-10-18T00:00:00Z', bucket: 'day', group_by: 'model' },
       cost_visible: true,
@@ -48,6 +50,8 @@ test('chart winners stay independent of table sorting across a bounded populatio
     if (url.pathname === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: {}, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Analytics reviewer', role: 'admin', scopes: [] } }
     else if (url.pathname === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Analytics reviewer', consumer_type: 'dashboard', role: 'admin', scopes: [], is_unscoped: true, capabilities: {} }
     else if (url.pathname === '/v1/pipelines') json = { items: [], limit: 20, offset: 0 }
+    else if (url.pathname === '/v1/analytics/agents/events') json = { items: [], next_cursor: null, cost_visible: true }
+    else if (url.pathname === '/v1/analytics/agents/facets') json = { applications: [], users: [], truncated: false }
     else if (url.pathname === '/v1/analytics/agents') {
       const sort = url.searchParams.get('sort')
       const sorted = [...rows].sort((a, b) => sort === 'key' ? a.key.localeCompare(b.key)

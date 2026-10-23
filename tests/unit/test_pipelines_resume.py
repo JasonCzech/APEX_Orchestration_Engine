@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -1850,6 +1850,168 @@ def test_copy_setup_preserves_selected_versions_without_manifest_or_target_autho
     assert "cycle_dispatch_id" not in exported["configurable"]
 
 
+def test_copy_setup_uses_the_submitted_launch_when_no_plan_was_recorded() -> None:
+    """A run that failed before plan_resolver has no checkpoint; copy what was sent."""
+    scope = {
+        "schema_version": 1,
+        "participants": [
+            {
+                "id": "backend",
+                "layer": "backend",
+                "project_id": "project-a",
+                "application_id": "app-a",
+                "environment_id": "env-a",
+            }
+        ],
+        "primary_participant_id": "backend",
+        "traffic_entry_participant_id": "backend",
+    }
+    selections = {
+        "system": {"prompt_id": "sys", "version_id": "sys-v1"},
+        "phases": {"story_analysis": {"prompt_id": "phase", "version_id": "phase-v2"}},
+    }
+    submitted = PipelineConfigurable.model_validate(
+        {
+            "phases": ["story_analysis"],
+            "project_id": "project-a",
+            "app_id": "app-a",
+            "environment_id": "env-a",
+            "test_scope": scope,
+            "prompt_selections": selections,
+        }
+    ).snapshot()
+
+    class SubmittedRuns(FakeRuns):
+        async def get(self, thread_id: str, run_id: str) -> JsonDict:
+            assert (thread_id, run_id) == ("t-1", "run-1")
+            configurable = {**submitted, "assistant_id": "pipeline", "langgraph_request_id": "r"}
+            return {"run_id": run_id, "kwargs": {"config": {"configurable": configurable}}}
+
+    runs = SubmittedRuns(
+        runs=[{"run_id": "run-1", "status": "error", "metadata": {}, "created_at": "2026-10-22"}]
+    )
+    state = {"values": {"title": "Failed launch", "request": "Check peak"}, "tasks": []}
+    threads = FakeThreads(
+        {"t-1": state}, metadata={"t-1": {"project_id": "project-a", "app_id": "app-a"}}
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 200
+    exported = response.json()
+    assert exported["title"] == "Failed launch"
+    assert exported["test_scope"]["primary_participant_id"] == "backend"
+    assert (
+        exported["configurable"]["prompt_selections"]["phases"]["story_analysis"]["version_id"]
+        == "phase-v2"
+    )
+    assert "prompt_manifest" not in exported["configurable"]
+
+
+def _submitted_setup_client(*, metadata: JsonDict, get_error: Exception | None = None):
+    submitted = PipelineConfigurable.model_validate(
+        {"phases": ["story_analysis"], "project_id": "project-a", "app_id": "app-a"}
+    ).snapshot()
+
+    class SubmittedRuns(FakeRuns):
+        async def get(self, thread_id: str, run_id: str) -> JsonDict:
+            if get_error is not None:
+                raise get_error
+            return {"run_id": run_id, "kwargs": {"config": {"configurable": submitted}}}
+
+    runs = SubmittedRuns(
+        runs=[{"run_id": "run-1", "status": "error", "metadata": {}, "created_at": "2026-10-22"}]
+    )
+    state = {"values": {"title": "Failed launch"}, "tasks": []}
+    return FakeClient(FakeThreads({"t-1": state}, metadata={"t-1": metadata}), runs)
+
+
+def test_copy_setup_fallback_still_enforces_thread_ownership() -> None:
+    client = _submitted_setup_client(metadata={"project_id": "project-b", "app_id": "app-b"})
+    with TestClient(make_app(client)) as http:
+        response = http.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 409
+
+
+def test_copy_setup_reports_a_provider_outage_as_unavailable() -> None:
+    client = _submitted_setup_client(
+        metadata={"project_id": "project-a", "app_id": "app-a"},
+        get_error=httpx.ConnectError("runtime down"),
+    )
+    with TestClient(make_app(client)) as http:
+        response = http.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 502
+
+
+def test_copy_setup_does_not_fall_back_over_a_malformed_checkpoint() -> None:
+    client = _submitted_setup_client(metadata={"project_id": "project-a", "app_id": "app-a"})
+    client.threads.states["t-1"]["values"]["run_config"] = "corrupted"
+    with TestClient(make_app(client)) as http:
+        response = http.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 409
+
+
+def test_pipeline_detail_carries_the_safe_failure_reason() -> None:
+    class ErroredThreads(FakeThreads):
+        async def get(self, thread_id: str) -> JsonDict:
+            return {
+                **await super().get(thread_id),
+                "status": "error",
+                "error": {
+                    "error": "ValueError",
+                    "message": "This test is missing its persisted prompt manifest",
+                },
+            }
+
+    state = {"values": {"title": "Failed launch"}, "tasks": []}
+    threads = ErroredThreads({"t-1": state}, metadata={"t-1": {"project_id": "project-a"}})
+    with TestClient(make_app(FakeClient(threads, FakeRuns()))) as http:
+        response = http.get("/v1/pipelines/t-1")
+    assert response.status_code == 200
+    assert response.json()["failure"]["kind"] == "prompt_manifest_missing"
+    assert "persisted prompt manifest" not in response.json()["failure"]["message"]
+
+
+def test_copy_setup_refusal_names_the_next_step() -> None:
+    state = {"values": {"title": "Failed launch"}, "tasks": []}
+    threads = FakeThreads({"t-1": state}, metadata={"t-1": {"project_id": "project-a"}})
+    with TestClient(make_app(FakeClient(threads, FakeRuns()))) as client:
+        response = client.get("/v1/pipelines/t-1/setup")
+    assert response.status_code == 409
+    assert "Start a new test" in response.json()["title"]
+
+
+@pytest.mark.parametrize(
+    "error,kind,error_type",
+    [
+        (
+            {
+                "error": "ValueError",
+                "message": "This test is missing its persisted prompt manifest",
+            },
+            "prompt_manifest_missing",
+            None,
+        ),
+        (
+            {"error": "RuntimeError", "message": "token=abc leaked"},
+            "unexpected_error",
+            "RuntimeError",
+        ),
+        ('{"error": "KeyError", "message": "x"}', "unexpected_error", "KeyError"),
+        ({"error": "bad type<script>", "message": "x"}, "unexpected_error", None),
+        (None, "unexpected_error", None),
+    ],
+)
+def test_run_failure_projection_never_exposes_raw_exception_text(error, kind, error_type) -> None:
+    from apex.services.pipeline_read import public_run_failure
+
+    failure = public_run_failure({"status": "error", "error": error})
+    assert failure is not None
+    assert failure["kind"] == kind
+    assert failure["error_type"] == error_type
+    assert "leaked" not in failure["message"]
+    assert public_run_failure({"status": "idle", "error": error}) is None
+
+
 @pytest.mark.parametrize(
     "case,expected",
     [("valid", 202), ("stale", 409), ("invalid", 422), ("viewer", 403), ("duplicate", 409)],
@@ -2008,3 +2170,78 @@ def test_owned_rerun_keeps_full_frozen_prompt_choices_for_subsequent_reruns():
         ).prompt_manifest
         == cfg.prompt_manifest
     )
+
+
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (HTTPException(409, "Model gpt-4o is archived; select an active model"), 409),
+        (ConnectionError("catalog down"), 503),
+        (None, 202),
+    ],
+)
+def test_rerun_admits_its_models_before_create(monkeypatch, error, status) -> None:
+    admitted: list[tuple[str, str, JsonDict]] = []
+
+    async def admit(configurable, *, thread_id, actor_id, resume=False):
+        admitted.append((thread_id, actor_id, dict(configurable)))
+        if error is not None:
+            raise error
+        return {"execution": "pinned-model"}
+
+    monkeypatch.setattr("apex.services.pipeline_read.admit_models", admit)
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                trusted_rerun_snapshot(),
+                phase_results={"execution": {"status": "succeeded", "attempt": 4}},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={"phases": ["execution"], "gates_mode": "inherit", "idempotency_key": "k-1"},
+        )
+
+    assert response.status_code == status
+    assert len(admitted) == 1 and admitted[0][0] == "t-1"
+    if status == 202:
+        configurable = runs.create_calls[0]["config"]["configurable"]
+        assert configurable["model_by_phase"] == {"execution": "pinned-model"}
+    else:
+        assert runs.create_calls == []
+
+
+def test_rerun_rechecks_analysis_readiness_before_create(monkeypatch) -> None:
+    async def unavailable(_config) -> None:
+        raise ValueError("connection removed")
+
+    monkeypatch.setattr("apex.services.analysis_readiness.require_analysis_readiness", unavailable)
+    snapshot = trusted_rerun_snapshot()
+    snapshot["analysis"] = {
+        "schema_version": 1,
+        "selections": [{"tool": "lra_engine", "connection_id": "conn-lra"}],
+        "timeout_s": 1800,
+    }
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                PipelineConfigurable.model_validate(snapshot).snapshot(),
+                phase_results={"execution": {"status": "succeeded", "attempt": 4}},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={"phases": ["execution"], "gates_mode": "inherit", "idempotency_key": "k-2"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["title"] == "Analysis configuration is unavailable or incompatible"
+    assert runs.create_calls == []

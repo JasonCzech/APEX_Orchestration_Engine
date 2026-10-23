@@ -98,3 +98,23 @@ it('retains an explicit unknown-provider filter when drilling into legacy usage'
   await waitFor(() => expect(new URLSearchParams(router.state.location.search).has('provider')).toBe(true))
   await waitFor(() => expect(requests.some(p => p.has('provider') && p.get('provider') === '')).toBe(true))
 })
+
+it('keeps the analytics page up when the usage history response is malformed', async () => {
+  server.use(
+    http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS_FIXTURE)),
+    http.get('*/v1/analytics/agents/events', () => HttpResponse.json({})),
+  )
+  renderApp({ initialEntries: ['/analytics'], authState: authenticatedState('viewer') })
+  expect(await screen.findByRole('heading', { name: 'My usage', level: 2 })).toBeInTheDocument()
+  expect(await screen.findByText(/Usage history could not be loaded/)).toBeInTheDocument()
+})
+
+it('keeps the analytics page up when the filter choices response is malformed', async () => {
+  server.use(
+    http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS_FIXTURE)),
+    http.get('*/v1/analytics/agents/facets', () => HttpResponse.json({})),
+  )
+  renderApp({ initialEntries: ['/analytics?project=p&app=a'], authState: authenticatedState('viewer') })
+  expect(await screen.findByRole('heading', { name: 'My usage', level: 2 })).toBeInTheDocument()
+  expect(await screen.findByText(/Usage filter choices could not be loaded/)).toBeInTheDocument()
+})

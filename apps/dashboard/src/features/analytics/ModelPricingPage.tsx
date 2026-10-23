@@ -35,7 +35,7 @@ export function ModelPricingPage() {
     return data as unknown as { items: Model[]; total: number }
   } })
   function filter(key: string, value: string) { setParams(prev => { const next = new URLSearchParams(prev); if (value) next.set(key, value); else next.delete(key); if (key !== 'offset') next.delete('offset'); return next }) }
-  if (!allowed) return <section className="glass-panel pricing-page"><h1>Model pricing</h1><p>Pricing management requires an unrestricted platform administrator.</p><Link to="/analytics">Return to your usage</Link></section>
+  if (!allowed) return <section className="glass-panel pricing-page"><h2>Administrator access required</h2><p>Pricing management requires an unrestricted platform administrator.</p><Link to="/analytics">Return to your usage</Link></section>
   const offset = Number(params.get('offset') ?? 0)
   return <section className="pricing-page animate-enter">
     <header className="pricing-heading"><div><Link to="/analytics">← Agent analytics</Link><h2>Rates &amp; availability</h2><p>Manage rates and model availability. Usage and price history are retained.</p></div><span className="pricing-unit">USD / million tokens</span></header>

@@ -130,8 +130,14 @@
 }
 
 .runs-phase-progress {
-  font-family: var(--font-mono);
-  font-weight: 700;
+  display: block;
+  margin-top: 4px;
+  font-weight: 600;
+  white-space: normal;
+}
+
+.runs-actions-stack .btn {
+  white-space: nowrap;
 }
 
 .runs-time {
@@ -182,12 +188,15 @@
 
 .runs-master-items {
   display: grid;
+  /* minmax(0, 1fr): long titles must not widen the column past the rail. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 
 .runs-master-item {
   appearance: none;
   width: 100%;
+  min-width: 0;
   display: grid;
   gap: 8px;
   padding: 12px;
@@ -225,10 +234,16 @@
   white-space: nowrap;
 }
 
+.runs-master-item-head {
+  flex-wrap: wrap;
+}
+
 .runs-master-item-head .status-badge {
   flex: 0 0 auto;
-  max-width: 46%;
-  white-space: normal;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: center;
 }
 

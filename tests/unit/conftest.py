@@ -27,3 +27,18 @@ def isolate_pricing_startup(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("apex.services.model_pricing.initialize_pricing", ready)
     monkeypatch.setattr("apex.services.model_pricing.run_pricing_worker", worker)
+
+
+@pytest.fixture(autouse=True)
+def isolate_model_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Facade launches admit models against the database; unit tests are hermetic.
+
+    The stand-in returns the caller's explicit choices unchanged, so existing
+    configurable assertions hold. Admission itself has database-backed tests,
+    and facade tests that exercise it replace this stand-in.
+    """
+
+    async def admit(configurable, *, thread_id, actor_id, resume=False):
+        return dict(configurable.get("model_by_phase") or {})
+
+    monkeypatch.setattr("apex.services.pipeline_read.admit_models", admit)

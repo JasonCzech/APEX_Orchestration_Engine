@@ -13,8 +13,10 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -53,6 +55,7 @@ from apex.services.langgraph_client import (
     delete_native_thread_definitively,
 )
 from apex.services.launch_locks import LaunchLockManager
+from apex.services.model_pricing import admit_models
 from apex.services.pipeline_public import (
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_NODES,
@@ -203,6 +206,62 @@ class PromptReviewConflictError(Exception):
 
 class RerunConfigurationConflictError(Exception):
     """The durable rerun snapshot is missing, malformed, or ownership-drifted."""
+
+
+class ModelAdmissionError(LaunchReadinessError):
+    """A selected model is not allowlisted, archived, or otherwise invalid."""
+
+    def __init__(self, message: str, *, status_code: int = 422) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ModelAdmissionUnavailableError(Exception):
+    """Model admission could not be checked; the launch may be retried."""
+
+
+# Configurable fields an assistant may supply that change which models a run
+# uses. A sparse launch inherits them, as the native runtime merge would.
+_ADMISSION_INHERITED_FIELDS = ("model_by_phase", "phase_execution")
+
+
+async def _admit_run_models(
+    run_configurable: JsonDict,
+    *,
+    thread_id: str,
+    actor_id: str,
+    resume: bool = False,
+    inherited: JsonDict | None = None,
+) -> None:
+    """Admit and pin the run's per-phase models, as the native run hook does.
+
+    In-process SDK calls bypass LangGraph auth, so facade launches and reruns
+    must run admission themselves: refuse non-allowlisted or archived models,
+    record the admission for the thread, and pin defaults so a later default
+    change cannot alter this run's model choices. ``resume`` retains a thread's
+    earlier admission (a bound launch retried on its existing thread).
+    """
+    from fastapi import HTTPException
+
+    basis = dict(run_configurable)
+    for key in _ADMISSION_INHERITED_FIELDS:
+        if key not in basis and inherited is not None and inherited.get(key) is not None:
+            basis[key] = inherited[key]
+    try:
+        resolved = await admit_models(basis, thread_id=thread_id, actor_id=actor_id, resume=resume)
+    except HTTPException as exc:
+        raise ModelAdmissionError(
+            str(exc.detail), status_code=409 if exc.status_code == 409 else 422
+        ) from None
+    except ValueError:
+        raise ModelAdmissionError("Selected models are invalid for this test") from None
+    except Exception as exc:  # noqa: BLE001 - catalog/database boundary normalization
+        logger.warning("pipeline.model_admission_unavailable", error_type=safe_type_name(exc))
+        raise ModelAdmissionUnavailableError(
+            "Model availability cannot be checked; retry later"
+        ) from None
+    if resolved:
+        run_configurable["model_by_phase"] = resolved
 
 
 class CycleRerunConflictError(RerunConfigurationConflictError):
@@ -657,6 +716,48 @@ def _public_test_scope(value: Any) -> JsonDict | None:
         return None
 
 
+# Graph errors whose cause the operator can act on. Raw exception text is never
+# exposed: an unmatched error shows only its type and a generic next step.
+_KNOWN_RUN_FAILURES = (
+    (
+        "This test is missing its persisted prompt manifest",
+        "prompt_manifest_missing",
+        "The selected prompts were not frozen when this test launched, so its phases "
+        "could not run. Use Edit and relaunch to start it again.",
+    ),
+)
+_UNEXPECTED_RUN_FAILURE = (
+    "Orchestration stopped with an unexpected error. Check the logs for this run's "
+    "time window, then re-run the failed phases or create a new test from this run."
+)
+_ERROR_TYPE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
+
+
+def public_run_failure(thread: JsonDict) -> JsonDict | None:
+    """Safe failure reason for a thread whose last run raised in the graph."""
+    if type(thread) is not dict or thread.get("status") != "error":
+        return None
+    raw = thread.get("error")
+    if type(raw) is str:
+        try:
+            raw = json.loads(raw) if len(raw) <= 20_000 else None
+        except (ValueError, RecursionError):
+            raw = {"message": raw}
+    error = raw if type(raw) is dict else {}
+    error_type = error.get("error")
+    message = error.get("message")
+    for known, kind, text in _KNOWN_RUN_FAILURES:
+        if message == known:
+            return {"kind": kind, "message": text, "error_type": None}
+    return {
+        "kind": "unexpected_error",
+        "message": _UNEXPECTED_RUN_FAILURE,
+        "error_type": error_type
+        if type(error_type) is str and _ERROR_TYPE_PATTERN.fullmatch(error_type)
+        else None,
+    }
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     raw_values = thread.get("values")
@@ -813,11 +914,16 @@ class PipelineReadService:
         context_packets: list[JsonDict] | None = None,
         principal_id: str | None = None,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None = None,
+        prepare_configurable: Callable[[JsonDict, JsonDict], Awaitable[None]] | None = None,
         reuse_existing_thread: bool = False,
         recovery_only: bool = False,
         request_intent: str | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
+
+        ``prepare_configurable`` adds server-owned fields (the frozen prompt
+        manifest) to a new run's configurable. In-process SDK calls bypass the
+        native run-create auth hook, so the facade must prepare them itself.
 
         Convenience entrypoint for external clients (e.g. a results-analysis dashboard):
         wraps thread-create + run-start over the loopback API so callers don't drive the
@@ -878,6 +984,18 @@ class PipelineReadService:
             run_configurable = dict(configurable)
             if run_configurable.get("rerun_phases") is not None:
                 raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
+            if run_configurable.get("prompt_manifest") is not None:
+                raise ValueError("prompt_manifest is server-owned")
+            if RUNTIME_ACTOR_ID_KEY in run_configurable:
+                raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
+            if (
+                run_configurable.get("prompt_selections") is not None
+                and prepare_configurable is None
+                and not recovery_only
+            ):
+                # The plan resolver refuses selections without a manifest. Reject
+                # here instead of starting a run that can only fail.
+                raise LaunchValidationError("prompt selections require a prepared manifest")
         if phases is not None and (
             type(phases) is not list
             or len(phases) > len(PHASE_ORDER)
@@ -1102,6 +1220,8 @@ class PipelineReadService:
                     run_configurable=run_configurable,
                     recursion_limit=recursion_limit,
                     before_run_start=before_run_start,
+                    prepare_configurable=prepare_configurable,
+                    admission_actor=principal_id or "pipeline-facade",
                     reuse_existing_thread=reuse_existing_thread,
                     recovery_only=recovery_only,
                 )
@@ -1115,6 +1235,8 @@ class PipelineReadService:
             run_configurable=run_configurable,
             recursion_limit=recursion_limit,
             before_run_start=before_run_start,
+            prepare_configurable=prepare_configurable,
+            admission_actor=principal_id or "pipeline-facade",
             reuse_existing_thread=reuse_existing_thread,
             recovery_only=recovery_only,
         )
@@ -1133,15 +1255,17 @@ class PipelineReadService:
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None,
         reuse_existing_thread: bool,
         recovery_only: bool = False,
+        prepare_configurable: Callable[[JsonDict, JsonDict], Awaitable[None]] | None = None,
+        admission_actor: str = "pipeline-facade",
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
         thread_id: str | None = None
         thread_metadata: JsonDict | None = None
         thread_error_type: str | None = None
+        create_thread = True
         try:
             thread_response = None
-            create_thread = True
             if (reuse_existing_thread or recovery_only) and deterministic_thread_id is not None:
                 create_thread = False
                 try:
@@ -1217,27 +1341,49 @@ class PipelineReadService:
         if recovery_only:
             raise LaunchValidationError("No submitted legacy run; complete test_scope")
 
-        if before_run_start is not None:
-            try:
-                generated_context_packets = await before_run_start(thread_id)
-            except LaunchReadinessError:
-                # No run has been submitted. Preserve deterministic claims, but
-                # remove a fresh random thread rejected by this metadata check.
-                if deterministic_thread_id is None:
-                    try:
-                        await delete_native_thread_definitively(self._client, thread_id)
-                    except Exception as cleanup_exc:
-                        logger.warning(
-                            "pipeline.rejected_launch_thread_cleanup_failed",
-                            thread_id=thread_id,
-                            error_type=safe_type_name(cleanup_exc),
-                        )
-                raise
-            if generated_context_packets:
-                existing_context_packets = run_input.get("context_packets", [])
-                run_input["context_packets"] = validate_context_packets(
-                    [*existing_context_packets, *generated_context_packets]
-                )
+        try:
+            # Prepare only a run that will be submitted; an adopted replay
+            # above keeps the configuration it was created with.
+            # A sparse launch (no frozen test_scope snapshot) still inherits the
+            # assistant's model choices at run time; admit what it will use.
+            inherited = None
+            if run_configurable.get("test_scope") is None:
+                # Best effort: a missing assistant fails at run creation below
+                # with the provider's own error.
+                with contextlib.suppress(LaunchValidationError):
+                    inherited = await self.assistant_launch_defaults(selected_assistant_id)
+            await _admit_run_models(
+                run_configurable,
+                thread_id=thread_id,
+                actor_id=admission_actor,
+                # A thread bound by an earlier attempt (Cycle dispatch) already
+                # passed admission; keep its choices rather than re-deciding.
+                resume=not create_thread,
+                inherited=inherited,
+            )
+            if prepare_configurable is not None:
+                await prepare_configurable(run_configurable, run_input)
+            generated_context_packets = (
+                await before_run_start(thread_id) if before_run_start is not None else None
+            )
+        except (LaunchReadinessError, ModelAdmissionUnavailableError):
+            # No run has been submitted. Preserve deterministic claims, but
+            # remove a fresh random thread rejected by this metadata check.
+            if deterministic_thread_id is None:
+                try:
+                    await delete_native_thread_definitively(self._client, thread_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "pipeline.rejected_launch_thread_cleanup_failed",
+                        thread_id=thread_id,
+                        error_type=safe_type_name(cleanup_exc),
+                    )
+            raise
+        if generated_context_packets:
+            existing_context_packets = run_input.get("context_packets", [])
+            run_input["context_packets"] = validate_context_packets(
+                [*existing_context_packets, *generated_context_packets]
+            )
 
         run_id: str | None = None
         create_conflict = False
@@ -1530,16 +1676,23 @@ class PipelineReadService:
             **summary,
             "values": values,
             "interrupts": gates,
+            "failure": public_run_failure(thread),
         }
 
     async def get_test_setup(self, thread_id: str) -> JsonDict:
         """Export editable setup, never server-owned execution authority or manifest."""
         thread, state = await _thread_and_state_definitively(self._client, thread_id)
-        cfg = _validated_durable_replay_config(_run_config_from_state(state))
-        _ensure_durable_config_ownership(cfg, thread)
-        raw_values = state.get("values") or {}
+        raw_values = state.get("values") if type(state) is dict else None
         if type(raw_values) is not dict:
             raise ValueError("Stored test setup is invalid")
+        if raw_values.get("run_config") is not None:
+            # A present but malformed contract fails closed in validation.
+            cfg = _validated_durable_replay_config(_run_config_from_state(state))
+        else:
+            # A run that failed before its plan resolved has no checkpointed
+            # contract. Copy what was submitted; the new launch revalidates it.
+            cfg = await self._submitted_launch_config(thread_id, thread)
+        _ensure_durable_config_ownership(cfg, thread)
         snapshot = cfg.snapshot()
         allowed = {
             "engine",
@@ -1566,6 +1719,67 @@ class PipelineReadService:
             "test_scope": cfg.test_scope.model_dump(mode="json") if cfg.test_scope else None,
             "configurable": configurable,
         }
+
+    async def _submitted_launch_config(
+        self, thread_id: str, thread: JsonDict
+    ) -> PipelineConfigurable:
+        """The editable configurable a launch root run was submitted with."""
+        metadata = thread.get("metadata") if type(thread) is dict else None
+        fingerprint = (
+            metadata.get("launch_idempotency_fingerprint") if type(metadata) is dict else None
+        )
+        root = await self._find_launch_root_run(
+            thread_id, request_fingerprint=fingerprint if type(fingerprint) is str else None
+        )
+        if root is None:
+            raise RerunConfigurationConflictError("No submitted launch is recorded")
+        root_id = validated_native_identifier(root.get("run_id"), label="test setup copy")
+        # The native response carries the original kwargs even though the SDK's
+        # public TypedDict omits them.
+        try:
+            stored_run = await self._client.runs.get(thread_id, root_id)
+        except NotFoundError:
+            raise RerunConfigurationConflictError("Submitted launch is unavailable") from None
+        except Exception as exc:  # noqa: BLE001 - provider boundary normalization
+            logger.warning("pipeline.setup_copy_run_read_failed", error_type=safe_type_name(exc))
+            raise LaunchProviderError("pipeline setup copy failed") from None
+        kwargs = stored_run.get("kwargs") if type(stored_run) is dict else None
+        config = kwargs.get("config") if type(kwargs) is dict else None
+        configurable = config.get("configurable") if type(config) is dict else None
+        if type(configurable) is not dict:
+            raise RerunConfigurationConflictError("Submitted launch configuration is unavailable")
+        submitted = {
+            key: value
+            for key, value in configurable.items()
+            if type(key) is str and key in PipelineConfigurable.model_fields
+        }
+        submitted.pop("prompt_manifest", None)
+        invalid = False
+        try:
+            validate_json_object(
+                submitted,
+                label="submitted pipeline configuration",
+                max_bytes=5_000_000,
+                max_nodes=20_000,
+            )
+        except ValueError:
+            invalid = True
+        if invalid or contains_credential_material(submitted, max_total_chars=5_000_000):
+            raise RerunConfigurationConflictError("Submitted launch configuration is invalid")
+        validated: PipelineConfigurable | None = None
+        try:
+            validated = PipelineConfigurable.model_validate(submitted)
+        except (TypeError, ValueError):
+            pass
+        if validated is None:
+            raise RerunConfigurationConflictError("Submitted launch configuration is invalid")
+        # The same provider-selector barrier as a durable replay: a copy must not
+        # carry legacy caller-controlled workload selectors into a new draft.
+        if _UNSAFE_DURABLE_REPLAY_LOAD_TEST_FIELDS.intersection(validated.load_test):
+            raise RerunConfigurationConflictError(
+                "Submitted launch configuration contains untrusted provider selectors"
+            )
+        return validated
 
     async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
         """Effective prompt-review draft for a phase, with old-run fallback.
@@ -2099,6 +2313,22 @@ class PipelineReadService:
                     label="pipeline rerun reconciliation",
                 )
             _ensure_rerun_checkpoint_is_terminal(state)
+            if rerun_config.analysis is not None:
+                # A rerun is a new run, not a continuation: recheck the analysis
+                # tools it will call, as the native run hook would.
+                from apex.services.analysis_readiness import require_analysis_readiness
+
+                try:
+                    await require_analysis_readiness(rerun_config)
+                except ValueError:
+                    raise LaunchReadinessError(
+                        "Analysis configuration is unavailable or incompatible"
+                    ) from None
+            # Admission sees the rerun window; the fingerprint above stays the
+            # caller's request so an ambiguous retry still adopts its run.
+            await _admit_run_models(
+                run_config, thread_id=thread_id, actor_id=principal_id or "pipeline-facade"
+            )
             run: JsonDict | None = None
             conflict = False
             try:

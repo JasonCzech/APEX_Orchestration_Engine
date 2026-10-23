@@ -23,8 +23,8 @@ for (const profile of ['admin', 'operator'] as const) {
       else if (path === '/v1/pipelines/execution-readiness') {
         const body = request.postDataJSON()
         readinessRequests.push(body)
-        // The operator fixture uses a persisted connection; the admin fixture
-        // uses the permitted application-free development simulator.
+        // The operator's persisted execution connection needs the primary
+        // system's application; the admin's development simulator does not.
         const needsApplication = profile === 'operator' && !body.app_id
         json = { execution_selected: body.phases.includes('execution'), configuration_valid: !needsApplication, requires_application: profile === 'operator',
           detail: needsApplication ? 'Select an application for the configured execution connection' : null }
@@ -42,6 +42,9 @@ for (const profile of ['admin', 'operator'] as const) {
       else if (path === '/v1/prompts') json = [
         { id: 'system', namespace: 'system', key: 'default', phase: null, is_default: true, selection_enabled: true, active_version: { id: 'system-v1', version: 1 } },
         ...['story_analysis', 'test_planning', 'env_triage', 'script_scenario', 'execution', 'reporting', 'postmortem'].map(phase => ({ id: phase, namespace: 'phase', key: `${phase}/system`, phase, is_default: true, selection_enabled: true, active_version: { id: `${phase}-v1`, version: 1 } })),
+        // Application context is offered only for the systems in this test's scope.
+        { id: 'checkout-context', namespace: 'application', key: 'checkout-context', application_id: 'app', is_shared: false, selection_enabled: true, active_version: { id: 'checkout-context-v1', version: 1 } },
+        { id: 'billing-context', namespace: 'application', key: 'billing-context', application_id: 'other-app', is_shared: false, selection_enabled: true, active_version: { id: 'billing-context-v1', version: 1 } },
       ]
       else if (path.startsWith('/v1/prompts/')) json = { id: path.split('/').at(-1), version: 1, content: 'Default prompt instructions' }
       else if (path === '/v1/pipelines/analysis/connections') json = []
@@ -52,41 +55,43 @@ for (const profile of ['admin', 'operator'] as const) {
     await page.goto('/runs/new')
     await page.getByLabel('Title', { exact: true }).fill('Reviewed workload')
     await page.getByLabel('Request', { exact: true }).fill('Exercise the checkout request under reviewed load.')
-    if (profile === 'operator') await page.getByLabel('Project', { exact: true }).selectOption('workflow')
-    else await page.getByLabel('Project', { exact: true }).fill('workflow')
+    // Scope is a system topology: one backend card with its own catalog fields.
+    await page.getByRole('button', { name: 'Add backend', exact: true }).click()
+    await page.getByLabel('Project', { exact: true }).selectOption('workflow')
+    // Choosing the primary before its application lets readiness run for the
+    // operator, whose execution connection then asks for that application.
+    if (profile === 'operator') await page.getByRole('radio', { name: 'Primary system under test', exact: true }).check()
     await page.getByRole('tab', { name: 'Review', exact: true }).click()
-    if (profile === 'operator') {
-      await expect(page.getByTestId('review-issues')).toContainText('Select an application for the configured execution connection')
-      await expect(page.getByRole('button', { name: 'Launch test', exact: true })).toBeDisabled()
-    } else {
-      await expect(page.getByRole('button', { name: 'Launch test', exact: true })).toBeEnabled()
+    const issueName = profile === 'operator' ? /Select an application for the configured execution connection/ : /every participant/
+    const missing = page.getByTestId('review-issues').getByRole('button', { name: issueName })
+    await expect(missing).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Launch test', exact: true })).toBeDisabled()
+    const application = page.getByLabel('Application', { exact: true })
+    const expectVisibleApplicationFocus = async () => {
+      await expect(application).toBeFocused()
+      await expect.poll(() => application.evaluate(element => {
+        const field = element.getBoundingClientRect()
+        const footer = document.querySelector('.wizard-footer')!.getBoundingClientRect()
+        return field.top >= 0 && field.bottom + 4 <= footer.top &&
+          document.elementFromPoint(field.left + field.width / 2, field.top + field.height / 2) === element
+      })).toBe(true)
     }
-    expect(readinessRequests.at(-1)).toMatchObject({ project_id: 'workflow', engine: 'sim' })
-    expect(readinessRequests.at(-1)?.app_id).toBeUndefined()
-    if (profile === 'operator') {
-      const application = page.getByLabel('Application', { exact: true })
-      const expectVisibleApplicationFocus = async () => {
-        await expect(application).toBeFocused()
-        await expect.poll(() => application.evaluate(element => {
-          const field = element.getBoundingClientRect()
-          const footer = document.querySelector('.wizard-footer')!.getBoundingClientRect()
-          return field.top >= 0 && field.bottom + 4 <= footer.top &&
-            document.elementFromPoint(field.left + field.width / 2, field.top + field.height / 2) === element
-        })).toBe(true)
-      }
-      await page.getByTestId('review-issues').getByRole('button', { name: /Select an application/ }).click()
-      await expectVisibleApplicationFocus()
-      // Same-step issue links must reveal the target too, including a narrow
-      // viewport where the sticky footer wraps to multiple lines.
-      await page.setViewportSize({ width: 390, height: 800 })
-      await page.locator('#main-content').evaluate(element => { element.scrollTop = 0 })
-      await page.getByRole('list', { name: 'Items needing attention' }).getByRole('button', { name: /Select an application/ }).click()
-      await expectVisibleApplicationFocus()
-      await page.setViewportSize({ width: 1440, height: 900 })
-    } else await page.getByRole('tab', { name: 'Scope', exact: true }).click()
-    await page.getByLabel('Application', { exact: true }).selectOption('app')
+    // Readiness links land on the first missing field, visible above the footer.
+    await missing.click()
+    await expectVisibleApplicationFocus()
+    // Same-step issue links must reveal the target too, including a narrow
+    // viewport where the footer disclosure opens above the footer.
+    await page.setViewportSize({ width: 390, height: 800 })
+    await page.locator('#main-content').evaluate(element => { element.scrollTop = 0 })
+    await page.locator('.wizard-footer-issues > summary').click()
+    await page.getByRole('list', { name: 'Items needing attention' }).getByRole('button', { name: issueName }).click()
+    await expectVisibleApplicationFocus()
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await application.selectOption('app')
     await page.getByLabel('Environment', { exact: true }).selectOption('env')
     await expect(page.getByLabel('Environment', { exact: true }).locator('option:checked')).toHaveText('Unapproved staging · Target not approved')
+    await page.getByRole('radio', { name: 'Primary system under test', exact: true }).check()
+    await page.getByRole('radio', { name: 'Traffic entry', exact: true }).check()
     expect(await page.getByLabel('Title', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(640)
     await page.getByRole('tab', { name: 'Config', exact: true }).click()
     await page.getByRole('radio', { name: /^APEX Load/ }).click()
@@ -103,13 +108,17 @@ for (const profile of ['admin', 'operator'] as const) {
     await page.getByRole('tab', { name: 'Knowledge', exact: true }).click()
     await expect(page).toHaveURL(/step=knowledge/)
     await page.getByRole('tab', { name: 'Prompts', exact: true }).click()
-    await expect(page.getByTestId('prompt-selected-application')).toContainText('Checkout')
+    await page.getByRole('tablist', { name: 'Prompt selection' }).getByRole('tab', { name: /Application context/ }).click()
+    const appContext = page.getByRole('combobox', { name: 'Add Application context' })
+    await expect(appContext.locator('option', { hasText: 'checkout-context' })).toHaveCount(1)
+    await expect(appContext.locator('option', { hasText: 'billing-context' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Review test', exact: true }).click()
     await page.getByRole('button', { name: 'Launch test', exact: true }).click()
     await expect(page.getByRole('alert')).toContainText('Selected environment target changed')
     await expect(page.getByRole('alert')).toContainText('Retrying unchanged inputs on this page')
     await page.getByRole('button', { name: 'Retry launch', exact: true }).click()
     await expect(page).toHaveURL(/\/runs\/launched$/)
+    expect(readinessRequests.at(-1)).toMatchObject({ project_id: 'workflow', app_id: 'app', engine: 'sim' })
     expect(launches).toHaveLength(2)
     expect(launches[1]).toEqual(launches[0])
     expect(launches[0]?.configurable).toMatchObject({ environment_id: 'env', engine: 'sim', load_test: { vusers: 300, slas: { error_rate: 0.005, tps_avg: 85 } } })

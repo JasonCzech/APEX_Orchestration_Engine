@@ -29,8 +29,9 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await resetDemo(page)
 
   await page.goto('/runs/new?draft=draft-esim')
-  await expect(page.getByLabel('Title')).toHaveValue('ACC Add-a-Line Peak Certification')
-  await expect(page.getByLabel('Environment')).toHaveValue('env-perf')
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue('ACC Add-a-Line Peak Certification')
+  // The traffic entry's environment is the execution target.
+  await expect(page.locator('#wizard-environment option:checked')).toHaveText(/^PERFHYPER2\b/)
   await page.getByRole('tab', { name: 'Config', exact: true }).click()
   await expect(page.getByText(/pins engine “apexload”/)).toBeVisible()
   await page.getByRole('radio', { name: /APEX Load/ }).click()
@@ -54,7 +55,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await expect(page.getByRole('button', { name: /execution — pending/i })).toBeVisible()
 
   let gate = page.getByRole('region', { name: 'Review prompts' })
-  await gate.getByRole('tab', { name: 'Phase prompt' }).click()
+  await gate.getByRole('tab', { name: 'Phase context' }).click()
   await gate.getByRole('textbox').fill(
     'Plan eligibility rejection and asynchronous ACC add-a-line fulfillment coverage with retry idempotency and IBM MQ recovery.',
   )
@@ -62,12 +63,14 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await gate.getByText('Technical details', { exact: true }).click()
   await expect(gate.getByText(/int-prompt-revision-\d+/)).toBeVisible()
   await gate.getByRole('button', { name: /Execute Phase/i }).click()
-  await expect(page.getByText('Decision receipt', { exact: true })).toBeVisible()
+  // In Run detail a decision is confirmed by a receipt and the phase strip advancing.
+  await expect(page.getByRole('button', { name: /^Test Planning — Complete/ })).toBeVisible()
+  await expect(page.getByText('Decision recorded', { exact: true })).toBeVisible()
 
+  // A run waiting on a decision opens on it, inside Run detail.
   await page.goto(`/runs/${threadId}`)
-  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('href', /int-env_triage/)
-  await page.getByRole('link', { name: 'Review', exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/reviews/int-env_triage`))
+  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/env_triage(\\?|$)`))
+  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('aria-current', 'page')
   gate = page.getByRole('region', { name: 'Review phase results' })
   const composer = gate.getByLabel('Discuss with the agent')
   const exactDiscussion = 'Why did the MQ queue grow and what is the release risk?'
@@ -85,7 +88,8 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   gate = page.getByRole('region', { name: 'Review phase results' })
   await expect(gate.getByTestId('gate-summary')).toContainText(/PERFHYPER2 rescan is green/i)
   await gate.getByRole('button', { name: /Accept phase output & continue/i }).click()
-  await expect(page.getByText('Decision receipt', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Env Triage — Complete/ })).toBeVisible()
+  await expect(page.getByText('Decision recorded', { exact: true })).toBeVisible()
   await page.goto(`/runs/${threadId}/phases/execution?tab=log`)
   await expect(page.getByRole('button', { name: /execution — executing/i })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByRole('region', { name: 'Live engine stats' })).toContainText(/running/i, { timeout: 10_000 })
@@ -101,13 +105,13 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await gate.getByRole('button', { name: /Accept phase output & continue/i }).click()
   await expect(gate).not.toBeVisible()
   await page.goto(`/runs/${threadId}`)
-  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('href', /int-reporting/)
-  await page.getByRole('link', { name: 'Review', exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/reviews/int-reporting`))
+  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/reporting(\\?|$)`))
+  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('aria-current', 'page')
   gate = page.getByRole('region', { name: 'Review phase results' })
   await expect(gate.getByTestId('gate-summary')).toContainText(/PERF-248 will be created/i)
   await gate.getByRole('button', { name: /Accept phase output & continue/i }).click()
-  await expect(page.getByText('Decision receipt', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Reporting & Analysis — Complete/ })).toBeVisible()
+  await expect(page.getByText('Decision recorded', { exact: true })).toBeVisible()
   await page.goto(`/runs/${threadId}/phases/postmortem`)
   await expect(page.getByRole('button', { name: /postmortem — complete/i })).toBeVisible({ timeout: 25_000 })
   const committedDemoState = await page.evaluate(() => JSON.parse(localStorage.getItem('apex.demo.state.v1') ?? '{}'))
@@ -117,12 +121,14 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await expect(page.getByText(/"key": "PERF-248"/).first()).toBeVisible()
 
   await page.goto('/work-items')
+  await page.getByLabel('Work tracking project').selectOption('acc-perf')
   await page.getByLabel('Saved queries').selectOption({ label: 'Open performance defects' })
   await page.getByRole('button', { name: 'Execute' }).click()
   await expect(page.getByRole('link', { name: 'PERF-248', exact: true })).toBeVisible()
 
   await resetDemo(page)
   await page.goto('/work-items')
+  await page.getByLabel('Work tracking project').selectOption('acc-perf')
   await page.getByLabel('Saved queries').selectOption({ label: 'Open performance defects' })
   await page.getByRole('button', { name: 'Execute' }).click()
   await expect(page.getByRole('link', { name: 'PERF-248', exact: true })).toHaveCount(0)

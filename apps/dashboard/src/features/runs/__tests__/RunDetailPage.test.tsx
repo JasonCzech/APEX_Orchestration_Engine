@@ -88,6 +88,36 @@ describe('RunDetailPage', () => {
     }
   })
 
+  it('opens a run awaiting a decision on that decision, inside Run detail', async () => {
+    server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
+    const { router } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}/phases/reporting`))
+    const sections = await screen.findByRole('navigation', { name: 'Run sections' })
+    await waitFor(() => expect(within(sections).getByRole('link', { name: 'Review' })).toHaveAttribute('aria-current', 'page'))
+    expect(within(sections).getByRole('link', { name: 'Workspace' })).not.toHaveAttribute('aria-current')
+    const overviewLink = within(sections).getByRole('link', { name: 'Overview' })
+    expect(overviewLink).toHaveAttribute('href', `/runs/${THREAD_ID}?view=overview`)
+    expect(screen.getByTestId('gate-actions')).toBeInTheDocument()
+    await userEvent.setup().click(overviewLink)
+    expect(await screen.findByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('?view=overview')
+    // Links that return to the overview keep it, rather than the pending decision.
+    expect(screen.getByRole('link', { name: 'Logs' }).getAttribute('href')).toContain(encodeURIComponent(`/runs/${THREAD_ID}?view=overview`))
+  })
+
+  it('does not move someone off the overview when a decision appears later', async () => {
+    let detail = structuredClone(PIPELINE_DETAIL)
+    server.use(http.get('*/v1/pipelines/:threadId', () => HttpResponse.json(detail)))
+    const { router, queryClient } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    expect(await screen.findByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+    detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Run sections' })).getByRole('link', { name: 'Overview' }))
+      .toHaveAttribute('href', `/runs/${THREAD_ID}?view=overview`))
+    expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`)
+    expect(screen.getByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+  })
+
   it('uses pending output throughout the phase workspace without claiming acceptance or timing', async () => {
     const detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
     detail.current_phase = 'execution'
@@ -298,6 +328,55 @@ describe('RunDetailPage', () => {
     expect(snapshot?.state.prompt_reviews).toEqual({ story_analysis: validPrompt })
     expect(snapshot?.state.application_reviews).toEqual({ valid: validApplication })
     expect(screen.queryByText('Unexpected Application Error!')).not.toBeInTheDocument()
+  })
+
+  it('names a failure that stopped the run before any phase and offers relaunch instead of re-run', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
+      current_phase: null, phase_strip: [], values: {}, pending_gate: null, interrupts: [],
+      failure: { kind: 'prompt_manifest_missing' as const, error_type: null,
+        message: 'The selected prompts were not frozen when this test launched, so no phase could start. Create a new test from this run to relaunch it.' },
+    }
+    server.use(pipelineDetailHandler(detail))
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/were not frozen when this test launched/)).toBeInTheDocument()
+    expect(within(overview).queryByText('No failure or stop reason was recorded.')).not.toBeInTheDocument()
+    expect(within(overview).getByRole('button', { name: 'Edit and relaunch' })).toBeInTheDocument()
+    expect(within(overview).queryByRole('link', { name: /^Open / })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Re-run selected plan' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: 'Timeline' }))
+    const timeline = await screen.findByRole('region', { name: 'Run timeline' })
+    expect(within(timeline).getByText('Orchestration failed')).toBeInTheDocument()
+    expect(within(timeline).getByText(/were not frozen/)).toBeInTheDocument()
+  })
+
+  it('compares observed KPIs with the applied thresholds on the overview', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'idle',
+      values: { phases_plan: ['execution'], phase_results: { execution: { status: 'succeeded', attempt: 1,
+        test_summary: { engine: 'sim', passed: true, kpis: { p95_ms: 212 } }, acceptance_thresholds: { p95_ms: 500 } } } },
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const card = await screen.findByRole('article', { name: 'Requested vs observed' })
+    expect(within(card).getByRole('row', { name: /P95 response time ≤ 500 ms 212 ms Met/ })).toBeInTheDocument()
+  })
+
+  it('keeps re-run available when a failure follows a recorded plan', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
+      current_phase: 'test_planning', phase_strip: [{ phase: 'test_planning', status: 'failed', attempt: 1 }],
+      values: { phases_plan: ['test_planning'], current_phase: 'test_planning',
+        phase_results: { test_planning: { status: 'failed', attempt: 1 } } },
+      failure: { kind: 'unexpected_error' as const, error_type: 'RuntimeError',
+        message: 'Orchestration stopped with an unexpected error. Check the logs for this run\'s time window, then re-run the failed phases or create a new test from this run.' },
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/unexpected error/)).toBeInTheDocument()
+    expect(within(overview).getByText('(RuntimeError)')).toBeInTheDocument()
+    expect(within(overview).queryByRole('button', { name: 'Edit and relaunch' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Re-run selected plan' })).toBeInTheDocument()
   })
 
   it('describes absent bounded evidence as unavailable across overview and phase details', async () => {
@@ -529,7 +608,7 @@ describe('RunDetailPage', () => {
     expect(banner).toHaveTextContent('Reporting & Analysis')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
+      `/runs/${THREAD_ID}/phases/reporting`,
     )
   })
 

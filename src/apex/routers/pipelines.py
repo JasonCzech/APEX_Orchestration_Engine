@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
 from apex.auth.handlers import ensure_thread_scope
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
@@ -75,6 +75,8 @@ from apex.services.pipeline_read import (
     LaunchIdempotencyConflictError,
     LaunchProviderError,
     LaunchValidationError,
+    ModelAdmissionError,
+    ModelAdmissionUnavailableError,
     NoActiveRunError,
     PipelineReadService,
     PromptReviewConflictError,
@@ -105,6 +107,15 @@ PhaseParam = Annotated[NoNulStr, Path(min_length=1, max_length=64)]
 
 def _pipeline_runtime_unavailable() -> HTTPException:
     return HTTPException(status_code=502, detail="pipeline runtime unavailable")
+
+
+def _prompt_selection_error(detail: Any) -> str:
+    """Flatten a manifest-preparation 422 into one launch message naming the prompt."""
+    if isinstance(detail, list) and detail and isinstance(detail[0], dict):
+        loc = [str(part) for part in detail[0].get("loc", []) if part != "prompt_selections"]
+        message = str(detail[0].get("msg") or "Selected prompt is unavailable")
+        return f"{message} (prompt_selections.{'.'.join(loc)})" if loc else message
+    return "Selected prompts could not be prepared for this test"
 
 
 def get_pipeline_read_service(request: Request) -> PipelineReadService:
@@ -287,6 +298,8 @@ class StartPipelineRequest(BaseModel):
             raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
         if value.get("prompt_manifest") is not None:
             raise ValueError("prompt_manifest is server-owned")
+        if RUNTIME_ACTOR_ID_KEY in value:
+            raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
         return validate_json_object(value, label="pipeline configurable")
 
     @field_validator("gates")
@@ -366,9 +379,18 @@ class GateInterrupt(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PipelineFailure(BaseModel):
+    """Why the last run stopped in the graph; never raw exception text."""
+
+    kind: Literal["prompt_manifest_missing", "unexpected_error"]
+    message: str
+    error_type: str | None = None
+
+
 class PipelineDetail(PipelineSummary):
     values: dict[str, Any] = Field(default_factory=dict)
     interrupts: list[GateInterrupt] = Field(default_factory=list)
+    failure: PipelineFailure | None = None
 
 
 class PipelineSetupConfiguration(BaseModel):
@@ -377,6 +399,7 @@ class PipelineSetupConfiguration(BaseModel):
     project_id: str | None
     app_id: str | None
     environment_id: str | None
+    test_scope: dict[str, Any] | None = None
     configurable: Annotated[dict[str, Any], WithJsonSchema(launch_config_json_schema())]
 
 
@@ -787,6 +810,18 @@ async def create_pipeline_run(
             await require_analysis_readiness(checked)
             await require_execution_readiness(checked)
 
+    async def prepare_server_owned_config(
+        configurable: dict[str, Any], run_input: dict[str, Any]
+    ) -> None:
+        from apex.services.prompt_selections import prepare_prompt_manifest
+
+        try:
+            await prepare_prompt_manifest(configurable, identity, run_input)
+        except HTTPException as exc:
+            raise LaunchReadinessError(_prompt_selection_error(exc.detail)) from None
+        except ValueError:
+            raise LaunchReadinessError(_prompt_selection_error(None)) from None
+
     result = None
     launch_error: HTTPException | None = None
     try:
@@ -809,6 +844,7 @@ async def create_pipeline_run(
             principal_id=identity.consumer_id,
             request_intent=request_intent if body.idempotency_key else None,
             before_run_start=(check_execution_before_start),
+            prepare_configurable=prepare_server_owned_config,
         )
     except LaunchIdempotencyConflictError:
         launch_error = HTTPException(status_code=409, detail="pipeline launch conflict")
@@ -822,8 +858,12 @@ async def create_pipeline_run(
         )
     except LaunchProviderError:
         launch_error = _pipeline_runtime_unavailable()
+    except ModelAdmissionError as exc:
+        launch_error = HTTPException(status_code=exc.status_code, detail=str(exc))
     except LaunchReadinessError as exc:
         launch_error = HTTPException(status_code=422, detail=str(exc))
+    except ModelAdmissionUnavailableError as exc:
+        launch_error = HTTPException(status_code=503, detail=str(exc))
     except ValueError:
         launch_error = HTTPException(status_code=422, detail="invalid pipeline configuration")
     except Exception:
@@ -958,8 +998,14 @@ async def get_pipeline_setup(
         return await service.get_test_setup(thread_id)
     except NotFoundError:
         raise HTTPException(404, "Pipeline thread not found") from None
-    except (ValueError, RerunConfigurationConflictError):
-        raise HTTPException(409, "The stored setup cannot be copied safely") from None
+    except LaunchProviderError:
+        raise _pipeline_runtime_unavailable() from None
+    except (ValueError, RerunConfigurationConflictError, LaunchIdempotencyConflictError):
+        raise HTTPException(
+            409,
+            "This run's stored setup is incomplete or no longer valid, so it can't be "
+            "copied. Start a new test from New test instead.",
+        ) from None
 
 
 @router.get(
@@ -1078,6 +1124,17 @@ async def rerun_pipeline(
             "rerun_already_active",
             detail="the pipeline already has an active run",
         )
+    except ModelAdmissionError as exc:
+        # A rerun replays the run's stored model choices; it offers no picker.
+        failure = HTTPException(
+            status_code=exc.status_code,
+            detail=f"{exc} Reruns reuse this run's models; create a new test from this run "
+            "to choose another model.",
+        )
+    except LaunchReadinessError as exc:
+        failure = HTTPException(status_code=422, detail=str(exc))
+    except ModelAdmissionUnavailableError as exc:
+        failure = HTTPException(status_code=503, detail=str(exc))
     except ValueError:
         failure = HTTPException(status_code=422, detail="invalid rerun request")
     except Exception:

@@ -101,7 +101,7 @@ for (const role of ['viewer', 'operator'] as const) {
     await expect(updates).toHaveText('Plan review. Review prompts open on Test Planning. Queue item 1 of 2.')
     const queue = page.getByRole('listbox', { name: 'Needs review queue' })
     await queue.getByRole('option', { selected: true }).press('j')
-    await expect(updates).toHaveText('Report review. Review phase results open on Reporting. Queue item 2 of 2.')
+    await expect(updates).toHaveText('Report review. Review phase results open on Reporting & Analysis. Queue item 2 of 2.')
     await expect(queue.getByRole('option', { selected: true })).toBeFocused()
     await expect(updates).not.toContainText('Snapshot refresh active')
     await expect(updates).not.toContainText('Story Analysis:')

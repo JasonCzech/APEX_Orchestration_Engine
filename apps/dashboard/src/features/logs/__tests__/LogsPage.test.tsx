@@ -306,4 +306,26 @@ describe('LogsPage', () => {
 
     expect(await screen.findByText('No log entries in this window')).toBeInTheDocument()
   })
+
+  it('warns when a log source ignores the requested window', async () => {
+    server.use(http.post('*/v1/logs/search', () => HttpResponse.json({
+      entries: [
+        { at: '2025-12-31T23:00:00Z', level: 'ERROR', service: 'payment-svc', message: 'canned outage', fields: {} },
+        { at: '2026-10-22T21:19:44.500Z', level: 'INFO', service: 'apex-api', message: 'in window', fields: {} },
+      ],
+      total: 2, limit: 50, offset: 0,
+      window: { from: '2026-10-22T21:19:44Z', to: '2026-10-22T21:19:46Z' },
+    })))
+    renderLogs('?thread=t-1&run=Peak&from=2026-10-22T21%3A19%3A44Z&to=2026-10-22T21%3A19%3A46Z')
+    expect(await screen.findByText('canned outage')).toBeInTheDocument()
+    expect(screen.getByText(/1 of these entries fall outside the requested window/)).toHaveTextContent('unrelated to this run')
+  })
+
+  it('says plainly when a run has no log entries', async () => {
+    server.use(http.post('*/v1/logs/search', () => HttpResponse.json({
+      entries: [], total: 0, limit: 50, offset: 0, window: { from: '2026-10-22T21:19:44Z', to: '2026-10-22T21:19:46Z' },
+    })))
+    renderLogs('?thread=t-1&run=Peak&from=2026-10-22T21%3A19%3A44Z&to=2026-10-22T21%3A19%3A46Z')
+    expect(await screen.findByText('No log entries recorded for this run')).toBeInTheDocument()
+  })
 })

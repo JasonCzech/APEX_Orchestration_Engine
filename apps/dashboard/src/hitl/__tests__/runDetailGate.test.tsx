@@ -66,7 +66,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
     expect(banner).toHaveTextContent('Review phase results open on Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
+      `/runs/${THREAD_ID}/phases/reporting`,
     )
     expect(screen.queryByTestId('gate-module')).not.toBeInTheDocument()
   })
@@ -91,6 +91,20 @@ describe('RunDetailPage gate mounting (D3)', () => {
         interruptId: 'int-1',
         body: { action: 'abort' },
       }),
+    )
+  })
+
+  it('confirms an accepted decision inside Run detail with a visible receipt', async () => {
+    server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
+    const resume = resumeHandler(202)
+    server.use(resume.handler)
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
+
+    await user.click(await screen.findByRole('button', { name: /Accept phase output & continue/i }))
+    const receipt = await screen.findByText('Decision recorded')
+    expect(receipt.closest('[role="status"]')).toHaveTextContent(
+      /Accepted phase output and continued the run · Reporting & Analysis/,
     )
   })
 })

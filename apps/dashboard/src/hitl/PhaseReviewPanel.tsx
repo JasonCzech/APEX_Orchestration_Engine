@@ -83,7 +83,6 @@ export function PhaseReviewPanel({
           </div>
         )}
 
-        <p className="gate-next-action">Accepting continues the selected plan with this phase’s output. Request changes re-runs this phase before it can be accepted; later phases wait for the decision.</p>
         <DialogueThread
           entries={payload.dialogue_tail}
           message={draft.message ?? ''}

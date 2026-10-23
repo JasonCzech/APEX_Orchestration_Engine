@@ -4,11 +4,32 @@
 /* ── Page frame ──────────────────────────────────────────────────────────── */
 
 .run-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px 16px;
+  margin-bottom: 18px;
+}
+
+.run-detail-summary {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   flex-wrap: wrap;
-  margin-bottom: 18px;
+  min-width: 0;
+}
+
+.run-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .run-detail-header { grid-template-columns: 1fr; }
+  .run-detail-actions { justify-content: flex-start; }
 }
 
 .run-detail-heading {
@@ -35,9 +56,6 @@
   white-space: nowrap;
 }
 
-.run-detail-header .spacer {
-  flex: 1;
-}
 
 .run-workspace-meta {
   color: var(--text-secondary);
@@ -868,3 +886,12 @@
   font-weight: 700;
 }
 .ux-section-link:hover { color: var(--text-primary); }
+
+.run-decision-receipt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 12px;
+}
+.run-decision-receipt > .btn { margin-left: auto; }

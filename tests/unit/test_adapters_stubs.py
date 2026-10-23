@@ -248,3 +248,18 @@ async def test_artifact_store_unknown_key_raises() -> None:
     assert excinfo.value.__context__ is None
     with pytest.raises(KeyError, match="missing/key"):
         await store.get_url("missing/key")
+
+
+async def test_stub_log_search_never_presents_canned_entries_as_a_runs_logs() -> None:
+    from apex.adapters.stubs.log_search import StubLogSearchAdapter
+    from apex.domain.integrations import LogQuery, Page, TimeWindow
+
+    adapter = StubLogSearchAdapter()
+    window = TimeWindow(start="2026-01-01T00:00:00+00:00", end="2026-01-02T00:00:00+00:00")
+    page = Page(offset=0, limit=50)
+    run = await adapter.search(
+        LogQuery(query="", filters={"thread_id": "t-1"}), window=window, page=page
+    )
+    assert run.entries == [] and run.total == 0
+    demo = await adapter.search(LogQuery(query=""), window=window, page=page)
+    assert demo.total == 3

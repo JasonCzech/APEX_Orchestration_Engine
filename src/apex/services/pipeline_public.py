@@ -8,6 +8,7 @@ options, tool arguments, artifact keys, and other server-only state.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 from urllib.parse import urlsplit
@@ -343,6 +344,45 @@ def public_phase_evidence(
     return evidence
 
 
+_MAX_PUBLIC_THRESHOLDS = 32
+
+
+def _public_acceptance_thresholds(value: JsonDict) -> JsonDict | None:
+    """The acceptance thresholds an execution was judged against.
+
+    Engines stamp the applied SLAs on the durable handle (sim stores them as a
+    JSON string). APEX Load sends the generated spec's SLAs to the provider, so
+    its spec is the fallback; other engines (LoadRunner's own SLA settings,
+    legacy sim handles) never applied the spec, so nothing is shown for them.
+    """
+    handle = value.get("engine_handle")
+    extras = handle.get("extras") if type(handle) is dict else None
+    raw = extras.get("slas") if type(extras) is dict else None
+    if type(raw) is str and len(raw) <= 4_096:
+        try:
+            raw = json.loads(raw)
+        except (ValueError, RecursionError):
+            raw = None
+    if raw is None and value.get("engine") == "apex_load":
+        spec = value.get("load_test_spec")
+        raw = spec.get("slas") if type(spec) is dict else None
+    if type(raw) is not dict or not 0 < len(raw) <= _MAX_PUBLIC_THRESHOLDS:
+        return None
+    thresholds: JsonDict = {}
+    for key, number in raw.items():
+        if (
+            type(key) is not str
+            or not 0 < len(key) <= 64
+            or not key.isascii()
+            or not all(char.isalnum() or char == "_" for char in key)
+            or type(number) not in {int, float}
+            or not -1e15 <= number <= 1e15
+        ):
+            return None
+        thresholds[key] = float(number)
+    return thresholds
+
+
 def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     if type(phase) is not str or phase not in _PHASES or type(value) is not dict:
         return None
@@ -427,6 +467,9 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     test_summary = public_test_result_summary(qualified_execution_summary(value))
     if test_summary is not None:
         result["test_summary"] = test_summary
+        thresholds = _public_acceptance_thresholds(value)
+        if thresholds is not None:
+            result["acceptance_thresholds"] = thresholds
     engine = _text(value.get("engine"), 64, allow_empty=False)
     if engine is not None:
         result["engine"] = engine

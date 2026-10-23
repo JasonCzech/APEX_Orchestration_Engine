@@ -42,6 +42,7 @@ import { GateModule } from '@/hitl/GateModule'
 
 import { ApprovalsQueue, type QueueRow, type RowRemovalReason } from './ApprovalsQueue'
 import type { GateAction, GateModuleHandle, GateOutcome } from './gateModuleContract'
+import { decisionOutcomeLabel } from '@/hitl/decisionOutcome'
 import { useApprovalsInbox, type ApprovalItem } from './useApprovalsInbox'
 import './approvals.css'
 
@@ -77,18 +78,6 @@ interface DecisionReceipt {
   title: string
   action: string
   at: Date
-}
-
-function outcomeLabel(action: GateAction | 'superseded', kind?: GateInterrupt['kind']): string {
-  switch (action) {
-    case 'approve': return kind === 'prompt_review'
-      ? 'Approved prompts and started the phase'
-      : 'Accepted phase output and continued the run'
-    case 'skip_phase': return 'Skipped the phase and continued the run'
-    case 'abort': return 'Aborted the run'
-    case 'superseded': return 'Decision was completed elsewhere'
-    default: return 'Decision recorded'
-  }
 }
 
 function toSelection(item: ApprovalItem): Selection {
@@ -309,7 +298,7 @@ export function ApprovalsInboxPage() {
     const listRow = items.find((item) => item.thread_id === current.threadId)
     setDecisionReceipt({
       title: listRow?.title ?? current.threadId,
-      action: outcomeLabel(
+      action: decisionOutcomeLabel(
         reason === 'elsewhere' ? 'superseded' : action ?? 'approve',
         listRow?.pending_gate.kind,
       ),

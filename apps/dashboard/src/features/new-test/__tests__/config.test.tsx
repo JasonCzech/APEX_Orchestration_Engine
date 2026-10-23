@@ -70,7 +70,7 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
-  it('assigns deselected phases to HITL without removing prerequisites', async () => {
+  it('assigns deselected phases to a person without removing prerequisites', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
@@ -85,16 +85,16 @@ describe('ConfigStep', () => {
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
 
     // Phase selection only changes the plan; prompt selection is managed in Prompts.
-    await user.click(within(strip).getByRole('button', { name: /Execution —/ }))
-    expect(within(strip).getByRole('button', { name: /Execution —/ })).toHaveAttribute('aria-pressed', 'false')
-    expect(within(strip).getByRole('button', { name: 'Execution — HITL' })).toBeInTheDocument()
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
+    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute('aria-pressed', 'false')
+    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveTextContent('Person')
     expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    expect(screen.getByText(/Execution — HITL/)).toBeInTheDocument()
+    expect(screen.getByText(/Execution — Person/)).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Config' }))
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
-    await user.click(within(strip).getByRole('button', { name: /Execution —/ }))
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
     await waitFor(() =>
       expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument(),
     )

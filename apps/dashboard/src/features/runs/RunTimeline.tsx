@@ -7,9 +7,17 @@ import { formatTimestamp, TONE_COLOR_VAR } from './runDisplay'
 import { deriveTimeline } from './timelineModel'
 import { RunActorIdentity } from './RunActorIdentity'
 
-export function RunTimeline({ state, gate }: { state: PipelineState; gate?: GateInstance | null }) {
+export function RunTimeline({ state, gate, failure }: {
+  state: PipelineState
+  gate?: GateInstance | null
+  /** The graph error that ended the last run; it has no phase event of its own. */
+  failure?: { message: string; error_type?: string | null; at?: string | null } | null
+}) {
   useTimestampPreference()
-  const events = deriveTimeline(state, gate)
+  const events = [
+    ...deriveTimeline(state, gate),
+    ...(failure ? [{ at: failure.at ?? null, tone: 'danger' as const, label: 'Orchestration failed', detail: failure.error_type ? `${failure.message} (${failure.error_type})` : failure.message }] : []),
+  ]
 
   return (
     <section className="timeline-panel glass-panel" aria-label="Run timeline">

@@ -10,6 +10,7 @@ import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { CopyableId } from '@/components/ux/CopyableId'
 import {
   executionResultLabel,
+  isPhaseName,
   formatDuration,
   executionWasOmitted,
   normalizedPhases,
@@ -21,6 +22,9 @@ import {
   formatTimestamp,
 } from './runDisplay'
 import { runReviewPath } from './reviewPath'
+import { CopyTestSetupButton } from './CopyTestSetupButton'
+import { KpiComparison } from './KpiComparison'
+import { RequireRole } from '@/auth/RequireRole'
 
 export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate, returnTo }: {
   detail: PipelineDetail
@@ -80,11 +84,18 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
               {error}
             </p>
           ))}
+          {detail.failure && <p role="status">{detail.failure.message}{detail.failure.error_type && <> <span className="ux-context">({detail.failure.error_type})</span></>}</p>}
           {!errors.length &&
+            !detail.failure &&
             !state.run_aborted &&
             ['idle', 'error'].includes(detail.thread_status ?? '') &&
             (detail.thread_status === 'error' || progress.completed !== progress.total) && <p>{incomplete ? 'The failure or stop reason is unavailable in this preview.' : 'No failure or stop reason was recorded.'}</p>}
-          {detail.pending_gate && onReviewGate ? (
+          {detail.failure && !progress.planRecorded ? (
+            // No phase ran, so opening one shows nothing. Relaunching is the recovery.
+            <RequireRole role="operator">
+              <CopyTestSetupButton threadId={detail.thread_id} label="Edit and relaunch" primary />
+            </RequireRole>
+          ) : detail.pending_gate && onReviewGate ? (
             <button type="button" className="btn btn-primary" onClick={onReviewGate}>
               Review pending decision
             </button>
@@ -96,9 +107,11 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
             <Link
               className="btn btn-primary"
               to={
-                detail.pending_gate
-                  ? runReviewPath(detail.thread_id, detail.pending_gate.interrupt_id, { source: 'overview' })
-                  : `/runs/${detail.thread_id}/phases/${phase}`
+                detail.pending_gate && isPhaseName(detail.pending_gate.phase)
+                  ? `/runs/${detail.thread_id}/phases/${detail.pending_gate.phase}`
+                  : detail.pending_gate
+                    ? runReviewPath(detail.thread_id, detail.pending_gate.interrupt_id, { source: 'overview' })
+                    : `/runs/${detail.thread_id}/phases/${phase}`
               }
             >
               {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
@@ -149,11 +162,17 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
           </Link>
         </article>
       </div>
+      {summary && (Object.keys(summary.kpis ?? {}).length > 0 || execution?.acceptance_thresholds) && (
+        <article className="glass-panel ux-card" aria-labelledby="run-kpi-heading">
+          <h3 id="run-kpi-heading">Requested vs observed</h3>
+          <KpiComparison summary={summary} thresholds={execution?.acceptance_thresholds} />
+        </article>
+      )}
       <article className="glass-panel ux-card">
         <h3>Evidence coverage</h3>
         {summary?.outcome && <p>Load evidence: {summary.outcome.evidence.status}{summary.outcome.evidence.coverage_percent != null ? ` (${summary.outcome.evidence.coverage_percent}%)` : ''}. Assessed {formatTimestamp(summary.outcome.observed_at)}.</p>}
         {(['diagnostics', 'evidence'] as const).map(section => {
-          const href = executionLink(handle?.console_url ?? handle?.extras?.console_url ?? execution?.source_uri ?? external.uri, `/runs/${detail.thread_id}`, section)
+          const href = executionLink(handle?.console_url ?? handle?.extras?.console_url ?? execution?.source_uri ?? external.uri, returnTo ?? `/runs/${detail.thread_id}`, section)
           return href ? <a key={section} className="btn btn-secondary" href={href} target="_blank" rel="noopener noreferrer">Open Load {section}</a> : null
         })}
         <p className="ux-context">Artifact count describes recorded files, not the completeness of workload evidence.</p>

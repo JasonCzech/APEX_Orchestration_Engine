@@ -63,6 +63,9 @@ describe('WorkItemsStep', () => {
     const translated = await screen.findByTestId('translated-query')
     expect(within(translated).getByText('jira')).toBeInTheDocument()
     expect(within(translated).getByText('confidence 82%')).toBeInTheDocument()
+    // Without connection read access the chip names the provider, never the raw id.
+    expect(within(translated).getByText('jira connection')).toBeInTheDocument()
+    expect(within(translated).queryByText('conn-jira')).not.toBeInTheDocument()
     const queryInput = screen.getByLabelText('Provider query')
     expect(queryInput).toHaveValue(TRANSLATED.query)
     await user.type(queryInput, ' ORDER BY rank') // editable before execute
@@ -73,6 +76,8 @@ describe('WorkItemsStep', () => {
 
     await user.click(screen.getByLabelText('Select PHX-101'))
     await user.click(screen.getByLabelText('Select PHX-102'))
+    // Chips reuse the result titles; `projects` above proves no extra lookups.
+    expect(within(screen.getByTestId('selected-work-items')).getByText('Slow checkout')).toBeInTheDocument()
     const chips = screen.getByTestId('selected-work-items')
     expect(within(chips).getByText('PHX-101')).toBeInTheDocument()
     expect(within(chips).getByText('PHX-102')).toBeInTheDocument()
@@ -239,6 +244,7 @@ describe('WorkItemsStep', () => {
     await user.click(screen.getByRole('button', { name: 'Add' }))
     const chips = await screen.findByTestId('selected-work-items')
     expect(within(chips).getByText('PHX-241')).toBeInTheDocument()
+    expect(within(chips).getByText('Found')).toBeInTheDocument() // title from the validated response
     expect(keyInput).toHaveValue('') // cleared on success
 
     await user.type(keyInput, 'PHX-999')

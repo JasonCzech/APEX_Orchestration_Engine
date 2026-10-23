@@ -22,6 +22,7 @@ import { useAssistants } from '@/api/hooks/useAssistants'
 import { useWorkItem } from '@/api/hooks/useWorkTracking'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { parseStatusBadge, summarizeContext } from '../contextFiles'
+import { documentThresholdMismatches } from '../workload'
 import type { StepProps } from '../NewRunWizard'
 import {
   issueFieldId,
@@ -59,14 +60,16 @@ function ReviewCard({
   step,
   onEdit,
   children,
+  wide = false,
 }: {
   title: string
   step: WizardStepId
   onEdit: (step: WizardStepId) => void
   children: ReactNode
+  wide?: boolean
 }) {
   return (
-    <div className="glass-panel wizard-review-card">
+    <div className={`glass-panel wizard-review-card${wide ? ' wizard-review-card--wide' : ''}`}>
       <div className="wizard-review-card-head">
         <h3 className="wizard-review-card-title">{title}</h3>
         <button
@@ -111,11 +114,19 @@ export function ReviewStep({
 
   const knownDocs = new Map((documents.data ?? []).map((doc) => [doc.id, doc]))
   const contextSummary = summarizeContext(draft.document_ids.map((id) => knownDocs.get(id)))
+  // LoadRunner applies its native test's SLAs, so Config thresholds don't apply.
+  const thresholdMismatches = draft.config.engine === 'loadrunner' ? [] : documentThresholdMismatches(
+    draft.document_ids.flatMap((id) => {
+      const doc = knownDocs.get(id)
+      return doc ? [{ name: doc.name ?? id, text: doc.text_preview }] : []
+    }),
+    draft.config.golden_configurable?.load_test,
+  )
 
   return (
     <section className="wizard-step" aria-label="Review">
       {documents.isError && draft.document_ids.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => void documents.refetch()}>Retry document verification</button>}
-      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Prompts for HITL phases remain saved in this draft; only LangGraph phases receive prompts at launch.</p>}
+      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Prompts for phases a person completes remain saved in this draft; only agent phases receive prompts at launch.</p>}
       {issues.length > 0 && (
         <div className="wizard-issues" role="alert" data-testid="review-issues">
           <span className="wizard-label">Outstanding issues</span>
@@ -136,7 +147,7 @@ export function ReviewStep({
       )}
 
       <div className="wizard-review-grid">
-        <ReviewCard title="Readiness" step={readiness.executionIssues.length > 0 ? 'scope' : 'config'} onEdit={onEditStep}>
+        <ReviewCard title="Readiness" wide step={readiness.executionIssues.length > 0 ? 'scope' : 'config'} onEdit={onEditStep}>
           {readiness.planningIssues.length === 0 ? (
             <p className="wizard-caption">Test plan is complete.</p>
           ) : (
@@ -155,7 +166,7 @@ export function ReviewStep({
           ))}
           {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </ReviewCard>
-        {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
+        {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption wizard-review-card--wide"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
         <ReviewCard title="Scope" step="scope" onEdit={onEditStep}>
           <TestScopeSummary value={draft.scope.test_scope} />
           <dl className="wizard-review-dl">
@@ -181,6 +192,11 @@ export function ReviewStep({
         </ReviewCard>
 
         <ReviewCard title="Knowledge" step="context" onEdit={onEditStep}>
+          {thresholdMismatches.length > 0 && <div className="tonal-card warning" data-testid="document-threshold-mismatches">
+            <p>Attached documents mention figures that differ from the acceptance thresholds in Config. Check which is the target:</p>
+            <ul>{thresholdMismatches.map(item => <li key={`${item.document}:${item.key}`}>{item.document} mentions {item.label} {item.documented}; Config requires ≤ {item.configured}.</li>)}</ul>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onEditStep('config', `workload-${thresholdMismatches[0]!.key}`)}>Review thresholds</button>
+          </div>}
           <p className="wizard-caption">
             {draft.document_ids.length} document{draft.document_ids.length === 1 ? '' : 's'}{' '}
             attached
@@ -213,7 +229,7 @@ export function ReviewStep({
             </>}
             <dt>Phases</dt>
             <dd>
-              {PHASE_NAMES.map(phase => `${PHASE_LABELS[phase]} — ${phases.includes(phase) ? 'LangGraph' : 'HITL'}`).join(' → ')}
+              {PHASE_NAMES.map(phase => `${PHASE_LABELS[phase]} — ${phases.includes(phase) ? 'Agent' : 'Person'}`).join(' → ')}
             </dd>
             <dt>Analysis tools</dt><dd>{draft.config.analysis?.selections.map(s => `${ANALYSIS_LABELS[s.tool]} (${analysisConnections.data?.find(c => c.id === s.connection_id)?.name ?? s.connection_id})`).join(', ') || 'None'}</dd>
             <dt>Review policy</dt>

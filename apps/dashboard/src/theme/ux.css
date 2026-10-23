@@ -11,6 +11,11 @@
   min-height: 36px;
   text-decoration: none;
 }
+/* A link styled as a button must occupy its padded box; as an inline box its
+   padding overlapped the line above it (run overview primary actions). */
+.btn:where(a) {
+  display: inline-block;
+}
 .btn-sm {
   min-height: 32px;
 }
@@ -76,9 +81,14 @@
   font-size: var(--font-size-md);
   line-height: 1.65;
 }
-.gate-next-action {
-  color: var(--text-secondary);
-  margin: 12px 0;
+.kpi-comparison {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.kpi-comparison .data-table th[scope="row"] {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 .gate-info-card summary {
   cursor: pointer;

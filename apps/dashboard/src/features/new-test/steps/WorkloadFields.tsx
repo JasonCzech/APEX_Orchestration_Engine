@@ -1,5 +1,35 @@
 import type { StepProps } from '../NewRunWizard'
-import { effectiveWorkload, inputNumber, SLA_FIELDS, WORKLOAD_FIELDS, workloadIssues } from '../workload'
+import { useEffect, useRef, useState } from 'react'
+import { DURATION_UNITS, durationUnit, effectiveWorkload, inputNumber, SLA_FIELDS, WORKLOAD_FIELDS, workloadIssues } from '../workload'
+
+/** Seconds stored, entered in the unit the operator thinks in (as in APEX Load). */
+function DurationField({ id, label, seconds, invalid, onChange }: {
+  id: string; label: string; seconds: unknown; invalid: boolean; onChange: (seconds: string) => void
+}) {
+  const [unit, setUnit] = useState(() => durationUnit(seconds))
+  // A preset, reset or resumed draft replaces the value from outside; show it
+  // in its natural unit again. Values this field emitted keep the chosen unit.
+  const emitted = useRef<unknown>(seconds)
+  useEffect(() => {
+    if (seconds !== emitted.current) setUnit(durationUnit(seconds))
+    emitted.current = seconds
+  }, [seconds])
+  const shown = typeof seconds === 'number' && Number.isFinite(seconds) ? Number((seconds / unit).toFixed(4)) : inputNumber(seconds)
+  return <div className="wizard-field">
+    <label className="wizard-label" htmlFor={id}>{label}</label>
+    <div className="wizard-duration">
+      <input className="field-input" id={id} type="number" min={0} step="any" value={shown} aria-invalid={invalid}
+        onChange={event => {
+          const next = event.target.value === '' ? '' : Math.round(Number(event.target.value) * unit * 1000) / 1000
+          emitted.current = next
+          onChange(String(next))
+        }} />
+      <select className="field-select" aria-label={`${label} unit`} value={unit} onChange={event => setUnit(Number(event.target.value))}>
+        {DURATION_UNITS.map(option => <option key={option.seconds} value={option.seconds}>{option.label}</option>)}
+      </select>
+    </div>
+  </div>
+}
 
 export function WorkloadFields({ draft, onChange }: StepProps) {
   const load = effectiveWorkload(draft.config.golden_configurable?.load_test)
@@ -32,12 +62,16 @@ export function WorkloadFields({ draft, onChange }: StepProps) {
     {nativeManaged && <p className="tonal-card warning">LoadRunner uses its configured native test for workload and acceptance. Duration and ramp below estimate the reservation window only; they do not replace the native test’s VUsers, pacing or SLA settings. Review those settings in LoadRunner before launch.</p>}
     <fieldset className="wizard-fieldset">
       <div className="wizard-workload-grid">
-        {WORKLOAD_FIELDS.map(field => <label className="wizard-field" key={field.key} htmlFor={`workload-${field.key}`}>
-          <span className="wizard-label">{nativeManaged && field.key !== 'vusers' ? `Reservation ${field.label.toLowerCase()}` : field.label}</span>
-          <input className="field-input" disabled={nativeManaged && field.key === 'vusers'} id={`workload-${field.key}`} type="number" min={field.min} max={field.max} step={field.step}
-            value={inputNumber(load[field.key])} onChange={event => change(field.key, event.target.value)}
-            aria-invalid={issues.some(issue => issue.startsWith(field.label))} />
-        </label>)}
+        {WORKLOAD_FIELDS.map(field => field.key === 'vusers'
+          ? <label className="wizard-field" key={field.key} htmlFor={`workload-${field.key}`}>
+            <span className="wizard-label">{field.label}</span>
+            <input className="field-input" disabled={nativeManaged} id={`workload-${field.key}`} type="number" min={field.min} max={field.max} step={field.step}
+              value={inputNumber(load[field.key])} onChange={event => change(field.key, event.target.value)}
+              aria-invalid={issues.some(issue => issue.startsWith(field.label))} />
+          </label>
+          : <DurationField key={field.key} id={`workload-${field.key}`} label={nativeManaged ? `Reservation ${field.label.toLowerCase()}` : field.label}
+            seconds={load[field.key]} invalid={issues.some(issue => issue.startsWith(field.label))}
+            onChange={value => change(field.key, value)} />)}
       </div>
       <p className="wizard-caption">Acceptance thresholds are evaluated after collection. Leave a threshold blank to omit it. Minimum throughput is an acceptance goal, not request-rate pacing.</p>
       <div className="wizard-workload-grid">
@@ -67,7 +101,7 @@ export function WorkloadPreview({ draft }: Pick<StepProps, 'draft'>) {
     return <div><p className="wizard-caption">Workload and acceptance are managed by the configured LoadRunner test. Verify its VUsers, pacing and SLAs before launch.</p><p>Reservation estimate: {String(load.duration_s)} seconds duration + {String(load.ramp_s)} seconds ramp, plus collation headroom. Timeslot: {minutes === null ? 'Invalid inputs' : `${minutes} minutes`}.</p></div>
   }
   return <dl className="wizard-review-dl">
-    {WORKLOAD_FIELDS.map(field => <div className="wizard-review-pair" key={field.key}><dt>{field.label}</dt><dd>{String(load[field.key])}</dd></div>)}
+    {WORKLOAD_FIELDS.map(field => <div className="wizard-review-pair" key={field.key}><dt>{field.label}</dt><dd>{field.key === 'vusers' || typeof load[field.key] !== 'number' ? String(load[field.key] ?? '—') : `${String(load[field.key])} s`}</dd></div>)}
     {SLA_FIELDS.map(field => <div className="wizard-review-pair" key={field.key}><dt>{field.label}</dt><dd>{load.slas[field.key] === undefined ? 'Not set' : String(inputNumber(load.slas[field.key], field.scale))}</dd></div>)}
     {Object.entries(load.slas).filter(([key]) => !SLA_FIELDS.some(field => field.key === key)).map(([key, value]) => <div className="wizard-review-pair" key={key}><dt>{key} (preset threshold)</dt><dd>{String(value)}</dd></div>)}
   </dl>

@@ -71,11 +71,18 @@ interface PendingWizardOperation {
 }
 
 function focusWizardTarget(id: string) {
-  const target = document.getElementById(id)
+  // A field can answer several readiness messages; secondary targets use an alias.
+  const target = document.getElementById(id) ?? document.querySelector<HTMLElement>(`[data-focus-alias~="${CSS.escape(id)}"]`)
   target?.focus({ preventScroll: true })
   // The sticky footer can cover a field that is only scrolled to the nearest
   // viewport edge. Center both same-step and cross-step issue destinations.
   target?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+}
+
+const REQUIRED_STEPS = new Set<WizardStepId>(['scope', 'config', 'prompts'])
+
+function issueCountLabel(count: number) {
+  return `${count} item${count === 1 ? ' needs' : 's need'} attention`
 }
 
 function WizardSection({
@@ -115,7 +122,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   scope: {
     title: 'Test scope',
     description:
-      'Name the test, describe the request, and choose the project, application, and target environment.',
+      'Name the test, describe the request, and define the systems under test and where traffic enters.',
   },
   'work-items': {
     title: 'Tickets',
@@ -130,7 +137,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   config: {
     title: 'Execution configuration',
     description:
-      'Choose the engine, phase ownership, analysis tools, and agent review policy. HITL phases pause for human completion.',
+      'Choose the engine, phase ownership, analysis tools, and agent review policy. Phases a person completes pause until they submit the result.',
   },
   prompts: {
     title: 'Prompt selection',
@@ -515,27 +522,48 @@ function NewRunWizardContent({
           aria-label="New test groups"
           aria-orientation="horizontal"
         >
-          {WIZARD_STEPS.map((step) => (
-            <button
-              key={step}
-              id={`wizard-tab-${step}`}
-              type="button"
-              role="tab"
-              aria-label={STEP_LABELS[step]}
-              className="wizard-tab workspace-tab"
-              aria-selected={activeStep === step}
-              aria-controls={`wizard-panel-${step}`}
-              tabIndex={activeStep === step ? 0 : -1}
-              onClick={() => selectStep(step)}
-              onKeyDown={(event) => moveTab(event, step)}
-            >
-              {WIZARD_STEPS.indexOf(step) + 1}. {STEP_LABELS[step]}
-            </button>
-          ))}
+          {WIZARD_STEPS.map((step) => {
+            // Each tab carries its own state so the stepper, not only the
+            // footer, shows where work remains. Optional steps stay unmarked.
+            const open = step === 'review' ? 0 : issues.filter(issue => issue.step === step).length
+            const done = open === 0 && REQUIRED_STEPS.has(step)
+            return (
+              <button
+                key={step}
+                id={`wizard-tab-${step}`}
+                type="button"
+                role="tab"
+                aria-label={STEP_LABELS[step]}
+                aria-describedby={open || done ? `wizard-tab-${step}-state` : undefined}
+                className="wizard-tab workspace-tab"
+                aria-selected={activeStep === step}
+                aria-controls={`wizard-panel-${step}`}
+                tabIndex={activeStep === step ? 0 : -1}
+                onClick={() => selectStep(step)}
+                onKeyDown={(event) => moveTab(event, step)}
+              >
+                {WIZARD_STEPS.indexOf(step) + 1}. {STEP_LABELS[step]}
+                {open > 0 && <span className="wizard-tab-state attention" aria-hidden="true">{open}</span>}
+                {done && <span className="wizard-tab-state done" aria-hidden="true">✓</span>}
+                {(open > 0 || done) && <span id={`wizard-tab-${step}-state`} className="sr-only">{open > 0 ? issueCountLabel(open) : 'Complete'}</span>}
+              </button>
+            )
+          })}
         </div>
       </div>
     )
   }
+
+  const readinessSummary = issues.length === 0
+    ? pendingStepCount > 0 ? 'Finishing context changes…' : 'Ready to launch'
+    : readiness.planningIssues.length === 0
+      ? `Execution setup: ${issueCountLabel(issues.length)}`
+      : issueCountLabel(issues.length)
+  const saveDraftNote = canSaveDraft
+    ? null
+    : draft.scope.project_id.trim()
+      ? 'Draft saving requires project-wide access.'
+      : 'Choose a primary system to save a draft.'
 
   return (
     <div className="wizard-page animate-enter">
@@ -625,41 +653,53 @@ function NewRunWizardContent({
         <p>Retrying unchanged inputs on this page reuses the same launch request. Recovery may be blocked after a reload or credential change; check Tests before starting another request. Editing the inputs creates a different launch request.</p>
         {isApiError(launch.error) && <details><summary>Technical details</summary><p>HTTP status: {launch.error.status}</p></details>}
       </div>}
+      {/* One compact row: the step, a readiness chip that discloses the issue
+          list on demand, and the actions. Server-recheck caveats live on Review. */}
       <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
           <strong>{activeStep === 'review' ? 'Review before launch' : `Step ${WIZARD_STEPS.indexOf(activeStep) + 1} of ${WIZARD_STEPS.length} · ${STEP_LABELS[activeStep]}`}</strong>
-          <span className="wizard-caption">
-            {issues.length === 0
-              ? pendingStepCount > 0
-                ? 'Waiting for in-progress context changes to finish.'
-                : `Plan is valid. ${readiness.executionNotes[0] ?? 'External execution target is selected.'}`
-              : readiness.planningIssues.length === 0 && readiness.executionIssues.length > 0
-                ? 'The test plan is ready; execution setup still needs attention.'
-                : `${issues.length} item${issues.length === 1 ? '' : 's'} still ${issues.length === 1 ? 'needs' : 'need'} attention.`}
-          </span>
-          {issues.length > 0 && activeStep !== 'review' && <ul className="wizard-inline-issues" aria-label="Items needing attention">
-            {issues.map(issue => <li key={`${issue.step}:${issue.message}`}><button type="button" className="wizard-issue-link" onClick={() => jumpToTab(issue.step, issueFieldId(issue.message))}>{STEP_LABELS[issue.step]}: {issue.message}</button></li>)}
-          </ul>}
+          {/* One always-mounted live region announces readiness changes; the
+              visible status below is decoration for sighted users. */}
+          <span className="sr-only" role="status">{readinessSummary}</span>
+          {issues.length === 0 ? (
+            <span className={`wizard-footer-status${pendingStepCount > 0 ? '' : ' ready'}`}>
+              {pendingStepCount > 0 ? 'Finishing context changes…' : <><span aria-hidden="true">✓ </span>Ready to launch</>}
+            </span>
+          ) : activeStep === 'review' ? (
+            <span className="wizard-footer-status attention">{readinessSummary}</span>
+          ) : (
+            <details
+              key={activeStep}
+              className="wizard-footer-issues"
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape' || !event.currentTarget.open) return
+                event.currentTarget.open = false
+                event.currentTarget.querySelector('summary')?.focus()
+              }}
+            >
+              <summary className="wizard-footer-status attention">{readinessSummary}</summary>
+              <ul className="wizard-inline-issues" aria-label="Items needing attention">
+                {issues.map(issue => <li key={`${issue.step}:${issue.message}`}><button type="button" className="wizard-issue-link" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); jumpToTab(issue.step, issueFieldId(issue.message)) }}>{STEP_LABELS[issue.step]}: {issue.message}</button></li>)}
+              </ul>
+            </details>
+          )}
           {targetEnvironment.isError && draft.scope.environment_id && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}
           {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && activeStep !== 'review' && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </div>
 
         <div className="wizard-footer-actions">
           <RequireRole role="operator">
-            {!canSaveDraft && (
-              <span className="wizard-caption">
-                Draft saving requires project-wide access.
-              </span>
-            )}
+            {saveDraftNote && <span id="wizard-save-note" className="wizard-caption">{saveDraftNote}</span>}
+            <span id="wizard-save-hint" className="sr-only">Saving does not launch a test.</span>
             <button
               type="button"
               className="btn btn-ghost"
               disabled={loading || finalizing || !canSaveDraft}
+              aria-describedby={saveDraftNote ? 'wizard-save-note' : 'wizard-save-hint'}
               onClick={() => void saveNow()}
             >
               Save draft
             </button>
-            <span className="wizard-caption">Saving does not launch a test.</span>
             {WIZARD_STEPS.indexOf(activeStep) > 0 && <button type="button" className="btn btn-secondary" disabled={loading || finalizing || pendingStepCount > 0} onClick={() => jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) - 1]!)}>Back</button>}
             <button
               type="button"

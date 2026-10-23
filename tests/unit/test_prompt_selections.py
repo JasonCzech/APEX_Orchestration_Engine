@@ -347,3 +347,60 @@ def test_multiple_context_review_uses_model_budget_with_individual_part_limits()
     decision["prompt"]["context_edits"][0]["content"] = "x" * 50_001
     with pytest.raises(ValueError, match="exceeds"):
         validate_gate_payload(decision)
+
+
+async def test_facade_launch_freezes_a_manifest_the_plan_resolver_accepts(db):
+    """The /v1 launch path bypasses the native run hook; its own manifest must run."""
+    from typing import cast
+
+    from langchain_core.runnables import RunnableConfig
+
+    from apex.graphs.pipeline.graph import plan_resolver
+    from apex.graphs.pipeline.state import PipelineState
+    from apex.services.pipeline_read import PipelineReadService
+    from tests.unit.test_pipelines_create_run import FakeClient
+
+    system, sv = await create(db, "system", "default")
+    phase, pv = await create(db, "phase", "analysis", phase="story_analysis")
+    client = FakeClient()
+
+    async def prepare(configurable: dict[str, Any], run_input: dict[str, Any]) -> None:
+        await prepare_prompt_manifest(configurable, identity(), run_input)
+
+    await PipelineReadService(client).start_run(
+        title="Wizard launch",
+        request="Analyze checkout",
+        project_id="project-one",
+        app_id="app-one",
+        phases=["story_analysis"],
+        configurable={
+            "environment_id": "env-one",
+            "test_scope": {
+                "schema_version": 1,
+                "participants": [
+                    {
+                        "id": "backend",
+                        "layer": "backend",
+                        "project_id": "project-one",
+                        "application_id": "app-one",
+                        "environment_id": "env-one",
+                    }
+                ],
+                "primary_participant_id": "backend",
+                "traffic_entry_participant_id": "backend",
+            },
+            "prompt_selections": {
+                "system": {"prompt_id": system.id, "version_id": sv.id},
+                "phases": {"story_analysis": {"prompt_id": phase.id, "version_id": pv.id}},
+            },
+        },
+        prepare_configurable=prepare,
+    )
+
+    configurable = client.runs.args[3]["configurable"]
+    assert configurable["prompt_manifest"]["system"]["version_id"] == sv.id
+    PipelineConfigurable.model_validate(configurable)
+    state = cast(PipelineState, {"title": "Wizard launch", "request": "Analyze checkout"})
+    runtime = cast(RunnableConfig, {"configurable": {**configurable, "thread_id": "t-facade"}})
+    update = plan_resolver(state, runtime)
+    assert update["run_config"]["prompt_manifest"] == configurable["prompt_manifest"]
