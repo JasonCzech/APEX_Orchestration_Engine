@@ -845,6 +845,7 @@ async def create_pipeline_run(
             request_intent=request_intent if body.idempotency_key else None,
             before_run_start=(check_execution_before_start),
             prepare_configurable=prepare_server_owned_config,
+            actor_id=identity.consumer_id,
         )
     except LaunchIdempotencyConflictError:
         launch_error = HTTPException(status_code=409, detail="pipeline launch conflict")

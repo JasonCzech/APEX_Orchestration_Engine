@@ -2099,7 +2099,9 @@ async def test_owned_phase_rerun_preserves_launch_contract_and_replays_subset(ow
         idempotency_key="owned-rerun",
         principal_id="consumer-a",
     )
-    raw = runs.create_calls[0]["config"]["configurable"]
+    raw = dict(runs.create_calls[0]["config"]["configurable"])
+    # The rerun is attributed to its requester (a runtime key, not contract).
+    assert raw.pop("apex_actor_id") == "consumer-a"
     cfg = PipelineConfigurable.model_validate(raw)
     assert cfg.phase_execution == original.phase_execution
     assert cfg.selected_phases() == list(PHASE_ORDER)

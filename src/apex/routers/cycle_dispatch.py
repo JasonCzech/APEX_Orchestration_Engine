@@ -228,6 +228,7 @@ async def dispatch(
                 gates=config["gates"],
                 before_run_start=bind_thread,
                 reuse_existing_thread=reuse_existing_thread,
+                actor_id=identity.consumer_id,
             )
         await session.execute(
             update(CycleExecutionDispatch)

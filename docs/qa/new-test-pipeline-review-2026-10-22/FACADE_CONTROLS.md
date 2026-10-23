@@ -21,21 +21,19 @@ The `/v1` facade creates runs with `loopback_client()`. That is langgraph_sdk `g
 | `require_analysis_readiness` | Incompatible analysis selections | `check_execution_before_start` on the wizard route. Reruns now recheck it before admission (they had replayed without it). | Fixed on this branch for reruns |
 | **`admit_models`** | Archived-model refusal, defaults pinned at admission, `model_run_admissions` record | **Was missing** | **Fixed on this branch:** `start_run` and `rerun_pipeline` admit before `runs.create`. Archived models return 409 (as natively); other refusals return 422 with the reason; an unavailable catalog returns 503; a fresh thread is removed on refusal; an adopted replay is not admitted again. Sparse launches (no `test_scope`) admit with the assistant's model choices, as the native merge would. A launch retried on its already-bound thread (Cycle dispatch) admits with `resume=True`, so it keeps its first admission instead of being stranded. Facade gate resumes still skip admission: they replay the checkpoint's pinned models, and runs launched before this change have no admission row, so a native-style resume check would be stricter than what those runs were started under. |
 | `prepare_prompt_manifest` | Frozen prompt manifest | Was missing (every wizard launch failed) | Fixed earlier on this branch (F-01) |
-| `apex_actor_id` / `langgraph_auth_user_id` stamps | Usage `consumer_id`, gate decision actor fallback, phase usage attribution | **Missing for launches.** Gate resumes stamp `apex_actor_id` themselves. | **Open decision** (below) |
+| `apex_actor_id` / `langgraph_auth_user_id` stamps | Usage `consumer_id`, gate decision actor fallback, phase usage attribution | Gate resumes stamped `apex_actor_id`; launches and reruns did not. | **Fixed for `apex_actor_id`** (decision below). The facade does not stamp `langgraph_auth_user`, so usage events still show the consumer *name* as "graph"; the ID is attributed. |
 
 Smaller notes:
 - An admission is committed before later launch checks run. A launch refused after admission leaves a `model_run_admissions` row for a thread that has no run, exactly as the native hook does.
 - Explicit `model_by_phase` entries for phases a person completes are dropped from the pinned map, because only agent phases use a model.
 - The unit-test stand-in for admission (`tests/unit/conftest.py`) returns only the caller's explicit choices. Production pins every agent phase, which `tests/unit/test_facade_model_admission.py` covers against SQLite.
 
-## Open decision: launch attribution
+## Decision: launch attribution (option 1)
 
-Facade launches carry no actor. As a result, usage events from those runs have no `consumer_id` (`services/usage.py`), phase usage invocations have no consumer (`phase_subgraph.py`), and gate decisions taken under auto policy fall back to "unknown" (`gates.py`). Native launches stamp the consumer ID, and so do facade gate resumes.
+Facade launches and reruns now stamp `apex_actor_id` with the consumer who is acting, as native launches and facade gate resumes already did. Usage events, phase usage invocations and auto-policy gate decisions are therefore attributed instead of falling back to "unknown".
 
-Stamping the launcher's consumer ID would close the gap. It conflicts with `test_launch_does_not_persist_raw_idempotency_key_or_principal`, which asserts the launch principal never appears in persisted thread or run rows. The principal is also an input to the deterministic launch thread ID, together with the idempotency key. Note that `model_run_admissions.actor_id` already stores the consumer ID per thread, in the application database rather than in the runtime's run rows, for both native and facade launches.
-
-The options:
-
-1. **Stamp the consumer ID**, the same as native launches and facade resumes, and narrow that test to the idempotency key.
-2. **Stamp an opaque actor reference**, for example a keyed hash of the consumer ID that the usage and actor-name services can resolve. This keeps the principal out of run rows.
-3. **Leave launches unattributed**, and document that facade-launched usage and auto-gate actors are anonymous.
+- **The actor is passed separately from the idempotency principal** (`start_run(actor_id=...)`). They differ for a Cycle dispatch that another operator resumes: the deterministic thread stays keyed by the dispatch's author, while the run is attributed to whoever resumed it. That also matches what the native hook accepts, since it refuses an `apex_actor_id` that doesn't match the authenticated consumer.
+- The stamp is applied after the idempotency fingerprint, so a retry still adopts the run it created.
+- A caller can't supply the key itself; both the `/v1` validator and `start_run` refuse it.
+- On `/v1` launches and reruns, the idempotency principal is the acting consumer, so that ID is now stored, but only as the run's actor in its runtime configuration. It never appears in thread or run metadata, and the idempotency key itself is never stored. `test_launch_does_not_persist_raw_idempotency_key_or_principal` guards the case with no actor; new tests pin where the actor appears, and that a retry by a different actor still adopts the original run.
+- The APEX Load reconciler passes no actor, so its background analysis runs stay unattributed.
