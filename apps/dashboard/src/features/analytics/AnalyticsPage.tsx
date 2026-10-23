@@ -717,7 +717,7 @@ export function AnalyticsPage() {
 
   return (
     <section className="analytics-page animate-enter">
-      <header className="pricing-heading"><h1>{isAdmin ? 'Usage overview' : 'My usage'}</h1>{isGlobalAdmin && <Link className="btn btn-secondary" to="/analytics/models">Manage model pricing</Link>}</header>
+      <header className="pricing-heading"><h2>{isAdmin ? 'Usage overview' : 'My usage'}</h2>{isGlobalAdmin && <Link className="btn btn-secondary" to="/analytics/models">Manage model pricing</Link>}</header>
       <div className="pricing-toolbar glass-panel">
         <UsageFacetControls filters={{ ...filters, view, from: query.from ?? data?.window.from, to: query.to ?? data?.window.to }} isAdmin={isAdmin} onChange={applyFilters} />
         {isAdmin && <label>Usage view<select value={query.view} onChange={e => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', e.target.value); next.delete('consumer_id'); next.delete('offset'); if (e.target.value === 'mine' && next.get('group') === 'user') next.delete('group'); return next })}><option value="authorized">Authorized usage</option><option value="mine">My usage</option></select></label>}

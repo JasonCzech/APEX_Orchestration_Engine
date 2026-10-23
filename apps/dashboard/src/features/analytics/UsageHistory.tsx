@@ -27,7 +27,8 @@ export function UsageHistory({ modelId, filters = {} }: { modelId?: string; filt
   const query: HistoryParams = { ...filters, from, to, view, ...(modelId ? { model_id: modelId } : {}) }
   const history = useQuery({ queryKey: ['analytics', 'history', query, cursor], queryFn: async () => {
     const r = await getApexClient().GET('/v1/analytics/agents/events', { params: { query: { ...query, cursor, limit: 20 } } })
-    if (!r.data) throw new Error('Usage history could not be loaded. Check your date interval and permissions.')
+    // A malformed page must surface as this panel's error, never crash the page.
+    if (!r.data || !Array.isArray((r.data as { items?: unknown }).items)) throw new Error('Usage history could not be loaded. Check your date interval and permissions.')
     return r.data as unknown as { items: Event[]; next_cursor: string | null; cost_visible: boolean }
   } })
   const detail = useQuery({ queryKey: ['analytics', 'event', view, selected], enabled: !!selected, queryFn: async () => { const r = await getApexClient().GET('/v1/analytics/agents/events/{event_id}', { params: { path: { event_id: selected! }, query: { view } } }); if (!r.data) throw new Error('Event unavailable'); return r.data as unknown as UsageDetail } })
