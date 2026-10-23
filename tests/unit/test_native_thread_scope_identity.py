@@ -104,7 +104,9 @@ async def _native_probe() -> None:
         patch("apex.auth.handlers._resolve_native_test_scope", new=AsyncMock()),
         patch(
             "apex.auth.handlers._load_catalog_application",
-            new=AsyncMock(return_value=SimpleNamespace(id="a1", project_id="p1", archived_at=None)),
+            new=AsyncMock(
+                return_value=SimpleNamespace(id="a1", project_ids=["p1"], archived_at=None)
+            ),
         ),
         patch.object(Threads, "handle_event", new=dispatch),
     ):

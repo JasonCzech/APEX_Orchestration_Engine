@@ -19,7 +19,7 @@ function ParticipantRow({ participant: p, primary, traffic, focusMissing, primar
   const index = useApplicationsIndex()
   const applications = useApplications(p.project_id || undefined)
   const environments = useEnvironments(p.application_id)
-  const projects = [...new Set([...(index.data ?? []).map(a => a.project_id), ...(consumer?.scopes ?? []).map(s => s.project_id)])].sort()
+  const projects = [...new Set([...(index.data ?? []).flatMap(a => a.project_ids), ...(consumer?.scopes ?? []).map(s => s.project_id)])].sort()
   const missing = !p.project_id ? 'project' : !p.application_id ? 'application' : !p.environment_id ? 'environment' : null
   // Execution readiness links name the primary system's application and the
   // traffic entry's environment; those rows own the matching ids.

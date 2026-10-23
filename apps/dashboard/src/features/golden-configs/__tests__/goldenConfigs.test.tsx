@@ -78,7 +78,7 @@ function wizardDraftHandlers() {
       HttpResponse.json([
         {
           id: 'app-checkout',
-          project_id: 'demo',
+          project_ids: ['demo'],
           name: 'Checkout',
           description: 'Payments and cart funnel',
           archived_at: null,

@@ -25,7 +25,7 @@ for (const role of ['operator', 'admin'] as const) {
           return route.fulfill({ status: 202, json: { run_id: 'ordinary-rerun' } })
         }
         else if (path.endsWith('/rerun')) { submissions += 1; return route.fulfill({ status: 409, json: { detail: 'Cycle executions require a new approved preparation' } }) }
-        else if (path === '/v1/catalog/applications') json = [{ id: 'app', project_id: 'project', name: 'Checkout' }]
+        else if (path === '/v1/catalog/applications') json = [{ id: 'app', project_ids: ['project'], name: 'Checkout' }]
         else if (path.endsWith('/prompt-review')) return route.fulfill({ status: 404, json: { detail: 'No saved prompt review' } })
         return route.fulfill({ json })
       })

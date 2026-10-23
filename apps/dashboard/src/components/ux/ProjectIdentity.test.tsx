@@ -5,11 +5,12 @@ import { describe, expect, it } from 'vitest'
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-const applications = [{ id: 'a1', name: 'Checkout', project_id: 'p1' }, { id: 'a2', name: 'Search', project_id: 'p2' }]
+const applications = [{ id: 'a1', name: 'Checkout', project_ids: ['p1'] }, { id: 'a2', name: 'Search', project_ids: ['p2'] }]
 
-function mount(scopes: { project_id: string; app_id: string | null }[] = []) {
+// The project bar (?project=) is where a project's display name is shown and edited.
+function mount(scopes: { project_id: string; app_id: string | null }[] = [], entry = '/environments?project=p1') {
   server.use(http.get('*/v1/catalog/applications', () => HttpResponse.json(applications)), http.get('*/v1/catalog/environments', () => HttpResponse.json([])))
-  return renderApp({ initialEntries: ['/environments'], authState: authenticatedState('admin', 'Admin', scopes) })
+  return renderApp({ initialEntries: [entry], authState: authenticatedState('admin', 'Admin', scopes) })
 }
 
 describe('authoritative project names', () => {
@@ -22,31 +23,32 @@ describe('authoritative project names', () => {
       return HttpResponse.json({ ...body, updated_at: '2026-10-17T12:00:00Z' })
     }))
     mount()
-    expect(await screen.findAllByText('Payments', { exact: true })).toHaveLength(2)
-    const checkout = screen.getByRole('region', { name: 'Project Payments (p1)' })
-    expect(within(checkout).getByText('p1', { exact: true })).toHaveAttribute('title', 'p1')
+    // Duplicate display names stay distinguishable: the select shows the ID, the bar shows the copyable ID.
+    expect(await screen.findByRole('option', { name: 'Payments (p2)' })).toBeInTheDocument()
+    const bar = screen.getByRole('region', { name: 'Project Payments (p1)' })
+    expect(within(bar).getByText('p1', { exact: true })).toHaveAttribute('title', 'p1')
     const user = userEvent.setup()
-    await user.click(within(checkout).getByRole('button', { name: 'Edit project name' }))
+    await user.click(within(bar).getByRole('button', { name: 'Edit project name' }))
     const dialog = screen.getByRole('dialog', { name: 'Project display name' })
     await user.clear(within(dialog).getByRole('textbox', { name: 'Project name' }))
     await user.type(within(dialog).getByRole('textbox', { name: 'Project name' }), 'Payments renamed')
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText('Payments renamed')).toBeVisible()
-    expect(screen.getAllByText('Payments', { exact: true })).toHaveLength(1)
+    expect(await within(bar).findByText('Payments renamed')).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Payments (p2)' })).toBeInTheDocument()
     expect(writes).toEqual([{ project_id: 'p1', name: 'Payments renamed' }])
   })
 
   it('keeps IDs and explicit unavailable labels after denied lookup and hides project edits for app admins', async () => {
     server.use(http.get('*/v1/catalog/projects', () => HttpResponse.json({ detail: 'Forbidden' }, { status: 403 })))
     mount([{ project_id: 'p1', app_id: 'a1' }])
-    expect(await screen.findAllByText('Project name unavailable')).toHaveLength(2)
+    expect((await screen.findAllByText('Project name unavailable')).length).toBeGreaterThan(0)
     expect(screen.getByText('p1', { exact: true, selector: 'code' })).toHaveAttribute('title', 'p1')
     expect(screen.queryByRole('button', { name: 'Edit project name' })).not.toBeInTheDocument()
   })
 
   it('uses authorized display names in project choices while preserving the full ID as the value', async () => {
     server.use(http.get('*/v1/catalog/projects', () => HttpResponse.json([{ project_id: 'p1', name: 'Payments' }, { project_id: 'p2', name: 'Payments' }])))
-    mount([{ project_id: 'p1', app_id: null }, { project_id: 'p2', app_id: 'a2' }])
+    mount([{ project_id: 'p1', app_id: null }, { project_id: 'p2', app_id: 'a2' }], '/environments')
     const first = await screen.findByRole('option', { name: 'Payments (p1)' })
     expect(first).toHaveValue('p1')
     expect(screen.getByRole('option', { name: 'Payments (p2)' })).toHaveValue('p2')
@@ -60,7 +62,7 @@ describe('authoritative project names', () => {
     const removed: string[] = []
     server.use(http.get('*/v1/catalog/projects', () => HttpResponse.json(labels)), http.delete('*/v1/catalog/projects', ({ request }) => { removed.push(new URL(request.url).searchParams.get('project')!); labels = []; return new HttpResponse(null, { status: 204 }) }))
     const { router } = mount([{ project_id: 'p1', app_id: null }])
-    await screen.findByText('Payments')
+    await screen.findAllByText('Payments')
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Edit project name' }))
     await user.type(screen.getByRole('textbox', { name: 'Project name' }), ' draft')

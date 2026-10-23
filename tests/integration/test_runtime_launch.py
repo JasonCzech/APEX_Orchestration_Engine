@@ -390,7 +390,7 @@ def _wizard_launch(client: httpx.Client) -> dict[str, Any]:
     app = _ok(
         client.post(
             "/v1/catalog/applications",
-            json={"project_id": PROJECT_ID, "name": f"Checkout {suffix}"},
+            json={"project_ids": [PROJECT_ID], "name": f"Checkout {suffix}"},
         ),
         201,
     )

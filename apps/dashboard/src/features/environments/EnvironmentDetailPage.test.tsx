@@ -288,7 +288,7 @@ describe('EnvironmentDetailPage', () => {
 
     const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' })
     expect(await within(breadcrumb).findByRole('link', { name: 'Checkout' })).toBeInTheDocument()
-    expect(await screen.findByText('None of the latest 100 tests in this project used this environment.')).toBeInTheDocument()
+    expect(await screen.findByText('None of the latest 100 tests used this environment.')).toBeInTheDocument()
   })
 
   it('renames an environment and refuses a name its application already uses', async () => {

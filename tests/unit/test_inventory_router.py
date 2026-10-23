@@ -132,7 +132,7 @@ def make_environment(
     *,
     application_id: str | None = None,
 ) -> Environment:
-    app = Application(id=application_id or uuid4().hex, project_id=project_id, name="Checkout")
+    app = Application(id=application_id or uuid4().hex, project_ids=[project_id], name="Checkout")
     env = Environment(id=uuid4().hex, application_id=app.id, name=name, kind="k8s", options={})
     env.application = app
     return env

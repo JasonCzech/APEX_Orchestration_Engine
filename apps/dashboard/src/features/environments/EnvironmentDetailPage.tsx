@@ -371,15 +371,13 @@ function InventoryPanel({
 }
 
 /** Environment-context prompts and recent tests that used this environment. */
-function RelatedCard({ environment, projectId, projectPending, canAddContext }: {
+function RelatedCard({ environment, canAddContext }: {
   environment: Environment
-  projectId: string | undefined
-  projectPending: boolean
   canAddContext: boolean
 }) {
   const prompts = usePromptList({ namespace: 'environment', environment_id: environment.id })
-  // The newest tests in the project, narrowed to those whose scope includes this environment.
-  const recent = usePipelines({ project: projectId, limit: 100 })
+  // The newest tests you can see (in any project), narrowed to those whose scope includes this environment.
+  const recent = usePipelines({ limit: 100 })
   const tests = (recent.data?.items ?? []).filter(test => {
     const participants = (test.test_scope as { participants?: Array<{ environment_id?: string }> } | null | undefined)?.participants
     return participants?.some(participant => participant.environment_id === environment.id)
@@ -396,10 +394,9 @@ function RelatedCard({ environment, projectId, projectPending, canAddContext }: 
         ))}</ul>}
       {canAddContext && <Link className="btn btn-ghost btn-sm env-related-action" to={`/prompts?ns=environment&new=environment&environment_id=${encodeURIComponent(environment.id)}`}>Add environment context</Link>}
       <h3 className="env-card-subtitle">Recent tests</h3>
-      {!projectId && !projectPending ? <p className="env-muted">This environment’s application isn’t visible to you, so its tests can’t be listed.</p>
-        : !projectId || recent.isPending ? <p className="env-muted">Loading tests…</p>
+      {recent.isPending ? <p className="env-muted">Loading tests…</p>
         : recent.isError ? <p className="env-muted">Tests couldn’t be loaded.</p>
-        : tests.length === 0 ? <p className="env-muted">None of the latest 100 tests in this project used this environment.</p>
+        : tests.length === 0 ? <p className="env-muted">None of the latest 100 tests used this environment.</p>
         : <ul className="env-related-list">{tests.map(test => (
           <li key={test.thread_id}><Link to={`/runs/${encodeURIComponent(test.thread_id)}`}>{test.title || 'Untitled test'}</Link>{test.updated_at && <span className="env-muted"> · {formatRelative(test.updated_at)}</span>}</li>
         ))}</ul>}
@@ -421,7 +418,10 @@ export function EnvironmentDetailPage() {
   const rescan = useRescanEnvironment(id)
   const consumer = useConsumer()
   const owningApplication = applications.data?.find((application) => application.id === environment.data?.application_id)
-  const canMutate = canMutateAudience(consumer, owningApplication?.project_id, owningApplication?.id)
+  // A shared application can be changed through any linked project the user may act in.
+  const canMutate = (owningApplication?.project_ids ?? []).some(projectId => canMutateAudience(consumer, projectId, owningApplication?.id))
+  // Delete reaches every project using the application.
+  const canDelete = Boolean(owningApplication?.project_ids.length) && owningApplication!.project_ids.every(projectId => canMutateAudience(consumer, projectId, owningApplication?.id))
   const canApproveTarget = isGlobalAdmin(consumer)
   // ?edit=1 lets the list's row menu land directly in edit mode.
   const editRequested = canMutate && searchParams.get('edit') === '1'
@@ -456,7 +456,7 @@ export function EnvironmentDetailPage() {
 
   const env = environment.data
   const app = applications.data?.find((candidate) => candidate.id === env.application_id)
-  const projectName = app ? (!labels.isError && labels.data?.find(row => row.project_id === app.project_id)?.name) || app.project_id : null
+  const projectName = (projectId: string) => (!labels.isError && labels.data?.find(row => row.project_id === projectId)?.name) || projectId
   const siblingNames = (environments.data ?? []).filter(other => other.application_id === env.application_id && other.id !== env.id).map(other => other.name)
 
   return (
@@ -471,8 +471,6 @@ export function EnvironmentDetailPage() {
             {app && (
               <>
                 <span className="env-breadcrumb-sep" aria-hidden="true">/</span>
-                <Link to={`/environments?project=${encodeURIComponent(app.project_id)}`}>{projectName}</Link>
-                <span className="env-breadcrumb-sep" aria-hidden="true">/</span>
                 <Link to={`/environments?application=${encodeURIComponent(app.id)}`}>{app.name}</Link>
               </>
             )}
@@ -480,6 +478,13 @@ export function EnvironmentDetailPage() {
           <div className="env-detail-title-row">
             <TargetBadge environment={env} />
             {kindLabel(env.kind) && <span className="env-muted">{kindLabel(env.kind)}</span>}
+            {app && app.project_ids.length > 0 && (
+              <ul className="env-project-chips" aria-label={`Projects using ${app.name}`}>
+                {app.project_ids.map(projectId => (
+                  <li key={projectId}><Link className="env-project-chip" to={`/environments?project=${encodeURIComponent(projectId)}`} title={projectId}>{projectName(projectId)}</Link></li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
         {canMutate && (
@@ -487,7 +492,7 @@ export function EnvironmentDetailPage() {
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditing((value) => !value)} disabled={writeCount > 0}>
               {editing ? 'Close editor' : 'Edit'}
             </button>
-            <button type="button" className="btn btn-ghost btn-sm env-danger-text" onClick={() => setDeleting(true)} disabled={writeCount > 0}>Delete…</button>
+            {canDelete && <button type="button" className="btn btn-ghost btn-sm env-danger-text" onClick={() => setDeleting(true)} disabled={writeCount > 0}>Delete…</button>}
           </div>
         )}
       </header>
@@ -513,7 +518,7 @@ export function EnvironmentDetailPage() {
           rescan={rescan}
           writePending={writeCount > 0}
         />
-        <RelatedCard environment={env} projectId={app?.project_id} projectPending={applications.isPending} canAddContext={canApproveTarget} />
+        <RelatedCard environment={env} canAddContext={canApproveTarget} />
       </div>
       {deleting && (
         <DeleteEnvironmentDialog environment={env} onClose={() => setDeleting(false)}

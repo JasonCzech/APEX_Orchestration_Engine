@@ -124,7 +124,7 @@ export function useApplicationsIndex(options: { includeArchived?: boolean } = {}
 }
 
 /** Rename or describe an application (PATCH; operator+ with access to it). */
-export function useUpdateApplication(): UseMutationResult<Application, Error, { applicationId: string; body: { name?: string; description?: string | null } }> {
+export function useUpdateApplication(): UseMutationResult<Application, Error, { applicationId: string; body: { name?: string; description?: string | null; project_ids?: string[] } }> {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async ({ applicationId, body }) => {

@@ -16,7 +16,7 @@ export function ProjectField({ value, onChange, required = false, label = 'Proje
   const scoped = Boolean(consumer?.scopes.length)
   const projects = [...new Set(scoped
     ? consumer!.scopes.map((scope) => scope.project_id)
-    : (catalog.data ?? []).map((application) => application.project_id))].sort()
+    : (catalog.data ?? []).flatMap((application) => application.project_ids))].sort()
   return (
     <label className="ux-field">
       {label}

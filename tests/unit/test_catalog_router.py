@@ -50,11 +50,11 @@ def test_catalog_api_rejects_credentials_in_scalar_labels_without_reflection(
 
     unsafe_application = client.post(
         "/catalog/applications",
-        json={"project_id": "demo", "name": credential},
+        json={"project_ids": ["demo"], "name": credential},
     )
     safe_application = client.post(
         "/catalog/applications",
-        json={"project_id": "demo", "name": "Checkout"},
+        json={"project_ids": ["demo"], "name": "Checkout"},
     )
     app_id = safe_application.json()["id"]
     unsafe_description = client.patch(
@@ -85,12 +85,21 @@ def test_catalog_api_rejects_credentials_in_scalar_labels_without_reflection(
     assert repo.environments == {}
 
 
-def _make_application(project_id: str, name: str, description: str | None = None) -> Application:
-    app = Application(id=uuid4().hex, project_id=project_id, name=name, description=description)
+def _make_application(
+    project_ids: list[str], name: str, description: str | None = None
+) -> Application:
+    app = Application(id=uuid4().hex, project_ids=project_ids, name=name, description=description)
     app.archived_at = None
     app.created_at = _now()
     app.updated_at = _now()
     return app
+
+
+def _scoped(app: Application, scopes: Sequence[ScopeRef]) -> bool:
+    """Fake twin of application_scope_filter: any linked project grants access."""
+    return any(
+        scope.project_id in app.project_ids and scope.app_id in (None, app.id) for scope in scopes
+    )
 
 
 def _make_hosts(hosts: Sequence[dict[str, Any]]) -> list[EnvironmentHost]:
@@ -119,7 +128,7 @@ def _make_environment(app: Application, name: str, **kwargs: Any) -> Environment
 
 def test_catalog_legacy_credential_labels_are_redacted_from_output() -> None:
     credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
-    app = _make_application("demo", credential, description=credential)
+    app = _make_application(["demo"], credential, description=credential)
     environment = _make_environment(
         app,
         credential,
@@ -164,38 +173,31 @@ class FakeCatalogRepository:
         self.application_list_calls += 1
         apps = list(self.applications.values())
         if project is not None:
-            apps = [a for a in apps if a.project_id == project]
+            apps = [a for a in apps if project in a.project_ids]
         if visible_projects is not None:
-            apps = [a for a in apps if a.project_id in visible_projects]
+            apps = [a for a in apps if set(a.project_ids) & set(visible_projects)]
         if allowed_scopes is not None:
-            project_wide = {scope.project_id for scope in allowed_scopes if scope.app_id is None}
-            exact = {(scope.project_id, scope.app_id) for scope in allowed_scopes}
-            apps = [
-                app
-                for app in apps
-                if app.project_id in project_wide or (app.project_id, app.id) in exact
-            ]
+            apps = [a for a in apps if _scoped(a, allowed_scopes)]
         if not include_archived:
             apps = [a for a in apps if a.archived_at is None]
-        return sorted(apps, key=lambda a: (a.project_id, a.name))[offset : offset + limit]
+        return sorted(apps, key=lambda a: a.name)[offset : offset + limit]
 
     async def get_application(self, application_id: str) -> Application | None:
         return self.applications.get(application_id)
 
     async def create_application(
-        self, *, project_id: str, name: str, description: str | None = None
+        self, *, project_ids: Sequence[str], name: str, description: str | None = None
     ) -> Application:
-        if any(a.project_id == project_id and a.name == name for a in self.applications.values()):
+        if any(a.name == name for a in self.applications.values()):
             raise DuplicateNameError(name)
-        app = _make_application(project_id, name, description)
+        app = _make_application(sorted(set(project_ids)), name, description)
         self.applications[app.id] = app
         return app
 
     async def update_application(self, app: Application, changes: dict[str, Any]) -> Application:
         new_name = changes.get("name")
         if new_name is not None and any(
-            a.id != app.id and a.project_id == app.project_id and a.name == new_name
-            for a in self.applications.values()
+            a.id != app.id and a.name == new_name for a in self.applications.values()
         ):
             raise DuplicateNameError(new_name)
         for field, value in changes.items():
@@ -228,19 +230,10 @@ class FakeCatalogRepository:
         if application_id is not None:
             envs = [e for e in envs if e.application_id == application_id]
         if visible_projects is not None:
-            envs = [e for e in envs if e.application.project_id in visible_projects]
+            envs = [e for e in envs if set(e.application.project_ids) & set(visible_projects)]
         if allowed_scopes is not None:
-            project_wide = {scope.project_id for scope in allowed_scopes if scope.app_id is None}
-            exact = {(scope.project_id, scope.app_id) for scope in allowed_scopes}
-            envs = [
-                env
-                for env in envs
-                if env.application.project_id in project_wide
-                or (env.application.project_id, env.application_id) in exact
-            ]
-        return sorted(envs, key=lambda e: (e.application.project_id, e.name))[
-            offset : offset + limit
-        ]
+            envs = [e for e in envs if _scoped(e.application, allowed_scopes)]
+        return sorted(envs, key=lambda e: (e.application.name, e.name))[offset : offset + limit]
 
     async def get_environment(self, environment_id: str) -> Environment | None:
         return self.environments.get(environment_id)
@@ -340,11 +333,11 @@ def test_create_get_list_application(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     created = client.post(
         "/catalog/applications",
-        json={"project_id": "demo", "name": "Checkout", "description": "demo app"},
+        json={"project_ids": ["demo"], "name": "Checkout", "description": "demo app"},
     )
     assert created.status_code == 201
     body = created.json()
-    assert body["project_id"] == "demo"
+    assert body["project_ids"] == ["demo"]
     assert body["name"] == "Checkout"
     assert body["archived_at"] is None
 
@@ -372,7 +365,7 @@ def test_catalog_lists_reject_huge_offset_before_repository(
 
 def test_duplicate_application_name_is_409(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
-    payload = {"project_id": "demo", "name": "Checkout"}
+    payload = {"project_ids": ["demo"], "name": "Checkout"}
     assert client.post("/catalog/applications", json=payload).status_code == 201
     assert client.post("/catalog/applications", json=payload).status_code == 409
 
@@ -382,7 +375,7 @@ def test_application_rejects_scope_longer_than_database_column_before_write(
 ) -> None:
     response = make_client(repo, ADMIN).post(
         "/catalog/applications",
-        json={"project_id": "p" * 256, "name": "Checkout"},
+        json={"project_ids": ["p" * 256], "name": "Checkout"},
     )
 
     assert response.status_code == 422
@@ -392,7 +385,7 @@ def test_application_rejects_scope_longer_than_database_column_before_write(
 def test_update_application(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     patched = client.patch(f"/catalog/applications/{app_id}", json={"description": "updated"})
     assert patched.status_code == 200
@@ -405,7 +398,7 @@ def test_patch_rejects_null_nonnullable_names_before_repository_mutation(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     environment = client.post(
         "/catalog/environments",
@@ -426,7 +419,7 @@ def test_patch_rejects_null_nonnullable_names_before_repository_mutation(
 def test_archive_and_unarchive(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
 
     archived = client.post(f"/catalog/applications/{app_id}/archive")
@@ -446,7 +439,7 @@ def test_role_gating_on_application_mutations(repo: FakeCatalogRepository) -> No
     viewer = make_client(repo, VIEWER_DEMO)
     operator = make_client(repo, OPERATOR_DEMO)
     admin = make_client(repo, ADMIN)
-    payload = {"project_id": "demo", "name": "Checkout"}
+    payload = {"project_ids": ["demo"], "name": "Checkout"}
 
     assert viewer.post("/catalog/applications", json=payload).status_code == 403
 
@@ -460,8 +453,8 @@ def test_role_gating_on_application_mutations(repo: FakeCatalogRepository) -> No
 
 
 def test_project_scoping_on_applications(repo: FakeCatalogRepository) -> None:
-    demo_app = _make_application("demo", "Checkout")
-    other_app = _make_application("other", "Billing")
+    demo_app = _make_application(["demo"], "Checkout")
+    other_app = _make_application(["other"], "Billing")
     repo.applications = {a.id: a for a in (demo_app, other_app)}
 
     scoped = make_client(repo, OPERATOR_DEMO)
@@ -472,13 +465,103 @@ def test_project_scoping_on_applications(repo: FakeCatalogRepository) -> None:
     )
     assert (
         scoped.post(
-            "/catalog/applications", json={"project_id": "other", "name": "Nope"}
+            "/catalog/applications", json={"project_ids": ["other"], "name": "Nope"}
         ).status_code
         == 403
     )
 
     unscoped = make_client(repo, ADMIN)
     assert len(unscoped.get("/catalog/applications").json()) == 2
+
+
+def test_shared_application_is_visible_and_editable_through_any_linked_project(
+    repo: FakeCatalogRepository,
+) -> None:
+    shared = _make_application(["demo", "other"], "Checkout")
+    repo.applications = {shared.id: shared}
+    env = _make_environment(shared, "staging")
+    repo.environments = {env.id: env}
+
+    scoped = make_client(repo, OPERATOR_DEMO)
+    # Linked projects outside the caller's scope aren't disclosed.
+    assert [a["project_ids"] for a in scoped.get("/catalog/applications").json()] == [["demo"]]
+    assert scoped.get(f"/catalog/environments/{env.id}").status_code == 200
+    assert (
+        scoped.patch(f"/catalog/applications/{shared.id}", json={"description": "x"}).status_code
+        == 200
+    )
+    # Saving the visible set back keeps the hidden link.
+    response = scoped.patch(f"/catalog/applications/{shared.id}", json={"project_ids": ["demo"]})
+    assert response.status_code == 200
+    assert shared.project_ids == ["demo", "other"]
+    # Linking a project outside the operator's scope is refused.
+    assert (
+        scoped.patch(
+            f"/catalog/applications/{shared.id}", json={"project_ids": ["demo", "third"]}
+        ).status_code
+        == 403
+    )
+
+
+def test_archive_and_delete_of_a_shared_application_need_every_linked_project(
+    repo: FakeCatalogRepository,
+) -> None:
+    shared = _make_application(["demo", "other"], "Checkout")
+    repo.applications = {shared.id: shared}
+    env = _make_environment(shared, "staging")
+    repo.environments = {env.id: env}
+
+    scoped = make_client(repo, OPERATOR_DEMO)
+    for response in (
+        scoped.post(f"/catalog/applications/{shared.id}/archive"),
+        scoped.delete(f"/catalog/environments/{env.id}"),
+    ):
+        assert response.status_code == 403
+        assert "every project that uses it" in response.json()["detail"]
+    assert shared.archived_at is None
+    assert env.id in repo.environments
+
+    admin = make_client(repo, ADMIN)
+    assert admin.post(f"/catalog/applications/{shared.id}/archive").status_code == 200
+    assert admin.delete(f"/catalog/environments/{env.id}").status_code == 204
+
+
+def test_linking_a_project_needs_project_wide_scope_on_it(repo: FakeCatalogRepository) -> None:
+    app = _make_application(["demo"], "Checkout")
+    repo.applications = {app.id: app}
+    scoped = make_client(repo, OPERATOR_DEMO)
+    assert (
+        scoped.patch(
+            f"/catalog/applications/{app.id}", json={"project_ids": ["demo", "other"]}
+        ).status_code
+        == 403
+    )
+    admin = make_client(repo, ADMIN)
+    response = admin.patch(
+        f"/catalog/applications/{app.id}", json={"project_ids": ["demo", "other"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["project_ids"] == ["demo", "other"]
+    assert (
+        admin.patch(f"/catalog/applications/{app.id}", json={"project_ids": []}).status_code == 422
+    )
+    assert (
+        admin.patch(f"/catalog/applications/{app.id}", json={"project_ids": None}).status_code
+        == 422
+    )
+
+
+def test_application_names_are_unique_across_projects(repo: FakeCatalogRepository) -> None:
+    admin = make_client(repo, ADMIN)
+    assert (
+        admin.post(
+            "/catalog/applications", json={"project_ids": ["demo"], "name": "ACC"}
+        ).status_code
+        == 201
+    )
+    response = admin.post("/catalog/applications", json={"project_ids": ["other"], "name": "ACC"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "application name already exists"
 
 
 def test_app_only_operator_cannot_create_project_wide_application(
@@ -495,7 +578,7 @@ def test_app_only_operator_cannot_create_project_wide_application(
 
     response = client.post(
         "/catalog/applications",
-        json={"project_id": "demo", "name": "Sibling"},
+        json={"project_ids": ["demo"], "name": "Sibling"},
     )
 
     assert response.status_code == 403
@@ -508,7 +591,7 @@ def test_app_only_operator_cannot_create_project_wide_application(
 def test_environment_crud_with_hosts(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
 
     created = client.post(
@@ -555,7 +638,7 @@ def test_environment_rejects_deep_options_and_host_fanout_before_write(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     nested: dict[str, Any] = {}
     cursor = nested
@@ -587,7 +670,7 @@ def test_environment_writes_reject_raw_credentials_in_options(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
 
     created = client.post(
@@ -629,7 +712,7 @@ def test_environment_api_rejects_standalone_credential_signatures(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
 
     response = client.post(
@@ -651,7 +734,7 @@ def test_environment_writes_reject_server_owned_repair_marker(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
 
     created = client.post(
@@ -668,7 +751,7 @@ def test_environment_writes_reject_server_owned_repair_marker(
 
 
 def test_environment_output_redacts_credential_bearing_legacy_rows() -> None:
-    app = _make_application("demo", "Checkout")
+    app = _make_application(["demo"], "Checkout")
     environment = _make_environment(
         app,
         "legacy",
@@ -718,7 +801,7 @@ async def test_catalog_repository_rejects_unsafe_target_metadata_before_session_
 
 async def test_catalog_repository_validates_effective_target_before_mutating_row() -> None:
     repository = CatalogRepository(cast(Any, object()))
-    application = _make_application("demo", "Checkout")
+    application = _make_application(["demo"], "Checkout")
     environment = _make_environment(
         application,
         "safe",
@@ -743,7 +826,7 @@ def test_scoped_operator_cannot_create_or_change_execution_target(
 ) -> None:
     admin = make_client(repo, ADMIN)
     app_id = admin.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     operator = make_client(repo, OPERATOR_DEMO)
 
@@ -776,7 +859,7 @@ def test_platform_admin_approves_and_versions_execution_target(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     created = client.post(
         "/catalog/environments",
@@ -802,7 +885,7 @@ def test_private_execution_target_requires_platform_approval_marker(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     payload: dict[str, Any] = {
         "application_id": app_id,
@@ -818,7 +901,7 @@ def test_private_execution_target_requires_platform_approval_marker(
 
 
 def test_environment_snapshot_summary(repo: FakeCatalogRepository) -> None:
-    app = _make_application("demo", "Checkout")
+    app = _make_application(["demo"], "Checkout")
     env = _make_environment(app, "staging-2")
     repo.applications[app.id] = app
     repo.environments[env.id] = env
@@ -844,7 +927,7 @@ def test_environment_snapshot_summary(repo: FakeCatalogRepository) -> None:
 def test_environment_duplicate_name_is_409(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     payload = {"application_id": app_id, "name": "staging-2"}
     assert client.post("/catalog/environments", json=payload).status_code == 201
@@ -854,7 +937,7 @@ def test_environment_duplicate_name_is_409(repo: FakeCatalogRepository) -> None:
 def test_environment_scoping_inherits_application_project(
     repo: FakeCatalogRepository,
 ) -> None:
-    other_app = _make_application("other", "Billing")
+    other_app = _make_application(["other"], "Billing")
     other_env = _make_environment(other_app, "prod")
     repo.applications[other_app.id] = other_app
     repo.environments[other_env.id] = other_env
@@ -885,7 +968,7 @@ def test_target_approval_uses_current_locked_target_and_rejects_stale_version(
 ) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     env_id = client.post(
         "/catalog/environments", json={"application_id": app_id, "name": "staging"}
@@ -933,7 +1016,7 @@ def test_scoped_metadata_edit_preserves_platform_owned_environment_options(
 ) -> None:
     admin = make_client(repo, ADMIN)
     app_id = admin.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     env_id = admin.post(
         "/catalog/environments",
@@ -967,7 +1050,7 @@ def test_delete_referenced_catalog_resource_returns_safe_conflict(
 
     client = make_client(repo, ADMIN)
     app_id = client.post(
-        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+        "/catalog/applications", json={"project_ids": ["demo"], "name": "Checkout"}
     ).json()["id"]
     resource_id = app_id
     if resource == "environment":

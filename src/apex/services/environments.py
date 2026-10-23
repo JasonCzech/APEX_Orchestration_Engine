@@ -48,7 +48,7 @@ async def resolve_environment_context(
         or application is None
         or getattr(application, "archived_at", None) is not None
         or project_id is None
-        or application.project_id != project_id
+        or project_id not in application.project_ids
         or (app_id is not None and env.application_id != app_id)
     ):
         raise EnvironmentTargetNotFoundError("environment not found")
@@ -67,7 +67,7 @@ async def resolve_environment_target(
     env = await resolve_environment_context(
         repository, environment_id, project_id=project_id, app_id=app_id
     )
-    application = env.application
+    assert project_id is not None  # resolve_environment_context rejects a missing project
     # Environment rows predate the secret-free connection contract and can be
     # written outside the API. Treat the URL/options pair atomically: no approval
     # bit may make legacy credentials or malformed metadata executable.
@@ -90,7 +90,8 @@ async def resolve_environment_target(
         raise EnvironmentTargetNotApprovedError("environment has no approved HTTP target")
     return EnvironmentTarget(
         environment_id=env.id,
-        project_id=application.project_id,
+        # The run's project, which resolve_environment_context checked is linked.
+        project_id=project_id,
         app_id=env.application_id,
         base_url=base_url,
         version=int(env.target_version),

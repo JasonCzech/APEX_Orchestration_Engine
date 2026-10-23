@@ -27,6 +27,7 @@ from apex.persistence.models import (
     Connection,
     ConsumerKey,
     Environment,
+    ProjectApplication,
     Prompt,
 )
 
@@ -88,7 +89,15 @@ async def sessionmaker() -> AsyncIterator[async_sessionmaker]:
         async with maker() as session:
             await session.execute(delete(ApiConsumer).where(ApiConsumer.name == ADMIN_NAME))
             await session.execute(delete(Connection).where(Connection.name == CONNECTION_NAME))
-            await session.execute(delete(Application).where(Application.project_id == TEST_PROJECT))
+            await session.execute(
+                delete(Application).where(
+                    Application.id.in_(
+                        select(ProjectApplication.application_id).where(
+                            ProjectApplication.project_id == TEST_PROJECT
+                        )
+                    )
+                )
+            )
             await session.commit()
         await engine.dispose()
 
@@ -143,7 +152,9 @@ async def test_existing_application_drift_fails_closed(
         await session.commit()
     async with sessionmaker() as session:
         application = await session.scalar(
-            select(Application).where(Application.project_id == TEST_PROJECT)
+            select(Application)
+            .join(ProjectApplication)
+            .where(ProjectApplication.project_id == TEST_PROJECT)
         )
         assert application is not None
         application.description = "drifted"

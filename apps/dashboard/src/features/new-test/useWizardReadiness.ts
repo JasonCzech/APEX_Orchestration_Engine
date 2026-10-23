@@ -19,7 +19,7 @@ export function useWizardReadiness(draft: WizardDraft, maxContextPackets?: numbe
     retry: false,
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const [apps, envs] = await Promise.all([fetchApplications(p.project_id, signal), fetchEnvironments(p.application_id, signal)])
-      return apps.some(app => app.id === p.application_id && app.project_id === p.project_id && !app.archived_at) && envs.some(env => env.id === p.environment_id && env.application_id === p.application_id)
+      return apps.some(app => app.id === p.application_id && app.project_ids.includes(p.project_id) && !app.archived_at) && envs.some(env => env.id === p.environment_id && env.application_id === p.application_id)
     },
   })) })
   const documents = useTestScopeDocuments(draft.scope)

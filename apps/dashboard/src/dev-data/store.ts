@@ -22,10 +22,12 @@ import {
   DEMO_RUN_PROFILES,
   DEMO_SYSTEM_PROMPTS,
   demoAppId,
+  demoAppProjects,
   demoApplicationPrompts,
   demoBaseUrl,
   demoDependencies,
   demoEnvId,
+  demoHomeProject,
   demoEnvironmentPrompts,
   type DemoAppCode,
   type DemoEnvCode,
@@ -174,7 +176,7 @@ interface DemoBaseline {
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
-const DEMO_STATE_VERSION = 5
+const DEMO_STATE_VERSION = 6
 const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
 const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test', 'application', 'user']
 const AGENT_SORTS: AgentSort[] = [
@@ -712,16 +714,18 @@ export class DevDataStore {
 
   private seedTelecomCatalog(created: string, updated: string): void {
     const project = TELECOM_PROJECT_ID
-    this.applications = DEMO_PROJECTS.flatMap((item) => item.apps.map((code) => ({
-      id: demoAppId(item.id, code),
+    // Each application is registered once and linked to every project that tests it.
+    const codes = [...new Set(DEMO_PROJECTS.flatMap((item) => item.apps))]
+    this.applications = codes.map((code) => ({
+      id: demoAppId('', code),
       name: DEMO_APPS[code].name,
-      project_id: item.id,
+      project_ids: demoAppProjects(code),
       description: DEMO_APPS[code].description,
       archived_at: null,
       created_at: created,
       updated_at: updated,
-    })))
-    this.environments = DEMO_PROJECTS.flatMap((item) => item.apps.flatMap((code) => DEMO_APPS[code].environments.map((env) => this.catalogEnvironment(item.id, code, env))))
+    }))
+    this.environments = codes.flatMap((code) => DEMO_APPS[code].environments.map((env) => this.catalogEnvironment(demoHomeProject(code), code, env)))
     this.inventories.clear()
     for (const env of this.environments) {
       const [projectId, code, envCode] = this.environmentParts(env.id)
@@ -1588,22 +1592,22 @@ export class DevDataStore {
       const project = params.get('project')
       const includeArchived = params.get('include_archived') === 'true'
       const apps = this.applications.filter(
-        (app) => (!project || app.project_id === project) && (includeArchived || app.archived_at === null),
+        (app) => (!project || app.project_ids.includes(project)) && (includeArchived || app.archived_at === null),
       )
       return jsonResponse(apps)
     }
     if (method === 'POST' && path === '/v1/catalog/applications') {
       const body = (await request.json()) as Partial<Application>
-      const projectId = body.project_id ?? TELECOM_PROJECT_ID
-      // Mirrors the unique (project_id, name) constraint, archived applications included.
-      if (this.applications.some((app) => app.project_id === projectId && app.name === body.name)) {
-        return problemResponse(409, 'conflict', 'application name already exists in project')
+      const projectIds = [...new Set(body.project_ids?.length ? body.project_ids : [TELECOM_PROJECT_ID])].sort()
+      // Mirrors the unique name constraint (global, archived applications included).
+      if (this.applications.some((app) => app.name === body.name)) {
+        return problemResponse(409, 'conflict', 'application name already exists')
       }
       const app: Application = {
         id: this.id('app'),
         name: body.name ?? 'New application',
         description: body.description ?? null,
-        project_id: projectId,
+        project_ids: projectIds,
         archived_at: null,
         created_at: nowIso(),
         updated_at: nowIso(),
@@ -1618,15 +1622,18 @@ export class DevDataStore {
     if (method === 'GET') return jsonResponse(current)
     if (method === 'PATCH') {
       const body = (await request.json()) as Partial<Application>
-      if (body.name && body.name !== current.name && this.applications.some((app) => app.project_id === current.project_id && app.name === body.name)) {
-        return problemResponse(409, 'conflict', 'application name already exists in project')
+      if (body.name && body.name !== current.name && this.applications.some((app) => app.name === body.name)) {
+        return problemResponse(409, 'conflict', 'application name already exists')
+      }
+      if (body.project_ids && body.project_ids.length === 0) {
+        return problemResponse(422, 'validation_error', 'an application needs at least one project')
       }
       this.applications[index] = {
         ...current,
         name: body.name ?? current.name,
         // An explicit null clears the description.
         description: 'description' in body ? body.description ?? null : current.description,
-        project_id: body.project_id ?? current.project_id,
+        project_ids: body.project_ids ? [...new Set(body.project_ids)].sort() : current.project_ids,
         archived_at: body.archived_at ?? current.archived_at,
         updated_at: nowIso(),
       }

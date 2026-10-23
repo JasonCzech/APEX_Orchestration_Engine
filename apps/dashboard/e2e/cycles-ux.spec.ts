@@ -20,7 +20,7 @@ for (const profile of ['viewer', 'operator-unscoped', 'operator-scoped', 'admin'
       let json: unknown = {}
       if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: { cycles: true }, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Cycle reviewer', role, scopes } }
       else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Cycle reviewer', consumer_type: 'dashboard', role, scopes, is_unscoped: !scopes.length, mfa_required: false, step_up_required: false, capabilities: {} }
-      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }]
+      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_ids: ['project-one'], name: 'Checkout API' }]
       else if (path === '/v1/catalog/environments') json = [{ id: 'env-one', application_id: 'app-one', name: 'Performance staging' }]
       else if (path === '/v1/pipelines') json = { items: [], limit: 20, offset: 0 }
       else if (path === '/v1/cycles/c1') json = { ...cycle, versions: cycle.versions.map(item => ({ ...item, available_actions: canEdit ? item.available_actions : [] })) }
@@ -121,7 +121,7 @@ for (const profile of ['operator-scoped', 'admin'] as const) {
       let json: unknown = {}
       if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: { cycles: true }, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Cycle reviewer', role, scopes } }
       else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Cycle reviewer', consumer_type: 'dashboard', role, scopes, is_unscoped: !scopes.length, mfa_required: false, step_up_required: false, capabilities: {} }
-      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }]
+      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_ids: ['project-one'], name: 'Checkout API' }]
       else if (path === '/v1/catalog/environments') json = [{ id: 'env-one', application_id: 'app-one', name: 'Performance staging' }]
       else if (path === '/v1/pipelines' || path === '/v1/engine-runs') json = { items: [], total: 0 }
       else if (path === '/v1/cycles/c1') json = cycle

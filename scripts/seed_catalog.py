@@ -65,16 +65,16 @@ def _seed_connections() -> list[Connection]:
 
 
 async def _seed_application(session: AsyncSession) -> Application:
-    app = await session.scalar(
-        select(Application).where(
-            Application.project_id == DEMO_PROJECT, Application.name == DEMO_APP_NAME
-        )
-    )
+    # Application names are global; another project's registration is linked, not copied.
+    app = await session.scalar(select(Application).where(Application.name == DEMO_APP_NAME))
     if app is not None:
+        if DEMO_PROJECT not in app.project_ids:
+            app.project_ids = [*app.project_ids, DEMO_PROJECT]
+            await session.flush()
         print(f"application {DEMO_APP_NAME!r}: already exists (id={app.id})")
         return app
     app = Application(
-        project_id=DEMO_PROJECT,
+        project_ids=[DEMO_PROJECT],
         name=DEMO_APP_NAME,
         description=(
             "Employee web sales application for mobile phones/plans and internet service. "

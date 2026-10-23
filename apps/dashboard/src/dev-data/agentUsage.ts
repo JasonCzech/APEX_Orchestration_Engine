@@ -3,6 +3,8 @@
 // confirm against each provider's rate card before using them for real estimates.
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
+import { demoAppId, type DemoAppCode } from './telecomCatalog'
+
 const DAY_MS = 86_400_000
 const MINUTE_MS = 60_000
 
@@ -295,7 +297,7 @@ export function buildDemoUsage(anchorIso: string, seeded: DemoSeededRun[]): { ev
       const titles = HISTORICAL_TITLES[plan.project]!
       const [title, profile, app] = titles[Math.floor(random() * titles.length)]!
       const stamp = new Date(dayStart).toISOString().slice(0, 10).replaceAll('-', '')
-      const run = { thread_id: `hist-${stamp}-${plan.project}-${index + 1}`, title, project_id: plan.project, app_id: `app-${plan.project}-${app}`, profile }
+      const run = { thread_id: `hist-${stamp}-${plan.project}-${index + 1}`, title, project_id: plan.project, app_id: demoAppId(plan.project, app as DemoAppCode), profile }
       let cursor = plan.startMs
       const runEvents: DemoUsageEvent[] = []
       for (const phase of PHASE_NAMES) {

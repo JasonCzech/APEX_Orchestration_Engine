@@ -208,7 +208,7 @@ class FakeCatalogRepository:
     async def get_application(self, app_id: str) -> object:
         return SimpleNamespace(
             id=app_id,
-            project_id="p1",
+            project_ids=["p1"],
             archived_at=datetime.now(UTC) if self.archived else None,
         )
 

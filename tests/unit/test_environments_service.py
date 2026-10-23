@@ -31,7 +31,7 @@ def environment(
     return SimpleNamespace(
         id="env-1",
         application_id="app-a",
-        application=SimpleNamespace(id="app-a", project_id="proj-a"),
+        application=SimpleNamespace(id="app-a", project_ids=["proj-a"]),
         base_url=base_url,
         options={} if options is None else options,
         target_approved=approved,

@@ -21,7 +21,7 @@ async def test_application_environment_roundtrip() -> None:
     try:
         async with maker() as session:
             repo = CatalogRepository(session)
-            app = await repo.create_application(project_id=project, name="it-app")
+            app = await repo.create_application(project_ids=[project], name="it-app")
             assert app.created_at is not None
 
             env = await repo.create_environment(

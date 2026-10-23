@@ -151,7 +151,7 @@ async def test_dispatch_http_runs_exact_approved_source_and_links_persisted_resu
         workload={"vusers": 1, "ramp_s": 0, "duration_s": 5, "slas": {"p95_ms": 1000}},
     )
     with Session(database) as session:
-        session.add(Application(id="app", project_id="project", name="Checkout"))
+        session.add(Application(id="app", project_ids=["project"], name="Checkout"))
         session.add(
             Environment(
                 id="env",

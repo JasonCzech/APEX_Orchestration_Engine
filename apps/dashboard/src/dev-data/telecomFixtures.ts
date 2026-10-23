@@ -1,6 +1,6 @@
 import type { PhaseName } from '@apex/pipeline-events'
 
-export const TELECOM_DATASET_VERSION = 'telecom-perf-demo-3.0'
+export const TELECOM_DATASET_VERSION = 'telecom-perf-demo-4.0'
 /** Owning project of the flagship ACC add-a-line certification. */
 export const TELECOM_PROJECT_ID = 'acc-perf'
 export const FLAGSHIP_APP_ID = 'app-acc-perf-acc'
@@ -10,8 +10,8 @@ export const FLAGSHIP_ALIGN_QUERY =
 
 export const TELECOM_DATASET_REQUIREMENTS = {
   projects: 5,
-  applications: 28,
-  environments: 79,
+  applications: 10,
+  environments: 29,
   connections: 14,
   consumers: 4,
   documents: 8,
@@ -19,7 +19,7 @@ export const TELECOM_DATASET_REQUIREMENTS = {
   jiraAlignItems: 19,
   initialJiraCloudItems: 8,
   savedQueries: 4,
-  prompts: 84,
+  prompts: 49,
   seededRuns: 8,
   logs: 40,
   usageDays: 14,

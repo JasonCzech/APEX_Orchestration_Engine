@@ -117,7 +117,7 @@ async def test_resolution_and_downstream_context(monkeypatch):
             kind="service",
             options={"password": "never include options"},
             application=SimpleNamespace(
-                project_id=f"project-{i}",
+                project_ids=[f"project-{i}"],
                 archived_at=None,
                 name=f"System {i}",
                 description=f"Backend context {i}",

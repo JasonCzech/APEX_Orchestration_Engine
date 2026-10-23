@@ -21,7 +21,7 @@ for (const [profile, scenario] of [['viewer', 'recover'], ['operator-unscoped', 
       let json: unknown = {}
       if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: { cycles: true }, limits: { max_context_packets: 32 }, consumer: { id: 'operator', name: 'Cycle operator', role, scopes } }
       else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'operator', name: 'Cycle operator', consumer_type: 'dashboard', role, scopes, is_unscoped: !scopes.length, mfa_required: false, step_up_required: false, capabilities: {} }
-      else if (path === '/v1/catalog/applications') json = [{ id: 'application', project_id: 'project', name: 'Checkout API' }]
+      else if (path === '/v1/catalog/applications') json = [{ id: 'application', project_ids: ['project'], name: 'Checkout API' }]
       else if (path === '/v1/catalog/environments') json = [{ id: 'environment', application_id: 'application', name: 'Performance staging' }]
       else if (path === '/v1/catalog/projects') json = [{ project_id: 'project', name: 'Checkout project', updated_at: timestamp }]
       else if (path === '/v1/pipelines' || path === '/v1/engine-runs') json = { items: [], total: 0 }

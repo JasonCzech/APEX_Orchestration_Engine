@@ -470,45 +470,14 @@
   cursor: pointer;
 }
 
-.env-project {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-bottom: 6px;
-}
-
-.env-project + .env-project {
-  border-top: 1px solid var(--border-subtle, var(--border));
-  padding-top: 12px;
-}
-
-.env-project-header {
+/* Project bar (?project=): the project's name, editable by project administrators. */
+.env-project-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 12px;
-}
-
-.env-project-toggle {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
+  padding: 10px 12px;
   border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.env-project-toggle:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
-.env-project-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .project-identity-heading {
@@ -518,21 +487,73 @@
   font-weight: 700;
 }
 
-.env-project-counts {
+/* Projects that use an application (many-to-many). */
+.env-project-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.env-project-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs, 0.75rem);
+  text-decoration: none;
+}
+
+.env-project-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.env-project-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.env-projects-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.env-projects-picker legend {
+  padding: 0;
+}
+
+.env-projects-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.env-projects-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: var(--font-size-sm);
 }
 
-.env-needs-approval {
-  color: var(--warning-text);
-  font-weight: 600;
+.env-projects-other {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.env-project-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding-left: 12px;
-  border-left: 2px solid var(--border-subtle, var(--border));
+.env-projects-other .field-input {
+  flex: 1 1 auto;
+  max-width: 280px;
 }
 
 .env-group-actions {

@@ -69,7 +69,7 @@ function mount(data = cycle, role: 'admin' | 'viewer' = 'admin') {
     http.get('*/v1/cycles/c1', () => HttpResponse.json(data)),
     http.get('*/v1/catalog/applications', () =>
       HttpResponse.json([
-        { id: 'app1', name: 'Checkout API', project_id: 'p1' },
+        { id: 'app1', name: 'Checkout API', project_ids: ['p1'] },
       ]),
     ),
     http.get('*/v1/catalog/environments', () =>

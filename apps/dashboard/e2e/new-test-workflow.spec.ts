@@ -16,7 +16,7 @@ for (const profile of ['admin', 'operator'] as const) {
       let json: unknown = {}
       if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: {}, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Workflow reviewer', role: profile, scopes } }
       else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Workflow reviewer', consumer_type: 'dashboard', role: profile, scopes, is_unscoped: !scopes.length, capabilities: {} }
-      else if (path === '/v1/catalog/applications') json = [{ id: 'app', project_id: 'workflow', name: 'Checkout', archived_at: null }]
+      else if (path === '/v1/catalog/applications') json = [{ id: 'app', project_ids: ['workflow'], name: 'Checkout', archived_at: null }]
       else if (path === '/v1/catalog/projects') json = []
       else if (path === '/v1/catalog/environments') json = [environment]
       else if (path === '/v1/catalog/environments/env') json = environment

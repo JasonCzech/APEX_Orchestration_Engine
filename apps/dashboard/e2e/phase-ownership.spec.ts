@@ -14,7 +14,7 @@ test('phase ownership and analysis connectors remain explicit across engine chan
     else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Reviewer', role: 'admin', scopes: [], is_unscoped: true, capabilities: {} }
     else if (path === '/v1/system/info') json = { name: 'APEX', version: 'test', environment: 'test', features: {}, limits: {}, consumer: { id: 'reviewer', name: 'Reviewer', role: 'admin', scopes: [] } }
     else if (path === '/v1/pipelines/execution-readiness') json = { execution_selected: true, configuration_valid: true, requires_application: false }
-    else if (path.startsWith('/v1/catalog/applications')) json = [{ id: 'app', project_id: 'ownership-project', name: 'Checkout', archived_at: null }]
+    else if (path.startsWith('/v1/catalog/applications')) json = [{ id: 'app', project_ids: ['ownership-project'], name: 'Checkout', archived_at: null }]
     else if (path === '/v1/catalog/environments') json = [{ id: 'env', application_id: 'app', name: 'Staging', target_approved: true, base_url: 'https://staging.example.test' }]
     else if (path === '/v1/documents') json = { items: [], limit: 50, offset: 0 }
     return route.fulfill({ json })

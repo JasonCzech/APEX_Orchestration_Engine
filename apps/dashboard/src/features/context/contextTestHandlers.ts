@@ -109,8 +109,8 @@ export function evidenceAssociationHandlers() {
     http.get('*/v1/catalog/applications', () =>
       HttpResponse.json({
         items: [
-          { id: 'app-checkout', name: 'Checkout', project_id: 'proj-alpha', description: null, archived_at: null, created_at: NOW, updated_at: NOW },
-          { id: 'app-payments', name: 'Payments', project_id: 'proj-beta', description: null, archived_at: null, created_at: NOW, updated_at: NOW },
+          { id: 'app-checkout', name: 'Checkout', project_ids: ['proj-alpha'], description: null, archived_at: null, created_at: NOW, updated_at: NOW },
+          { id: 'app-payments', name: 'Payments', project_ids: ['proj-beta'], description: null, archived_at: null, created_at: NOW, updated_at: NOW },
         ],
         limit: 200,
         offset: 0,

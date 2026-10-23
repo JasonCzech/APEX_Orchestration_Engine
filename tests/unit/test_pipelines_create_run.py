@@ -64,7 +64,7 @@ def _environment(
         id=environment_id,
         application_id=app_id,
         application=SimpleNamespace(
-            id=app_id, project_id=project_id, name=app_id, description=None, archived_at=None
+            id=app_id, project_ids=[project_id], name=app_id, description=None, archived_at=None
         ),
         name=environment_id,
         kind="service",

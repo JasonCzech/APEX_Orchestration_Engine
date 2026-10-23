@@ -430,7 +430,7 @@ SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
     "getAgentAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "getUsageAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "listApplications": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
-    "createApplication": {"json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "matrix-app"}},
+    "createApplication": {"json": {"project_ids": [OUT_OF_SCOPE_PROJECT], "name": "matrix-app"}},
     "listContextEvidence": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createContextSummary": {
         "json": {"subject": "matrix-summary", "project_id": OUT_OF_SCOPE_PROJECT}

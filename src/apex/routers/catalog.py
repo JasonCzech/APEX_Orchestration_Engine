@@ -5,9 +5,11 @@ Layout decision: environments are exposed FLAT at /catalog/environments
 than nested under /applications/{id}/ — flat ids keep dashboard deep links
 stable and avoid double-lookup on every environment route.
 
-Scoping: applications carry project_id; environments inherit it through their
-application. Scoped consumers see only their projects' rows; cross-project
+Scoping: an application links to one or more projects (``project_ids``) and
+its environments belong to it. A scoped consumer sees an application, and its
+environments, through any linked project it may access; cross-project
 single-resource access returns 404 (not 403) to avoid leaking existence.
+Application names are unique across the catalog.
 Roles: GET = any authenticated; create/update/archive = operator+;
 DELETE /applications/{id} = admin (environment delete is operator+).
 """
@@ -35,6 +37,7 @@ from apex.persistence.models import Environment, EnvironmentSnapshot
 from apex.persistence.repositories.catalog import (
     CatalogInUseError,
     CatalogRepository,
+    ConcurrentLinkError,
     DuplicateNameError,
 )
 from apex.services.connection_credentials import (
@@ -70,10 +73,13 @@ EnvironmentId = Annotated[RecordId, Path(description="Environment id")]
 # ── schemas ──────────────────────────────────────────────────────────────────
 
 
+ProjectIds = Annotated[list[ScopeId], Field(min_length=1, max_length=64)]
+
+
 class ApplicationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: ScopeId
+    project_ids: ProjectIds
     name: NoNulStr = Field(min_length=1, max_length=255)
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
@@ -116,12 +122,14 @@ class ApplicationUpdate(BaseModel):
 
     name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
+    # Replaces the set of linked projects (link and unlink in one write).
+    project_ids: ProjectIds | None = None
 
-    @field_validator("name")
+    @field_validator("name", "project_ids")
     @classmethod
-    def reject_null_name(cls, value: str | None) -> str:
+    def reject_null(cls, value: Any) -> Any:
         if value is None:
-            raise ValueError("name cannot be null")
+            raise ValueError("value cannot be null")
         return value
 
     @field_validator("*")
@@ -136,17 +144,22 @@ class ApplicationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, hide_input_in_errors=True)
 
     id: str
-    project_id: str
+    project_ids: list[str]
     name: str
     description: str | None
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("project_id", "name", "description", mode="before")
+    @field_validator("name", "description", mode="before")
     @classmethod
     def sanitize_legacy_labels(cls, value: Any) -> str | None:
         return sanitize_credential_text_for_output(value)
+
+    @field_validator("project_ids", mode="before")
+    @classmethod
+    def sanitize_project_ids(cls, value: Any) -> list[str]:
+        return [sanitize_credential_text_for_output(item) or "" for item in value]
 
 
 class HostIn(BaseModel):
@@ -320,11 +333,46 @@ def _environment_out(
 
 
 def _can_access_application(identity: ConsumerIdentity, app: Any) -> bool:
-    return identity.allows_scope(project_id=app.project_id, app_id=app.id)
+    return any(
+        identity.allows_scope(project_id=project_id, app_id=app.id)
+        for project_id in app.project_ids
+    )
 
 
 def _can_access_environment(identity: ConsumerIdentity, env: Environment) -> bool:
-    return identity.allows_scope(project_id=env.application.project_id, app_id=env.application_id)
+    return _can_access_application(identity, env.application)
+
+
+def _can_change_everywhere(identity: ConsumerIdentity, app: Any) -> bool:
+    """Archive and delete affect every project that uses the application, so they
+    need access to it through each linked project, not just one."""
+    return all(
+        identity.allows_scope(project_id=project_id, app_id=app.id)
+        for project_id in app.project_ids
+    )
+
+
+def _application_out(identity: ConsumerIdentity, app: Any) -> ApplicationOut:
+    """Scoped consumers see only the linked projects they may access."""
+    out = ApplicationOut.model_validate(app)
+    if not identity.is_unscoped:
+        visible = set(identity.scoped_project_ids())
+        out.project_ids = [project_id for project_id in out.project_ids if project_id in visible]
+    return out
+
+
+def _require_change_everywhere(identity: ConsumerIdentity, app: Any, action: str) -> None:
+    if not _can_change_everywhere(identity, app):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{action} requires access through every project that uses it",
+        )
+
+
+def _require_project_wide(identity: ConsumerIdentity, project_ids: list[str], action: str) -> None:
+    """Linking or unlinking a project changes what that project's tests can use."""
+    if not all(identity.contains_scope(ScopeRef(project_id=pid)) for pid in project_ids):
+        raise HTTPException(status_code=403, detail=f"{action} requires project-wide scope")
 
 
 def _is_platform_admin(identity: ConsumerIdentity) -> bool:
@@ -447,7 +495,7 @@ async def list_applications(
         offset=offset,
     )
     return [
-        ApplicationOut.model_validate(app) for app in apps if _can_access_application(identity, app)
+        _application_out(identity, app) for app in apps if _can_access_application(identity, app)
     ]
 
 
@@ -455,26 +503,19 @@ async def list_applications(
 async def create_application(
     body: ApplicationCreate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
-    if not identity.contains_scope(ScopeRef(project_id=body.project_id)):
-        raise HTTPException(
-            status_code=403,
-            detail="application creation requires project-wide scope",
-        )
+    _require_project_wide(identity, body.project_ids, "application creation")
     write_error: HTTPException | None = None
     app = None
     try:
         app = await repo.create_application(
-            project_id=body.project_id, name=body.name, description=body.description
+            project_ids=body.project_ids, name=body.name, description=body.description
         )
     except DuplicateNameError:
-        write_error = HTTPException(
-            status_code=409,
-            detail="application name already exists in project",
-        )
+        write_error = HTTPException(status_code=409, detail="application name already exists")
     if write_error is not None:
         raise write_error
     assert app is not None
-    return ApplicationOut.model_validate(app)
+    return _application_out(identity, app)
 
 
 @router.get("/applications/{application_id}", operation_id="getApplication")
@@ -484,7 +525,7 @@ async def get_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
-    return ApplicationOut.model_validate(app)
+    return _application_out(identity, app)
 
 
 @router.patch("/applications/{application_id}", operation_id="updateApplication")
@@ -497,17 +538,27 @@ async def update_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
+    changes = body.model_dump(exclude_unset=True)
+    if "project_ids" in changes:
+        if not identity.is_unscoped:
+            # Links to projects the caller can't see are kept as they are.
+            visible = set(identity.scoped_project_ids())
+            hidden = [project_id for project_id in app.project_ids if project_id not in visible]
+            changes["project_ids"] = sorted(set(changes["project_ids"]) | set(hidden))
+        changed = set(changes["project_ids"]) ^ set(app.project_ids)
+        _require_project_wide(identity, sorted(changed), "linking or unlinking projects")
     write_error: HTTPException | None = None
     try:
-        app = await repo.update_application(app, body.model_dump(exclude_unset=True))
+        app = await repo.update_application(app, changes)
     except DuplicateNameError:
+        write_error = HTTPException(status_code=409, detail="application name already exists")
+    except ConcurrentLinkError:
         write_error = HTTPException(
-            status_code=409,
-            detail="application name already exists in project",
+            status_code=409, detail="application projects changed concurrently; reload and retry"
         )
     if write_error is not None:
         raise write_error
-    return ApplicationOut.model_validate(app)
+    return _application_out(identity, app)
 
 
 @router.post("/applications/{application_id}/archive", operation_id="archiveApplication")
@@ -517,7 +568,8 @@ async def archive_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
-    return ApplicationOut.model_validate(await repo.set_application_archived(app, True))
+    _require_change_everywhere(identity, app, "archiving a shared application")
+    return _application_out(identity, await repo.set_application_archived(app, True))
 
 
 @router.post("/applications/{application_id}/unarchive", operation_id="unarchiveApplication")
@@ -527,7 +579,8 @@ async def unarchive_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
-    return ApplicationOut.model_validate(await repo.set_application_archived(app, False))
+    _require_change_everywhere(identity, app, "unarchiving a shared application")
+    return _application_out(identity, await repo.set_application_archived(app, False))
 
 
 @router.delete("/applications/{application_id}", operation_id="deleteApplication", status_code=204)
@@ -537,6 +590,7 @@ async def delete_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
+    _require_change_everywhere(identity, app, "deleting a shared application")
     try:
         await repo.delete_application(app)
     except CatalogInUseError:
@@ -711,6 +765,8 @@ async def delete_environment(
     env = await repo.get_environment_for_update(environment_id)
     if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
+    # Every project using the application uses its environments too.
+    _require_change_everywhere(identity, env.application, "deleting a shared environment")
     try:
         await repo.delete_environment(env)
     except CatalogInUseError:

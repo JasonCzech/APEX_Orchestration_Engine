@@ -298,10 +298,9 @@ async def _apply_applications(
     log: Callable[[str], None],
 ) -> None:
     for spec in doc.applications:
+        # Names are global: the same application declared for another project is linked, not copied.
         existing = await session.scalar(
-            select(Application)
-            .where(Application.project_id == spec.project_id, Application.name == spec.name)
-            .with_for_update()
+            select(Application).where(Application.name == spec.name).with_for_update()
         )
         if existing is not None:
             drift = []
@@ -315,13 +314,21 @@ async def _apply_applications(
                     f"configuration ({', '.join(drift)}); reconcile it explicitly before "
                     "bootstrap"
                 )
+            if spec.project_id not in existing.project_ids:
+                existing.project_ids = [*existing.project_ids, spec.project_id]
+                await session.flush()
+                log(
+                    f"application {spec.project_id!r}/{spec.name!r}: linked to project "
+                    f"(id={existing.id})"
+                )
+                continue
             log(
                 f"application {spec.project_id!r}/{spec.name!r}: exists and matches "
                 f"(id={existing.id})"
             )
             continue
         session.add(
-            Application(project_id=spec.project_id, name=spec.name, description=spec.description)
+            Application(project_ids=[spec.project_id], name=spec.name, description=spec.description)
         )
         await session.flush()
         report.applications_created.append(f"{spec.project_id}/{spec.name}")
@@ -336,11 +343,9 @@ async def _apply_environments(
 ) -> None:
     for spec in doc.environments:
         app = await session.scalar(
-            select(Application)
-            .where(Application.project_id == spec.project_id, Application.name == spec.application)
-            .with_for_update()
+            select(Application).where(Application.name == spec.application).with_for_update()
         )
-        if app is None:
+        if app is None or spec.project_id not in app.project_ids:
             raise BootstrapError(
                 f"environment {spec.name!r} references application "
                 f"{spec.project_id!r}/{spec.application!r}, which does not exist; declare it "

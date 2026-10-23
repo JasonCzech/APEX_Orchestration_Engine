@@ -210,7 +210,19 @@ All fourteen findings are addressed. The demo screenshots after the change are l
 
 The remaining low item is that the list endpoint loads each latest snapshot's JSON to count services. That is acceptable at the 200-environment page size, and it is noted for later.
 
-**Not changed here:** applications still belong to exactly one project (`applications.project_id`). In the demo data, an application used by several projects is therefore registered once per project, with its own copy of each environment. Making projects and applications many-to-many is a schema and access-scope change and is tracked separately.
+**Follow-up: shared applications** (branch `claude/project-app-links`). Projects and applications are now many-to-many:
+- An application is registered once, with a globally unique name, and linked to every project that tests it (`project_applications`, migration 0047).
+- Its environments belong to it, not to a project.
+- Migration 0047 merges existing same-named copies:
+  - an active copy is kept;
+  - environments merge only when their targets are identical, otherwise they're renamed apart;
+  - live references are repointed and run history keeps its IDs;
+  - `catalog_merges` records the old IDs.
+- Archive and delete of a shared application or environment need access through every project that uses it.
+- Scoped users only see the linked projects they can access.
+- The list now shows each application once, with project chips. This replaces F-03's grouping by project, which only made sense while each project had its own copies.
+- `?project=` narrows the list and shows the project bar, where the project's name can be edited.
+- New and Edit application dialogs have a Projects picker. Linking or unlinking a project needs project-wide access to it.
 
 ### After screenshots
 

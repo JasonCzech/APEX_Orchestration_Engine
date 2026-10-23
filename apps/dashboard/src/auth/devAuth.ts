@@ -15,7 +15,7 @@ export function getDevSystemInfo(): SystemInfo {
   if (isDemoDataMode()) {
     return {
       name: 'APEX Orchestration Engine',
-      version: 'telecom-perf-demo-3.0',
+      version: 'telecom-perf-demo-4.0',
       environment: 'offline-demo',
       features: { engines: true, documents: true, dummy_data: true },
       limits: { max_test_participants: 32, max_context_packets: 32 },
