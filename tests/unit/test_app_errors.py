@@ -1,6 +1,7 @@
 """Bounds and secrecy guarantees for public request-validation errors."""
 
 import json
+from http import HTTPStatus
 from types import SimpleNamespace
 from typing import Any
 
@@ -167,7 +168,7 @@ def _exception_test_client(
     *,
     detail: Any,
     headers: Any = None,
-    status_code: int = 503,
+    status_code: Any = 503,
 ) -> TestClient:
     app = FastAPI()
     register_exception_handlers(app)
@@ -233,6 +234,26 @@ def test_http_exception_rejects_oversized_retry_after_without_integer_parsing() 
 
     assert response.status_code == 503
     assert "retry-after" not in response.headers
+
+
+def test_http_exception_keeps_runtime_http_status_members() -> None:
+    # The Postgres runtime raises gRPC NotFound/Conflict as HTTPStatus members.
+    response = _exception_test_client(
+        detail="thread not found",
+        status_code=HTTPStatus.NOT_FOUND,
+    ).get("/failure")
+
+    assert response.status_code == 404
+    assert response.json() == {"type": "about:blank", "title": "thread not found", "status": 404}
+
+
+def test_http_exception_rejects_other_int_subclasses() -> None:
+    class Hostile(int):
+        pass
+
+    response = _exception_test_client(detail="x", status_code=Hostile(404)).get("/failure")
+
+    assert response.status_code == 500
 
 
 def test_http_exception_preserves_valid_server_control_headers() -> None:

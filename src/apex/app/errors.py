@@ -1,6 +1,7 @@
 """Normalized error envelopes (RFC 9457 problem details) for the /v1 domain API."""
 
 import json
+from http import HTTPStatus
 from typing import Any
 
 import structlog
@@ -180,6 +181,9 @@ def _safe_http_exception_response(exc: StarletteHTTPException) -> JSONResponse:
     if exception_type is not StarletteHTTPException and exception_type is not FastAPIHTTPException:
         return problem(500, "Internal server error")
     status_code = exc.status_code
+    # The Postgres runtime maps gRPC errors to HTTPStatus members, not plain ints.
+    if type(status_code) is HTTPStatus:
+        status_code = status_code.value
     if type(status_code) is not int or not 400 <= status_code <= 599:
         return problem(500, "Internal server error")
     detail = exc.detail
