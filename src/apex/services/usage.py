@@ -255,7 +255,7 @@ def record_phase_usage_sync(
 
     Called from the phase finalize node. Consumer attribution comes from the
     LangGraph auth context (configurable.langgraph_auth_user), falling back to
-    "graph" for unauthenticated/local runs.
+    the run's actor (facade runs), then "graph" for unattributed runs.
     """
     try:
         raw_configurable = config.get("configurable") if type(config) is dict else None
@@ -268,7 +268,12 @@ def record_phase_usage_sync(
             return
         user = configurable.get("langgraph_auth_user")
         identity = user.get("identity") if type(user) is dict else None
-        consumer_name = _bounded_event_label(identity, _USAGE_TEXT_LIMITS["consumer_name"])
+        # Facade runs carry no LangGraph auth user (the in-process transport
+        # skips auth) but do carry the acting consumer, which is what the auth
+        # user's identity holds for native runs.
+        consumer_name = _bounded_event_label(
+            identity, _USAGE_TEXT_LIMITS["consumer_name"]
+        ) or _bounded_event_label(configurable.get(RUNTIME_ACTOR_ID_KEY), 255)
         safe_thread_id = _bounded_event_label(
             configurable.get("thread_id"), _USAGE_TEXT_LIMITS["thread_id"]
         )
