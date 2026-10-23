@@ -114,6 +114,7 @@ interface AgentMetricEvent {
   latency_ms: number
 }
 
+
 export interface DevArtifactBytes {
   blob: Blob
   mediaType: string
@@ -189,7 +190,7 @@ interface DemoBaseline {
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
-const DEMO_STATE_VERSION = 4
+const DEMO_STATE_VERSION = 5
 const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
 const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
 const AGENT_SORTS: AgentSort[] = [
@@ -725,6 +726,7 @@ export class DevDataStore {
       this.connection('conn-apex-load-legacy-perf', 'execution_engine', 'apex_load', 'APEX Load T-Stack Pool — Legacy Perf', 'legacy-perf', null, true, { pool: 't-stack-store' }, null),
       this.connection('conn-apex-load-npi', 'execution_engine', 'apex_load', 'APEX Load Launch Pool — NPI', 'npi', null, true, { pool: 'npi-launch' }, null),
       this.connection('conn-apex-load-hrp', 'execution_engine', 'apex_load', 'APEX Load Peak Pool — HRP', 'hrp', null, true, { pool: 'hrp-peak' }, null),
+      this.connection('conn-reportforge', 'analysis', 'perfreportforge', 'PerfReportForge — Performance Reports', null, null, true, {}, null),
       this.connection('conn-observe', 'observability', 'stub', 'Dynatrace + Prometheus', null, null, true, {}, null),
       this.connection('conn-logs', 'log_search', 'elasticsearch', 'Performance ELK', null, 'https://elk.example.test', true, {}, null),
       this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', null, null, true, {}, null),
@@ -762,7 +764,8 @@ export class DevDataStore {
         ],
         document_ids: ['doc-architecture', 'doc-sla', 'doc-traffic', 'doc-data'],
         context_summary_ids: [],
-        config: { engine: 'apexload', phases: null, prompt_focus_phase: 'story_analysis', gates_mode: 'all_gated', golden_config_id: 'asst-release', golden_configurable: null },
+        config: { engine: 'apexload', phases: null, prompt_focus_phase: 'story_analysis', gates_mode: 'all_gated', golden_config_id: 'asst-release', golden_configurable: null,
+          analysis: { schema_version: 1, selections: [{ tool: 'internal_rca', connection_id: 'conn-apex-load' }] } },
         prompt_overrides: {}, prompt_override_removals: [],
       }),
     ]
@@ -1279,6 +1282,14 @@ export class DevDataStore {
   }
 
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
+    if (method === 'GET' && path === '/v1/pipelines/analysis/connections') {
+      // Mirror the API: enabled analysis connectors plus APEX Load engines
+      // (internal RCA), project-owned or shared.
+      const project = params.get('project_id')
+      return jsonResponse(this.connections
+        .filter(c => c.enabled && (c.kind === 'analysis' || (c.kind === 'execution_engine' && c.provider === 'apex_load')) && (c.project_id === null || c.project_id === project))
+        .map(c => ({ id: c.id, name: c.name, provider: c.provider, kind: c.kind })))
+    }
     if (method === 'POST' && path === '/v1/pipelines/execution-readiness') {
       return request.json().then((body: { phases?: string[] }) => jsonResponse({
         execution_selected: body.phases?.includes('execution') ?? false,
@@ -1451,8 +1462,8 @@ export class DevDataStore {
       const state = detail.values as PipelineState
       const cfg = state.run_config as Record<string, unknown> | undefined
       if (!cfg) return problemResponse(409, 'Setup unavailable', 'This historical test has no saved configuration.')
-      const configurable = Object.fromEntries(Object.entries(cfg).filter(([key]) => ['engine', 'phases', 'gates', 'model_by_phase', 'agent_backend', 'load_test', 'connections', 'prompt_selections', 'prompt_overrides', 'limits'].includes(key)))
-      return jsonResponse({ title: detail.title, request: state.request ?? '', project_id: detail.project_id, app_id: detail.app_id, environment_id: cfg['environment_id'] ?? null, configurable })
+      const configurable = Object.fromEntries(Object.entries(cfg).filter(([key]) => ['engine', 'phase_execution', 'analysis', 'phases', 'gates', 'model_by_phase', 'agent_backend', 'load_test', 'connections', 'prompt_selections', 'prompt_overrides', 'limits'].includes(key)))
+      return jsonResponse({ title: detail.title, request: state.request ?? '', project_id: detail.project_id, app_id: detail.app_id, environment_id: cfg['environment_id'] ?? null, test_scope: cfg['test_scope'] ?? null, configurable })
     }
     if (method === 'GET' && parts.length === 4) {
       const detail = this.pipelineDetails.get(threadId)
