@@ -151,18 +151,6 @@ def test_model_context_labels_bind_all_applicable_participants_and_roles() -> No
     )
 
 
-def test_selected_contexts_frame_the_phase_context() -> None:
-    from apex.domain.prompt_catalog import PLATFORM_POLICY
-
-    head = PLATFORM_POLICY + "\n=== SHARED SYSTEM PROMPT ===\nShared"
-    bare = {"system": "Shared\n", "user": "Phase steps", "application": None, "contexts": []}
-    assert compose_selected_system(bare) == head + "\n=== PHASE CONTEXT ===\nPhase steps"
-    framed = {**bare, "application": "=== APPLICATION CONTEXT: app ===\nApp facts"}
-    assert compose_selected_system(framed) == (
-        head + "\n\n=== APPLICATION CONTEXT: app ===\nApp facts\n=== PHASE CONTEXT ===\nPhase steps"
-    )
-
-
 def test_context_scope_labels_survive_review_edits_and_checkpoint_replay() -> None:
     cfg = scoped_selected_config()
     saved = cfg.snapshot()

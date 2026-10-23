@@ -266,7 +266,9 @@ nav[aria-label='Run sections'] { margin:12px 0 18px; }
 .approvals-page .topbar-meta-chip { max-width:none; white-space:normal; overflow:visible; text-overflow:clip; }
 .sidebar .nav-label { white-space:normal; overflow:visible; }
 .run-overview .ux-grid { align-items:start; grid-template-columns:1.4fr 1fr 1fr; }
-@media(max-width:900px) { .run-overview .ux-grid { grid-template-columns:1fr; } .scope-context a { margin-left:0; } }
+.wizard-review-grid { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }
+.wizard-review-card:has([aria-label="Edit Scope"]), .wizard-review-card:has([aria-label="Edit Config"]) { grid-column:1 / -1; }
+@media(max-width:900px) { .run-overview .ux-grid,.wizard-review-grid { grid-template-columns:1fr; } .scope-context a { margin-left:0; } }
 
 .radio-choices { border:0; padding:0; display:flex; flex-wrap:wrap; gap:8px; }
 .radio-choices legend { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
