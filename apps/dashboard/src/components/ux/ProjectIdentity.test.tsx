@@ -23,7 +23,7 @@ describe('authoritative project names', () => {
     }))
     mount()
     expect(await screen.findAllByText('Payments', { exact: true })).toHaveLength(2)
-    const checkout = screen.getByRole('heading', { name: 'Checkout' }).closest('section')!
+    const checkout = screen.getByRole('region', { name: 'Project Payments (p1)' })
     expect(within(checkout).getByText('p1', { exact: true })).toHaveAttribute('title', 'p1')
     const user = userEvent.setup()
     await user.click(within(checkout).getByRole('button', { name: 'Edit project name' }))

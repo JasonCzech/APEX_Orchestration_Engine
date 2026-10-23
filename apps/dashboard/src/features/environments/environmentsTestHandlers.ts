@@ -112,7 +112,13 @@ export function catalogReadHandlers(
   envs: Environment[] = ENVS_FIXTURE,
 ) {
   return [
-    http.get('*/v1/catalog/applications', () => HttpResponse.json(apps)),
+    // Honours include_archived like the server, so archived applications only arrive when asked for.
+    http.get('*/v1/catalog/applications', ({ request }) => HttpResponse.json(
+      new URL(request.url).searchParams.get('include_archived') === 'true' ? apps : apps.filter(app => !app.archived_at),
+    )),
+    // The detail page's Related card and the delete dialog list prompts and tests.
+    http.get('*/v1/prompts', () => HttpResponse.json([])),
+    http.get('*/v1/pipelines', () => HttpResponse.json({ items: [], limit: 100, offset: 0 })),
     http.get('*/v1/catalog/environments', () => HttpResponse.json(envs)),
     http.get('*/v1/catalog/environments/:id', ({ params }) => {
       const env = envs.find((candidate) => candidate.id === params.id)
@@ -155,7 +161,8 @@ export function createEnvironmentHandler(id = 'env-new') {
   return { handler, captured }
 }
 
-export function createApplicationHandler(id = 'app-new') {
+/** `into` receives the created application, so a following list refetch includes it. */
+export function createApplicationHandler(id = 'app-new', into?: Application[]) {
   const captured: ApplicationCreate[] = []
   const handler = http.post('*/v1/catalog/applications', async ({ request }) => {
     const body = (await request.json()) as ApplicationCreate
@@ -169,6 +176,7 @@ export function createApplicationHandler(id = 'app-new') {
       created_at: NOW,
       updated_at: NOW,
     }
+    into?.push(created)
     return HttpResponse.json(created, { status: 201 })
   })
   return { handler, captured }
@@ -235,4 +243,30 @@ export function rescanHandler(
     return HttpResponse.json(fresh)
   })
   return { handler, callCount: () => calls }
+}
+
+/** PATCH, archive and delete for applications; captures what was sent. */
+export function applicationWriteHandlers(apps: Application[]) {
+  const captured: Array<{ method: string; path: string; body?: unknown }> = []
+  const find = (id: unknown) => apps.find(app => app.id === id)
+  const handlers = [
+    http.patch('*/v1/catalog/applications/:id', async ({ params, request }) => {
+      const body = (await request.json()) as Partial<Application>
+      captured.push({ method: 'PATCH', path: String(params.id), body })
+      const app = find(params.id)!
+      Object.assign(app, body)
+      return HttpResponse.json(app)
+    }),
+    http.post('*/v1/catalog/applications/:id/archive', ({ params }) => {
+      captured.push({ method: 'POST', path: `${String(params.id)}/archive` })
+      const app = find(params.id)!
+      app.archived_at = NOW
+      return HttpResponse.json(app)
+    }),
+    http.delete('*/v1/catalog/applications/:id', ({ params }) => {
+      captured.push({ method: 'DELETE', path: String(params.id) })
+      return new HttpResponse(null, { status: 204 })
+    }),
+  ]
+  return { handlers, captured }
 }

@@ -300,6 +300,10 @@ class FakeCatalogRepository:
         snaps = self.snapshots.get(environment_id, [])
         return max(snaps, key=lambda s: s.scanned_at) if snaps else None
 
+    async def latest_snapshots(self, environment_ids: list[str]) -> dict[str, EnvironmentSnapshot]:
+        latest = {env_id: await self.latest_snapshot(env_id) for env_id in environment_ids}
+        return {env_id: snap for env_id, snap in latest.items() if snap is not None}
+
 
 def identity(role: Role, *projects: str) -> ConsumerIdentity:
     return ConsumerIdentity(
@@ -832,6 +836,9 @@ def test_environment_snapshot_summary(repo: FakeCatalogRepository) -> None:
     snapshot = fetched.json()["last_snapshot"]
     assert snapshot["service_count"] == 3
     assert snapshot["scanned_at"].startswith("2026-06-01")
+    # The list carries the same summary, so it can show when each was last scanned.
+    listed = make_client(repo, ADMIN).get("/catalog/environments").json()
+    assert listed[0]["last_snapshot"]["service_count"] == 3
 
 
 def test_environment_duplicate_name_is_409(repo: FakeCatalogRepository) -> None:

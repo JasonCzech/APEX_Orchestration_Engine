@@ -4,7 +4,7 @@ import { useMatches } from 'react-router'
 import { isRouteHandle } from '@/routes/handle'
 import { isDemoDataMode } from '@/config/runtimeConfig'
 
-import { useTopbarContributionSlot } from './TopbarContributionProvider'
+import { useTopbarContributionSlot, useTopbarTitleOverride } from './TopbarContributionProvider'
 
 /**
  * Sticky topbar: page title from the deepest route handle plus the
@@ -12,7 +12,9 @@ import { useTopbarContributionSlot } from './TopbarContributionProvider'
  */
 export function Topbar({ navigation }: { navigation?: ReactNode } = {}) {
   const matches = useMatches()
+  const override = useTopbarTitleOverride()
   const title =
+    override ??
     [...matches].reverse().map((match) => match.handle).find(isRouteHandle)?.title ??
     'APEX Orchestration'
   const contribution = useTopbarContributionSlot()

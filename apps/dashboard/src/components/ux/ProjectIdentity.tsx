@@ -7,18 +7,25 @@ import { useNavigationBlocker } from '@/components/useNavigationBlocker'
 import './project-identity.css'
 
 /** Names are authored metadata, never inferred from an application's name or ID. */
-export function ProjectIdentity({ projectId, editable = false }: { projectId: string; editable?: boolean }) {
+export function ProjectIdentity({ projectId, editable = false, headingLevel }: { projectId: string; editable?: boolean; headingLevel?: 'h2' | 'h3' }) {
   const labels = useProjectLabels()
   const consumer = useOptionalConsumer()
   const name = !labels.isError ? labels.data?.find(item => item.project_id === projectId)?.name : undefined
   const [editing, setEditing] = useState(false)
   const canName = editable && consumer?.role === 'admin' && (!consumer.scopes.length || consumer.scopes.some(scope => scope.project_id === projectId && !scope.app_id))
   return <span className="project-identity">
-    <span>{name ?? (labels.isPending ? 'Loading project name…' : 'Project name unavailable')}</span>{' '}
+    {headingLevel
+      ? <NameHeading as={headingLevel}>{name ?? (labels.isPending ? 'Loading project name…' : 'Project name unavailable')}</NameHeading>
+      : <span>{name ?? (labels.isPending ? 'Loading project name…' : 'Project name unavailable')}</span>}{' '}
     <CopyableId value={projectId} label="Project ID" />
     {canName && <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit project name</button>}
     {editing && <ProjectNameEditor projectId={projectId} initialName={name ?? ''} onClose={() => setEditing(false)} />}
   </span>
+}
+
+/** The project name as a heading, so section headings don't swallow the copy/edit buttons. */
+function NameHeading({ as: Tag, children }: { as: 'h2' | 'h3'; children: string }) {
+  return <Tag className="project-identity-heading">{children}</Tag>
 }
 
 function ProjectNameEditor({ projectId, initialName, onClose }: { projectId: string; initialName: string; onClose: () => void }) {

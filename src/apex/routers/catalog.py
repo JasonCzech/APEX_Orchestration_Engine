@@ -265,7 +265,7 @@ class EnvironmentOut(BaseModel):
     hosts: list[HostOut]
     created_at: datetime
     updated_at: datetime
-    # Populated on getEnvironment only (list omits it to avoid N+1 scans).
+    # Latest scan summary; the list loads all of them in one query (latest_snapshots).
     last_snapshot: SnapshotSummary | None = None
 
     @field_validator("application_id", "name", "kind", mode="before")
@@ -563,7 +563,10 @@ async def list_environments(
         limit=limit,
         offset=offset,
     )
-    return [_environment_out(env) for env in envs if _can_access_environment(identity, env)]
+    visible = [env for env in envs if _can_access_environment(identity, env)]
+    # The list shows each environment's last scan, so fetch them in one query.
+    snapshots = await repo.latest_snapshots([env.id for env in visible])
+    return [_environment_out(env, snapshots.get(env.id)) for env in visible]
 
 
 @router.post("/environments", operation_id="createEnvironment", status_code=201)

@@ -149,6 +149,11 @@ async def test_catalog_crud_visibility_hosts_and_snapshots() -> None:
             session.commit()
             snapshot = await repository.latest_snapshot(environment.id)
             assert snapshot is not None and snapshot.data == {"latest": True}
+            # The list view reads every environment's newest snapshot in one query.
+            latest = await repository.latest_snapshots([environment.id, "missing"])
+            assert list(latest) == [environment.id]
+            assert latest[environment.id].data == {"latest": True}
+            assert await repository.latest_snapshots([]) == {}
 
             await repository.delete_environment(updated)
             assert await repository.get_environment(environment.id) is None

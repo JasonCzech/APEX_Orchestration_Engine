@@ -1594,11 +1594,16 @@ export class DevDataStore {
     }
     if (method === 'POST' && path === '/v1/catalog/applications') {
       const body = (await request.json()) as Partial<Application>
+      const projectId = body.project_id ?? TELECOM_PROJECT_ID
+      // Mirrors the unique (project_id, name) constraint, archived applications included.
+      if (this.applications.some((app) => app.project_id === projectId && app.name === body.name)) {
+        return problemResponse(409, 'conflict', 'application name already exists in project')
+      }
       const app: Application = {
         id: this.id('app'),
         name: body.name ?? 'New application',
         description: body.description ?? null,
-        project_id: body.project_id ?? TELECOM_PROJECT_ID,
+        project_id: projectId,
         archived_at: null,
         created_at: nowIso(),
         updated_at: nowIso(),
@@ -1613,10 +1618,14 @@ export class DevDataStore {
     if (method === 'GET') return jsonResponse(current)
     if (method === 'PATCH') {
       const body = (await request.json()) as Partial<Application>
+      if (body.name && body.name !== current.name && this.applications.some((app) => app.project_id === current.project_id && app.name === body.name)) {
+        return problemResponse(409, 'conflict', 'application name already exists in project')
+      }
       this.applications[index] = {
         ...current,
         name: body.name ?? current.name,
-        description: body.description ?? current.description,
+        // An explicit null clears the description.
+        description: 'description' in body ? body.description ?? null : current.description,
         project_id: body.project_id ?? current.project_id,
         archived_at: body.archived_at ?? current.archived_at,
         updated_at: nowIso(),
@@ -1624,6 +1633,9 @@ export class DevDataStore {
       return jsonResponse(this.applications[index])
     }
     if (method === 'DELETE') {
+      // Environments cascade with their application, as in the database.
+      for (const env of this.environments.filter((item) => item.application_id === id)) this.inventories.delete(env.id)
+      this.environments = this.environments.filter((item) => item.application_id !== id)
       this.applications.splice(index, 1)
       return emptyResponse()
     }
@@ -1645,6 +1657,10 @@ export class DevDataStore {
     }
     if (method === 'POST' && path === '/v1/catalog/environments') {
       const body = (await request.json()) as Partial<Environment>
+      // Mirrors the unique (application_id, name) constraint.
+      if (this.environments.some((item) => item.application_id === (body.application_id ?? FLAGSHIP_APP_ID) && item.name === body.name)) {
+        return problemResponse(409, 'conflict', 'environment name already exists on application')
+      }
       const env = this.environment(this.id('env'), body.application_id ?? FLAGSHIP_APP_ID, body.name ?? 'new-env', body.kind ?? 'k8s', body.base_url ?? null, false)
       env.hosts = (body.hosts ?? []).map((host, index) => ({
         id: this.id(`host-${index}`),
@@ -1663,6 +1679,9 @@ export class DevDataStore {
     if (method === 'GET') return jsonResponse(current)
     if (method === 'PATCH') {
       const body = (await request.json()) as Partial<Environment>
+      if (body.name && body.name !== current.name && this.environments.some((item) => item.application_id === current.application_id && item.name === body.name)) {
+        return problemResponse(409, 'conflict', 'environment name already exists on application')
+      }
       this.environments[index] = {
         ...current,
         application_id: body.application_id ?? current.application_id,
@@ -1707,6 +1726,9 @@ export class DevDataStore {
         },
       }
       this.inventories.set(environmentId, fresh)
+      // Keep the catalog's last_snapshot summary (the list's Last scan column) in step.
+      const env = this.environments.find((item) => item.id === environmentId)
+      if (env && fresh.snapshot) env.last_snapshot = { scanned_at: fresh.snapshot.scanned_at, service_count: fresh.snapshot.services.length }
       return jsonResponse(fresh)
     }
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)

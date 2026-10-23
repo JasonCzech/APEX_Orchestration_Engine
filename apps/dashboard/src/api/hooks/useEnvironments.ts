@@ -56,13 +56,13 @@ function isEnvironmentDeleted(queryClient: QueryClient, environmentId: string): 
   return deletedEnvironmentIds.get(queryClient)?.has(environmentId) ?? false
 }
 
-async function fetchApplicationsIndex(signal?: AbortSignal): Promise<Application[]> {
+async function fetchApplicationsIndex(signal?: AbortSignal, includeArchived = false): Promise<Application[]> {
   return fetchAllOffsetPages({
     label: 'Applications',
     pageSize: CATALOG_PAGE_SIZE,
     fetchPage: async (limit, offset) => {
       const { data, error, response } = await getApexClient().GET('/v1/catalog/applications', {
-        params: { query: { limit, offset } },
+        params: { query: { limit, offset, ...(includeArchived ? { include_archived: true } : {}) } },
         signal,
       })
       if (!response.ok || !data) {
@@ -114,11 +114,57 @@ async function fetchEnvironment(environmentId: string): Promise<Environment> {
 }
 
 /** All visible applications — the /environments list groups rows under these. */
-export function useApplicationsIndex(): UseQueryResult<Application[], Error> {
+export function useApplicationsIndex(options: { includeArchived?: boolean } = {}): UseQueryResult<Application[], Error> {
+  const includeArchived = options.includeArchived === true
   return useQuery({
-    queryKey: queryKeys.catalog.applicationsIndex(),
-    queryFn: ({ signal }) => fetchApplicationsIndex(signal),
+    queryKey: includeArchived ? [...queryKeys.catalog.applicationsIndex(), 'with-archived'] : queryKeys.catalog.applicationsIndex(),
+    queryFn: ({ signal }) => fetchApplicationsIndex(signal, includeArchived),
     staleTime: STALE_TIMES.catalog,
+  })
+}
+
+/** Rename or describe an application (PATCH; operator+ with access to it). */
+export function useUpdateApplication(): UseMutationResult<Application, Error, { applicationId: string; body: { name?: string; description?: string | null } }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ applicationId, body }) => {
+      const { data, error, response } = await getApexClient().PATCH('/v1/catalog/applications/{application_id}', {
+        params: { path: { application_id: applicationId } },
+        body,
+      })
+      if (!response.ok || !data) throw new ApiError(response.status, errorMessageOf(error, `Application update failed (${response.status})`), error)
+      return data
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.all }) },
+  })
+}
+
+/** Archive hides an application from new tests; unarchive restores it. */
+export function useSetApplicationArchived(): UseMutationResult<Application, Error, { applicationId: string; archived: boolean }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ applicationId, archived }) => {
+      const { data, error, response } = archived
+        ? await getApexClient().POST('/v1/catalog/applications/{application_id}/archive', { params: { path: { application_id: applicationId } } })
+        : await getApexClient().POST('/v1/catalog/applications/{application_id}/unarchive', { params: { path: { application_id: applicationId } } })
+      if (!response.ok || !data) throw new ApiError(response.status, errorMessageOf(error, `Application ${archived ? 'archive' : 'unarchive'} failed (${response.status})`), error)
+      return data
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.all }) },
+  })
+}
+
+/** Delete an application and its environments (global admin; refused while referenced). */
+export function useDeleteApplication(): UseMutationResult<void, Error, string> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (applicationId: string) => {
+      const { error, response } = await getApexClient().DELETE('/v1/catalog/applications/{application_id}', {
+        params: { path: { application_id: applicationId } },
+      })
+      if (!response.ok) throw new ApiError(response.status, errorMessageOf(error, `Application delete failed (${response.status})`), error)
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.all }) },
   })
 }
 

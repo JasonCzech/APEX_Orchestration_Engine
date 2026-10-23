@@ -7,11 +7,14 @@ import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 import {
+  APP_CHECKOUT,
+  APP_SEARCH,
   ENV_STAGING,
   ENV_PROD,
   SNAPSHOT_FRESH,
   SNAPSHOT_STALE,
   catalogReadHandlers,
+  deleteEnvironmentHandler,
   inventoryHandler,
   inventoryOf,
   rescanHandler,
@@ -41,7 +44,7 @@ describe('EnvironmentDetailPage', () => {
     renderDetail('admin', `/environments/${ENV_STAGING.id}?edit=1`)
 
     const form = await screen.findByRole('form', { name: 'Edit environment' })
-    const baseUrl = within(form).getByRole('textbox', { name: 'Base URL' })
+    const baseUrl = within(form).getByRole('textbox', { name: 'Execution target URL' })
     await user.clear(baseUrl)
     await user.paste('https://staging2.checkout.example.com')
     await user.click(within(form).getByRole('button', { name: 'Save changes' }))
@@ -79,13 +82,13 @@ describe('EnvironmentDetailPage', () => {
     const { router } = renderDetail('admin', `/environments/${ENV_STAGING.id}?edit=1`)
 
     const form = await screen.findByRole('form', { name: 'Edit environment' })
-    await user.selectOptions(within(form).getByRole('combobox', { name: 'Kind' }), 'other')
+    await user.selectOptions(within(form).getByRole('combobox', { name: 'Platform' }), 'other')
     await user.click(within(form).getByRole('button', { name: 'Save changes' }))
     await saveStarted
 
     await act(async () => router.navigate('/environments'))
     const row = await screen.findByTestId(`env-row-${ENV_STAGING.id}`)
-    await user.click(within(row).getByRole('button', { name: 'Environment actions: staging' }))
+    await user.click(within(row).getByRole('button', { name: 'Environment actions: staging in Checkout' }))
     expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: 'Delete…' })).toBeDisabled()
 
@@ -147,7 +150,7 @@ describe('EnvironmentDetailPage', () => {
     const empty = await screen.findByTestId('env-inventory-empty')
     expect(within(empty).getByText('Never scanned')).toBeInTheDocument()
 
-    await user.click(within(empty).getByRole('button', { name: 'Rescan' }))
+    await user.click(within(empty).getByRole('button', { name: 'Scan' }))
 
     expect(await screen.findByRole('table', { name: 'Services' })).toBeInTheDocument()
     expect(screen.getByText('checkout-api')).toBeInTheDocument()
@@ -170,7 +173,7 @@ describe('EnvironmentDetailPage', () => {
     renderDetail()
 
     const empty = await screen.findByTestId('env-inventory-empty')
-    await user.click(within(empty).getByRole('button', { name: 'Rescan' }))
+    await user.click(within(empty).getByRole('button', { name: 'Scan' }))
 
     // Inline danger card carrying the adapter message — not a toast.
     const alert = await screen.findByRole('alert')
@@ -222,6 +225,7 @@ describe('EnvironmentDetailPage', () => {
     expect(await screen.findByRole('heading', { name: 'staging' })).toBeInTheDocument()
     expect(await screen.findByTestId('env-inventory-empty')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Rescan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Scan' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     // The read-only reference card still renders fully.
     expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
@@ -252,7 +256,7 @@ describe('EnvironmentDetailPage', () => {
     await act(async () => router.navigate(`/environments/${ENV_STAGING.id}`))
     await screen.findByRole('heading', { name: 'staging' })
     await user.click(screen.getByRole('button', { name: 'Edit' }))
-    const stagingUrl = screen.getByRole('textbox', { name: 'Base URL' })
+    const stagingUrl = screen.getByRole('textbox', { name: 'Execution target URL' })
     await user.clear(stagingUrl)
     await user.type(stagingUrl, 'https://wrong-for-production.example.com')
 
@@ -261,6 +265,94 @@ describe('EnvironmentDetailPage', () => {
     expect(screen.queryByRole('form', { name: 'Edit environment' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Edit' }))
-    expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveValue(ENV_PROD.base_url)
+    expect(screen.getByRole('textbox', { name: 'Execution target URL' })).toHaveValue(ENV_PROD.base_url)
+  })
+
+  it('names the page after the environment, with a link-only breadcrumb', async () => {
+    server.use(...catalogReadHandlers(), inventoryHandler(inventoryOf(ENV_STAGING.id, SNAPSHOT_FRESH)))
+    const { router } = renderDetail('operator')
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'staging' })).toBeInTheDocument()
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' })
+    expect(within(breadcrumb).getByRole('link', { name: 'Checkout' })).toHaveAttribute('href', `/environments?application=${ENV_STAGING.application_id}`)
+
+    // Leaving the page gives the title back to the route.
+    await act(async () => router.navigate('/environments'))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Applications & environments' })).toBeInTheDocument()
+  })
+
+  it('keeps an archived application\'s environment fully linked', async () => {
+    const archived = { ...APP_CHECKOUT, archived_at: '2026-10-20T00:00:00Z' }
+    server.use(...catalogReadHandlers([archived, APP_SEARCH]), inventoryHandler(inventoryOf(ENV_STAGING.id, SNAPSHOT_FRESH)))
+    renderDetail('operator')
+
+    const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    expect(await within(breadcrumb).findByRole('link', { name: 'Checkout' })).toBeInTheDocument()
+    expect(await screen.findByText('None of the latest 100 tests in this project used this environment.')).toBeInTheDocument()
+  })
+
+  it('renames an environment and refuses a name its application already uses', async () => {
+    const patch = updateEnvironmentHandler(ENV_STAGING)
+    server.use(...catalogReadHandlers(), patch.handler, inventoryHandler(inventoryOf(ENV_STAGING.id, SNAPSHOT_FRESH)))
+    const user = userEvent.setup()
+    renderDetail('admin', `/environments/${ENV_STAGING.id}?edit=1`)
+
+    const form = await screen.findByRole('form', { name: 'Edit environment' })
+    const name = within(form).getByRole('textbox', { name: 'Name' })
+    await user.clear(name)
+    await user.type(name, 'production')
+    expect(within(form).getByRole('alert')).toHaveTextContent('already has an environment with this name')
+    expect(within(form).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+
+    await user.clear(name)
+    await user.type(name, 'staging-eu')
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(patch.captured).toHaveLength(1))
+    expect(patch.captured[0]).toEqual({ name: 'staging-eu' })
+  })
+
+  it('deletes from the detail page and returns to the application', async () => {
+    const remove = deleteEnvironmentHandler()
+    server.use(...catalogReadHandlers(), remove.handler, inventoryHandler(inventoryOf(ENV_STAGING.id, SNAPSHOT_FRESH)))
+    const user = userEvent.setup()
+    const { router } = renderDetail('admin')
+
+    await user.click(await screen.findByRole('button', { name: 'Delete…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete environment staging' })
+    const confirm = within(dialog).getByRole('button', { name: 'Delete environment' })
+    expect(confirm).toBeDisabled()
+    await user.type(within(dialog).getByRole('textbox'), 'staging')
+    await user.click(confirm)
+
+    await waitFor(() => expect(remove.captured).toEqual([ENV_STAGING.id]))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/environments'))
+    expect(router.state.location.search).toBe(`?application=${ENV_STAGING.application_id}`)
+  })
+
+  it('lists environment-context prompts and the recent tests that used this environment', async () => {
+    // Overrides go first: MSW uses the first matching handler in one server.use call.
+    server.use(
+      http.get('*/v1/prompts', () => HttpResponse.json([
+        { id: 'prm-env', key: 'staging-quirks', description: 'Staging quirks', namespace: 'environment', environment_id: ENV_STAGING.id, active_version: null },
+      ])),
+      http.get('*/v1/pipelines', () => HttpResponse.json({
+        items: [
+          { thread_id: 'pl-used', title: 'Checkout soak', status: 'completed', updated_at: '2026-10-21T00:00:00Z',
+            test_scope: { participants: [{ environment_id: ENV_STAGING.id }] } },
+          { thread_id: 'pl-other', title: 'Search spike', status: 'completed', updated_at: '2026-10-21T00:00:00Z',
+            test_scope: { participants: [{ environment_id: 'env-elsewhere' }] } },
+        ],
+        limit: 100, offset: 0,
+      })),
+      ...catalogReadHandlers(),
+      inventoryHandler(inventoryOf(ENV_STAGING.id, SNAPSHOT_FRESH)),
+    )
+    renderDetail('admin')
+
+    const related = await screen.findByRole('region', { name: 'Related' })
+    expect(await within(related).findByRole('link', { name: 'Staging quirks' })).toHaveAttribute('href', '/prompts?ns=environment&prompt=prm-env')
+    expect(await within(related).findByRole('link', { name: /Checkout soak/ })).toBeInTheDocument()
+    expect(within(related).queryByText(/Search spike/)).not.toBeInTheDocument()
+    expect(within(related).getByRole('link', { name: 'Add environment context' })).toBeInTheDocument()
   })
 })

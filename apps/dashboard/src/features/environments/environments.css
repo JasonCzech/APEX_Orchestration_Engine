@@ -423,3 +423,238 @@
 .env-target-overlay { background: var(--modal-backdrop); backdrop-filter: blur(4px); }
 .env-target-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; }
 .env-target-dialog p { overflow-wrap: anywhere; }
+
+/* ── List: toolbar, summary, project sections ─────────────────────────── */
+
+.env-toolbar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.env-toolbar .ux-table-toolbar {
+  flex: 1 1 520px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+/* The toolbar stacks into a column on narrow screens; a 520px basis would become its height. */
+@media (max-width: 640px) {
+  .env-toolbar .ux-table-toolbar { flex-basis: auto; }
+  .env-toolbar .ux-table-toolbar .ux-field { flex: 1 1 100%; }
+}
+
+.env-archived-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.env-summary {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.env-summary-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--warning-text);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.env-project {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 6px;
+}
+
+.env-project + .env-project {
+  border-top: 1px solid var(--border-subtle, var(--border));
+  padding-top: 12px;
+}
+
+.env-project-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.env-project-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.env-project-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.env-project-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.project-identity-heading {
+  display: inline;
+  margin: 0;
+  font-size: var(--font-size-md, 1.05rem);
+  font-weight: 700;
+}
+
+.env-project-counts {
+  font-size: var(--font-size-sm);
+}
+
+.env-needs-approval {
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.env-project-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-subtle, var(--border));
+}
+
+.env-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.env-group-count {
+  font-size: var(--font-size-xs);
+}
+
+.env-group-description {
+  margin: -2px 2px 2px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.env-group--archived .data-table-wrap,
+.env-group--archived .env-group-description {
+  opacity: 0.7;
+}
+
+/* One column plan for every application table, so columns line up between them. */
+.env-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.env-col-name { width: 22%; }
+.env-col-target { width: 15%; }
+.env-col-host { width: 27%; }
+.env-col-kind { width: 13%; }
+.env-col-hosts { width: 7%; }
+.env-col-scan { width: 12%; }
+.env-col-actions { width: 64px; }
+
+.env-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.env-name-cell .env-name-link {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.env-table .env-base-url {
+  max-width: 100%;
+}
+
+.env-target-badge {
+  white-space: nowrap;
+}
+
+/* ── Forms and dialogs ───────────────────────────────────────────────── */
+
+.env-modal--wide {
+  width: min(560px, 100%);
+}
+
+.env-modal-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.env-field-help {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.env-target-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+/* ── Detail ──────────────────────────────────────────────────────────── */
+
+.env-scan-button {
+  margin-left: auto;
+}
+
+.env-danger-text {
+  color: var(--danger-text, var(--warning-text));
+}
+
+.env-related-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-size-sm);
+}
+
+.env-related-action {
+  align-self: flex-start;
+}
+
+/* Narrow screens drop Platform and Hosts (both are on the environment's page). */
+@media (max-width: 900px) {
+  .env-col-kind,
+  .env-col-hosts { display: none; }
+  .env-table th:nth-child(4), .env-table td:nth-child(4),
+  .env-table th:nth-child(5), .env-table td:nth-child(5) { display: none; }
+  .env-col-name { width: 30%; }
+  .env-col-host { width: 30%; }
+  .env-col-target { width: 20%; }
+}
+
+/* Phones: keep Name, Target and the row menu; the rest is on the detail page. */
+@media (max-width: 640px) {
+  .env-col-host,
+  .env-col-scan { display: none; }
+  .env-table th:nth-child(3), .env-table td:nth-child(3),
+  .env-table th:nth-child(6), .env-table td:nth-child(6) { display: none; }
+  .env-col-name { width: 50%; }
+  .env-col-target { width: 50%; }
+}
