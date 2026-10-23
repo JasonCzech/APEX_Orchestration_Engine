@@ -207,8 +207,20 @@ function versionInfoOf(version: VersionRecord) {
  * Fresh catalog state + handlers per test. `accept` controls the playground
  * 202 payload; `register` the result with server.use(...handlers).
  */
+export interface PresetFixture {
+  assistant_id: string
+  name: string
+  configurable: Record<string, unknown>
+}
+
 export function promptCatalog(
-  options: { accept?: { run_id: string; thread_id: string | null } } = {},
+  options: {
+    accept?: { run_id: string; thread_id: string | null }
+    /** GET /v1/prompts/{id}/usage bodies by prompt id (default: no tests). */
+    usage?: Record<string, { total_tests: number; total_capped?: boolean; tests: Array<Record<string, unknown>> }>
+    /** Test presets served through the LangGraph assistants surface. */
+    presets?: PresetFixture[]
+  } = {},
 ) {
   const prompts: PromptRecord[] = [
     storyPrompt(),
@@ -231,7 +243,28 @@ export function promptCatalog(
   const find = (id: string | readonly string[] | undefined) =>
     prompts.find((entry) => entry.id === id)
 
+  const presets = options.presets ?? []
+  const assistant = (preset: PresetFixture) => ({
+    assistant_id: preset.assistant_id,
+    graph_id: 'pipeline',
+    name: preset.name,
+    description: null,
+    config: { configurable: preset.configurable },
+    metadata: {},
+    created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-01T00:00:00Z',
+    version: 1,
+  })
+
   const handlers = [
+    http.get('*/v1/prompts/:promptId/usage', ({ params }) =>
+      HttpResponse.json(options.usage?.[String(params.promptId)] ?? { total_tests: 0, total_capped: false, tests: [] }),
+    ),
+    http.post('*/assistants/search', () => HttpResponse.json(presets.map(assistant))),
+    http.get('*/assistants/:assistantId', ({ params }) => {
+      const preset = presets.find(item => item.assistant_id === params.assistantId)
+      return preset ? HttpResponse.json(assistant(preset)) : HttpResponse.json({ detail: 'not found' }, { status: 404 })
+    }),
     http.get('*/v1/prompts', ({ request }) => {
       const url = new URL(request.url)
       calls.listRequests.push(url.search)

@@ -341,13 +341,13 @@ export function ReviewStep({
                 <table className="wizard-review-table">
                   <caption className="sr-only">Selected prompts, in the order they are listed on the Prompts step</caption>
                   <tbody>
-                    <PromptRow slot="System Prompt" selection={draft.prompt_selections.system} onOpen={openPrompt('system')} />
+                    <PromptRow slot="System prompt" selection={draft.prompt_selections.system} onOpen={openPrompt('system')} />
                     {draft.prompt_selections.application.length
                       ? draft.prompt_selections.application.map(item => <PromptRow key={item.prompt_id} slot="Application context" selection={item} onOpen={openPrompt('application')} />)
                       : <PromptRow slot="Application context" selection={null} note="None" />}
                     {draft.prompt_selections.environment.length
-                      ? draft.prompt_selections.environment.map(item => <PromptRow key={item.prompt_id} slot="Environment Context" selection={item} onOpen={openPrompt('environment')} />)
-                      : <PromptRow slot="Environment Context" selection={null} note="None" />}
+                      ? draft.prompt_selections.environment.map(item => <PromptRow key={item.prompt_id} slot="Environment context" selection={item} onOpen={openPrompt('environment')} />)
+                      : <PromptRow slot="Environment context" selection={null} note="None" />}
                     {PHASE_NAMES.map(phase => <PromptRow key={phase} slot={`Phase context — ${PHASE_LABELS[phase]}`} selection={draft.prompt_selections?.phases[phase]}
                       note={phases.includes(phase) ? undefined : 'Bypassed: a person completes this phase'} onOpen={openPrompt(`phase:${phase}`)} />)}
                   </tbody>

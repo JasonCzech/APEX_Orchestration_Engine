@@ -378,7 +378,7 @@ export function PromptsStep({ draft, onChange, onNormalize = onChange }: StepPro
           <p className="wizard-caption">{panelCopy[active.group].description}</p>
         </header>
         {active.problems.length > 0 && <ul className="wizard-hint-list">{active.problems.map(problem => <li key={problem} className="wizard-caption wizard-caption--warning">{problem}</li>)}</ul>}
-        {active.id === 'system' && single('System Prompt', activeRows.filter(row => row.namespace === 'system'), selections.system, item => change(next => { next.system = item }))}
+        {active.id === 'system' && single(PROMPT_LABELS.system!, activeRows.filter(row => row.namespace === 'system'), selections.system, item => change(next => { next.system = item }))}
         {activePhase && (bypassed
           ? <>
             <div className="tonal-card wizard-prompt-bypassed" role="note">

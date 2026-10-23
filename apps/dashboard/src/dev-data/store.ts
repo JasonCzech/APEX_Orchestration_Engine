@@ -2018,6 +2018,21 @@ export class DevDataStore {
   }
 
   private async handlePrompts(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    const usageMatch = method === 'GET' ? path.match(/^\/v1\/prompts\/([^/]+)\/usage$/) : null
+    if (usageMatch) {
+      // Like the server's usage index: every launched test whose frozen manifest pins this prompt.
+      const promptId = decodeURIComponent(usageMatch[1]!)
+      if (!this.prompts.some(prompt => prompt.id === promptId)) return problemResponse(404, 'Not found', 'prompt not found')
+      const tests = [...this.pipelineDetails.values()].flatMap(detail => {
+        const manifest = (detail.values as { run_config?: { prompt_manifest?: { system: DemoManifestEntry; phases: Record<string, DemoManifestEntry>; application: DemoManifestEntry[]; environment: DemoManifestEntry[] } } } | undefined)?.run_config?.prompt_manifest
+        if (!manifest) return []
+        const slots: Array<[string, DemoManifestEntry]> = [['system', manifest.system], ...Object.entries(manifest.phases).map(([phase, entry]): [string, DemoManifestEntry] => [`phase:${phase}`, entry]), ...manifest.application.map((entry): [string, DemoManifestEntry] => ['application', entry]), ...manifest.environment.map((entry): [string, DemoManifestEntry] => ['environment', entry])]
+        const hit = slots.find(([, entry]) => entry.prompt_id === promptId)
+        return hit ? [{ thread_id: detail.thread_id, title: detail.title ?? null, version: hit[1].version, slot: hit[0], recorded_at: detail.created_at ?? null }] : []
+      }).sort((a, b) => (b.recorded_at ?? '').localeCompare(a.recorded_at ?? ''))
+      const limit = Number(params.get('limit') ?? 10)
+      return jsonResponse({ total_tests: tests.length, total_capped: false, tests: tests.slice(0, limit) })
+    }
     if (method === 'GET' && path === '/v1/prompts') {
       const ns = params.get('namespace')
       const q = params.get('q')

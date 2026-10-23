@@ -240,7 +240,7 @@ it('preserves heading-like prose while editing individual selected context entri
   renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
   await user.click(await screen.findByText('Prompt configuration'))
   const section = await screen.findByTestId('prompt-review-section')
-  expect(await within(section).findByRole('textbox', { name: 'System Prompt' })).toHaveAttribute('readonly')
+  expect(await within(section).findByRole('textbox', { name: 'System prompt' })).toHaveAttribute('readonly')
   await user.click(within(section).getByRole('tab', { name: 'Application context' }))
   expect(within(section).getByRole('textbox', { name: 'Application context: first' })).toHaveValue(firstContent)
   fireEvent.change(within(section).getByRole('textbox', { name: 'Application context: second' }), { target: { value: 'Edited second entry' } })

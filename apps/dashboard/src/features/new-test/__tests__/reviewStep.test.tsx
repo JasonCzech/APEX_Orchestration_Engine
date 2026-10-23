@@ -55,7 +55,7 @@ describe('ReviewStep', () => {
 
     const prompts = screen.getByRole('table')
     expect(within(prompts).getByRole('row', { name: /Phase context — Execution/ })).toHaveTextContent('Bypassed: a person completes this phase')
-    expect(within(prompts).getAllByRole('rowheader').map(cell => cell.textContent).slice(0, 3)).toEqual(['System Prompt', 'Application context', 'Environment Context'])
+    expect(within(prompts).getAllByRole('rowheader').map(cell => cell.textContent).slice(0, 3)).toEqual(['System prompt', 'Application context', 'Environment context'])
 
     // Each phase and prompt opens its own slot on the Prompts step.
     await user.click(within(plan).getByRole('button', { name: /^Test Planning: Agent/ }))
