@@ -120,15 +120,17 @@ def test_compose_minio_has_no_network_visible_unfiltered_listener() -> None:
         storage = services["minio-storage"]
 
         assert gateway["image"] == GATEWAY_IMAGE
-        assert storage["image"] == (
-            DEV_MINIO_IMAGE if path.name == "docker-compose.dev.yaml" else RAW_MINIO_IMAGE
-        )
+        # minio/minio is no longer pullable from any registry.
+        assert storage["image"] == DEV_MINIO_IMAGE
+        # Existing volumes were created by the prior root-running image.
+        assert storage["user"] == "0:0"
+        assert storage["entrypoint"] == ["minio"]
         if path.name == "docker-compose.dev.yaml":
-            # Existing volumes were created by the prior root-running image.
-            assert storage["user"] == "0:0"
-            assert storage["entrypoint"] == ["minio"]
             assert "miniodata:/bitnami/minio/data" in storage["volumes"]
             assert "/bitnami/minio/data" in storage["command"]
+        else:
+            assert storage["command"].startswith("server /data ")
+            assert any(volume.endswith(":/data") for volume in storage["volumes"])
         assert storage["network_mode"] == "service:minio"
         assert "127.0.0.1:9100" in storage["command"]
         assert "ports" not in storage

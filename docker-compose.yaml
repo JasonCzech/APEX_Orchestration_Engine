@@ -1,7 +1,10 @@
 # Full stack: infra + the LangGraph standalone server image.
 # Build the server image first:
 #   uv run langgraph build -t "${APEX_IMAGE:-apex-orchestration-engine:local}"
-# Production note: the standalone server requires LANGGRAPH_CLOUD_LICENSE_KEY (see plan/ADR-0001).
+# Production note: the standalone server requires LANGGRAPH_CLOUD_LICENSE_KEY, the
+# Self-Hosted Enterprise license token (ADR-0001). A LangSmith API key is not a
+# license: placed there, startup fails. With the license unset and LANGSMITH_API_KEY
+# set, the server starts in lite mode, which is for local evaluation only.
 #
 # Secrets/credentials are NOT inlined: they come from the shell environment or an
 # auto-loaded `.env` via ${VAR:-default} interpolation (same pattern as the HA rig,
@@ -64,10 +67,14 @@ services:
   # The archived MinIO OSS server is deliberately absent from Compose DNS and
   # binds only to loopback in the gateway's shared network namespace. This
   # makes bypassing the advisory-prescribed request filters fail closed.
+  # minio/minio is no longer pullable; this is the same archived server as a
+  # pinned build. Root and /data match the old image, so existing volumes work.
   minio-storage:
-    image: minio/minio:RELEASE.2024-07-16T23-46-41Z@sha256:77ff9f7e12549d269990b167fa21da010fa8b0beb40d6064569b8887e37c456b
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
     restart: unless-stopped
     network_mode: "service:minio"
+    user: "0:0"
+    entrypoint: ["minio"]
     command: server /data --address 127.0.0.1:9100 --console-address 127.0.0.1:9101
     environment:
       MINIO_ROOT_USER: apex
@@ -103,8 +110,10 @@ services:
       APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
       APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
       APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
-      # Required for the standalone server to boot (Enterprise). Empty = unset.
+      # Enterprise license token (see the header). Empty = unset.
       LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:-}
+      # Lite-mode evaluation without a license; also enables tracing. Empty = unset.
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
     healthcheck:
       # In-image Python (no curl in the langgraph base image); urlopen raises on non-2xx.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
@@ -139,7 +148,8 @@ services:
       apex-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/config.json"]
+      # Not localhost: it resolves to ::1 here and nginx listens on IPv4 only.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/config.json"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -152,10 +162,13 @@ services:
   migrate:
     image: ${APEX_IMAGE:-apex-orchestration-engine:local}
     restart: "no"
+    # Deploy CLIs accept plaintext only over loopback, so they share the
+    # postgres network namespace instead of crossing the bridge.
+    network_mode: "service:postgres"
     entrypoint: ["python", "-m", "apex.persistence.migrate"]
     environment:
       APEX_ENVIRONMENT: compose
-      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@127.0.0.1:5432/apex
       APEX_DATABASE__SSL_MODE: disable
     depends_on:
       postgres:
@@ -164,11 +177,14 @@ services:
   bootstrap:
     image: ${APEX_IMAGE:-apex-orchestration-engine:local}
     restart: "no"
+    # Deploy CLIs accept plaintext only over loopback, so they share the
+    # postgres network namespace instead of crossing the bridge.
+    network_mode: "service:postgres"
     entrypoint: ["python", "-m", "apex.bootstrap"]
     command: ["/bootstrap/bootstrap.json"]
     environment:
       APEX_ENVIRONMENT: compose
-      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@127.0.0.1:5432/apex
       APEX_DATABASE__SSL_MODE: disable
       APEX_BOOTSTRAP_ADMIN_KEY: ${APEX_BOOTSTRAP_ADMIN_KEY:-apex-local-admin-key}
       APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
