@@ -231,6 +231,15 @@ def test_phase_usage_defaults_consumer_to_graph(monkeypatch: pytest.MonkeyPatch)
     assert captured[0]["app_id"] is None
 
 
+def test_phase_usage_names_the_actor_of_a_facade_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Facade runs have no LangGraph auth user; the acting consumer names the event."""
+    captured = _capture_sync_writer(monkeypatch)
+    config = {"configurable": {"thread_id": "t", "apex_actor_id": "operator-1"}}
+    usage.record_phase_usage_sync("execution", "succeeded", config)
+    assert captured[0]["consumer_name"] == "operator-1"
+    assert captured[0]["consumer_id"] == "operator-1"
+
+
 def test_phase_usage_rejects_hostile_checkpoint_scalars_without_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
