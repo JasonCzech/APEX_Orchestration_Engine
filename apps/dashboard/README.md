@@ -282,6 +282,15 @@ order-integrity context, and Environment Context for each traffic-entry and
 backend registration. Seeded runs span all five projects, with run-specific test
 scope, phase outputs, logs and artifacts.
 
+Agent Analytics reads one fixed 90-day usage history, so shorter windows are always
+subsets of longer ones. Runs follow a weekday cadence per project plus a nightly
+certification, and each run contributes one model call per phase, plus retries.
+The model catalog lists ten current models across Anthropic, OpenAI, Google, xAI
+and Mistral. Prices are illustrative, taken from public price trackers in
+October 2026. The earlier Claude Opus 4, Sonnet 4 and Haiku 3.5 models are archived
+but remain in usage and pricing history. Historical runs linked from analytics open
+as completed tests but are not listed among current tests.
+
 The flagship draft, **ACC Add-a-Line Peak Certification** (ACC Perf), adds a line to
 an existing customer's plan on **PERFHYPER2** through Mule and IDP into PERF BSSe.
 Open `/runs/new?draft=draft-esim` to start; the legacy internal draft ID is
