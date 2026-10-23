@@ -43,6 +43,7 @@ import psycopg
 import pytest
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from sqlalchemy.engine import make_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PHASES = [
@@ -168,15 +169,16 @@ def inmem_runtime(tmp_path: Path) -> Iterator[Runtime]:
     if shutil.which("langgraph", path=str(Path(sys.executable).parent)) is None:
         pytest.skip("langgraph CLI is not installed in this environment")
 
-    admin_conninfo = server_uri.replace("+asyncpg", "").replace("+psycopg", "")
+    # Swap only the database name; host, credentials and query options carry over.
+    server_url = make_url(server_uri)
+    admin_conninfo = server_url.set(drivername="postgresql").render_as_string(hide_password=False)
     database = f"apex_runtime_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(admin_conninfo, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
-    apex_db = str(make_conninfo(admin_conninfo, dbname=database))
-    host_db_uri = (
-        server_uri.rsplit("/", 1)[0].replace("postgresql://", "postgresql+asyncpg://", 1)
-        + f"/{database}"
-    )
+    apex_db = make_conninfo(admin_conninfo, dbname=database)
+    host_db_uri = server_url.set(
+        drivername="postgresql+asyncpg", database=database
+    ).render_as_string(hide_password=False)
     admin_key = secrets.token_urlsafe(32)
     env = _hermetic_env(
         APEX_ENVIRONMENT="dev",
@@ -518,9 +520,11 @@ def test_wizard_launch_completes_on_a_real_runtime(runtime: Runtime) -> None:
     assert set(models) == set(PHASES)
 
     usage = _phase_usage(runtime.apex_db, thread_id)
-    assert {action.split(":")[1] for action, _, _ in usage} == set(PHASES)
+    # One event per phase, even after the retry; facade runs name the consumer by
+    # its actor ID (PRODUCTION_RUNTIME_CHECK.md, finding 6).
+    assert sorted(action.split(":")[1] for action, _, _ in usage) == sorted(PHASES), usage
     assert all(row_consumer == consumer_id for _, row_consumer, _ in usage), usage
-    assert all(name for _, _, name in usage), usage
+    assert all(name == consumer_id for _, _, name in usage), usage
 
     configurable = runtime.read_run_configurable(thread_id, run_id)
     assert configurable["apex_actor_id"] == consumer_id
