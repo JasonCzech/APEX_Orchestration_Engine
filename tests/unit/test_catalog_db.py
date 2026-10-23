@@ -34,7 +34,7 @@ async def test_application_environment_roundtrip() -> None:
 
             fetched = await repo.get_environment(env.id)
             assert fetched is not None
-            assert fetched.application.project_id == project
+            assert fetched.application.project_ids == [project]
 
             env = await repo.update_environment(
                 fetched, {"name": "it-env-2"}, hosts=[{"hostname": "h3.local"}]

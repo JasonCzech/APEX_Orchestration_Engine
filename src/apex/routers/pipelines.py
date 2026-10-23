@@ -202,7 +202,6 @@ async def _resolve_pipeline_scope(
                     status_code=403,
                     detail="application is outside the requested project",
                 )
-            metadata["project_id"] = resolved_project
     return resolved_project, resolved_app
 
 
