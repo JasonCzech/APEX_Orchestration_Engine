@@ -34,7 +34,7 @@ Branch `claude/new-test-pipeline-fixes`. Each change set was reviewed by an inde
 | Demo-mode journey e2e stops at Config | **Fixed in PR #26** (`8803ac2`). The offline dataset now serves an analysis connection, and the journey launches. |
 | Production runtime untested | **Done** ([PRODUCTION_RUNTIME_CHECK.md](PRODUCTION_RUNTIME_CHECK.md)). The check found that every wizard launch failed on the Postgres runtime (PR #30) and that the Compose stack could not start as shipped (PR #29). Both are fixed. |
 | No runtime-level integration test | **Open.** No automated test launches through `/v1` against a real LangGraph runtime. Both launch-breaking bugs (F-01 and the Postgres status-code bug) passed unit tests and were only caught by hand. A Postgres-runtime launch in CI would cover both, but it needs a license or LangSmith key in CI. |
-| Compare doesn't show acceptance thresholds | **Open.** Found while exercising Compare on 2026-10-23. |
+| Compare doesn't show acceptance thresholds | **Fixed in PR #32.** Found while exercising Compare on 2026-10-23. Engine KPIs now list each run's applied thresholds under the matching KPI, with the same rules as the Requested vs observed table. |
 | APEX Load handoff | **Not exercised.** It needs a live APEX Load connection. |
 | AKS MinIO manifest uses the unpullable `minio/minio` image | **Open.** PR #29 fixed Compose only. |
 

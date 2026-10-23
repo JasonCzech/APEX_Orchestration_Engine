@@ -1,6 +1,6 @@
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
-import { useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseResultEntry, type TestResultSummary } from '@apex/pipeline-events'
@@ -21,14 +21,23 @@ import {
   statusLabel,
   statusVisual,
 } from '../runs/runDisplay'
+import { engineVerdict } from '../runs/acceptanceThresholds'
 import {
   COMPARE_KPIS,
+  COMPARE_THRESHOLDS,
+  type CompareKpiDef,
+  completedSummary,
+  formatLimit,
   kpiDifference,
   MAX_COMPARE_RUNS,
   bestWorst,
   kpiValue,
   parseCompareIds,
   slowestIndex,
+  thresholdCell,
+  type ThresholdInput,
+  thresholdsDiffer,
+  unexplainedSimFailure,
 } from './compareModel'
 import './compare.css'
 
@@ -123,6 +132,51 @@ function AddRunPanel({ exclude, onAdd }: { exclude: string[]; onAdd: (id: string
   )
 }
 
+/**
+ * One acceptance-threshold row under its KPI row. The simulator's cells say
+ * Met/Not met; a real engine's cells name who assessed the limit, and its
+ * verdict stays on the Result row.
+ */
+function ThresholdRow({ thresholdKey, label, def, runs, inputs }: {
+  thresholdKey: string
+  label: string
+  def: CompareKpiDef
+  runs: CompareRun[]
+  inputs: ThresholdInput[]
+}) {
+  const minimum = def.better === 'higher'
+  const differs = thresholdsDiffer(thresholdKey, inputs)
+  return (
+    <tr className="compare-threshold-row">
+      <th scope="row" className="compare-row-label">
+        {label}<small className="compare-difference">{differs ? 'Limits differ' : 'Acceptance limit'}</small>
+      </th>
+      {runs.map((run, index) => {
+        const cell = thresholdCell(thresholdKey, inputs[index]!)
+        return (
+          <td key={run.id} data-testid={`compare-threshold-${thresholdKey}-${run.id}`}>
+            {cell.kind === 'unavailable' ? (
+              <span className="compare-muted">{EM_DASH}<small className="compare-difference">No collected result</small></span>
+            ) : cell.kind === 'none' ? (
+              <span className="compare-muted">None set</span>
+            ) : cell.kind === 'engine-native' ? (
+              <span className="compare-muted">Set in {cell.engine}</span>
+            ) : (
+              <div className="compare-phase-cell">
+                <span className="compare-kpi-value">{minimum ? '≥' : '≤'} {formatLimit(thresholdKey, cell.limit)}</span>
+                {cell.met !== null && (
+                  <span className={`status-badge ${cell.met ? 'success' : 'danger'}`}>{cell.met ? 'Met' : 'Not met'}</span>
+                )}
+                {cell.assessedBy && <small className="compare-difference">Assessed by {cell.assessedBy}</small>}
+              </div>
+            )}
+          </td>
+        )
+      })}
+    </tr>
+  )
+}
+
 /** Sticky per-run column header: title (link to the run), status, engine, remove X. */
 function ColumnHeader({
   run,
@@ -180,8 +234,9 @@ function ColumnHeader({
  * /runs/compare?ids=a,b — side-by-side comparison of 2–4 runs (D8, the last
  * placeholder route). One aligned table: a sticky header row of run columns,
  * then a phase strip section (status + duration + attempt, slowest-in-row
- * amber when >1.5x the fastest), an engine-KPI section (best/worst tinting),
- * and an artifacts/warnings count mini-table.
+ * amber when >1.5x the fastest), an engine-KPI section (best/worst tinting,
+ * each KPI followed by its acceptance threshold), and an artifacts/warnings
+ * count mini-table.
  */
 export function ComparePage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -230,7 +285,18 @@ export function ComparePage() {
   )
   const baselineId = eligibleBaselineIds.includes(chosenBaseline ?? '') ? chosenBaseline : eligibleBaselineIds[0]
   const baselineIndex = ids.indexOf(baselineId ?? '')
-  const hasEngineKpis = summaries.some(Boolean)
+  // Failed-verdict runs are judged against their limits but not ranked:
+  // KPI ranking and the baseline stay limited to succeeded executions.
+  const completed = runs.map((run) => completedSummary(run.query.data?.state.phase_results?.execution))
+  const hasEngineKpis = completed.some(Boolean)
+  const thresholdInputs: ThresholdInput[] = runs.map((run, index) => {
+    const execution = run.query.data?.state.phase_results?.execution
+    return { summary: execution?.test_summary, thresholds: execution?.acceptance_thresholds, collected: completed[index] }
+  })
+  const hasThresholdRows = thresholdInputs.some((input) => input.summary)
+  const anyThresholds = thresholdInputs.some((input) =>
+    Object.keys(COMPARE_THRESHOLDS).some((key) => input.thresholds?.[key] !== undefined),
+  )
 
   const countPhases = PHASE_NAMES.filter((phase) =>
     entriesFor(phase).some((entry) => entry !== undefined),
@@ -240,7 +306,7 @@ export function ComparePage() {
     <section className="compare-page animate-enter">
       <header className="compare-toolbar glass-panel">
         <span className="compare-caption">{runs.length} runs</span>
-        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : ' (no collected result)'}</option>)}</select></label>
+        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : completed[ids.indexOf(run.id)] ? ' (execution failed)' : ' (no collected result)'}</option>)}</select></label>
         <span className="spacer" />
         <AddRunPicker ids={ids} onAdd={(id) => setIds([...ids, id])} />
         <Link to="/runs" className="btn btn-ghost btn-sm">
@@ -333,21 +399,49 @@ export function ComparePage() {
                   <th scope="row" className="compare-row-label">
                     Result
                   </th>
-                  {runs.map((run) => {
+                  {runs.map((run, index) => {
                     const snapshot = run.query.data
-                    const result = snapshot ? executionResultLabel(snapshot.detail, snapshot.state) : 'Not available'
+                    const failedVerdict = summaries[index] ? undefined : completed[index]
+                    const result = !snapshot ? 'Not available' : failedVerdict ? engineVerdict(failedVerdict) : executionResultLabel(snapshot.detail, snapshot.state)
                     return (
                       <td key={run.id} data-testid={`compare-passed-${run.id}`}>
                         <span className={`status-badge ${result === 'Passed' ? 'success' : result === 'Failed' ? 'danger' : 'neutral'}`}>{result}</span>
+                        {result === 'Failed' && unexplainedSimFailure(thresholdInputs[index]!) && (
+                          <small className="compare-difference" title={completed[index]?.sla_breaches?.join('; ') || undefined}>
+                            Not explained by thresholds
+                          </small>
+                        )}
                       </td>
                     )
                   })}
                 </tr>
-                {hasEngineKpis && COMPARE_KPIS.map((def) => {
+                {hasThresholdRows && !anyThresholds && (
+                  <tr className="compare-threshold-row">
+                    <th scope="row" className="compare-row-label">
+                      Acceptance thresholds
+                    </th>
+                    {runs.map((run, index) => {
+                      // No run set any limit, so any key yields unavailable, none or engine-native.
+                      const cell = thresholdCell('p95_ms', thresholdInputs[index]!)
+                      return (
+                        <td key={run.id} data-testid={`compare-thresholds-${run.id}`}>
+                          {cell.kind === 'unavailable' ? (
+                            <span className="compare-muted">{EM_DASH}<small className="compare-difference">No collected result</small></span>
+                          ) : (
+                            <span className="compare-muted">{cell.kind === 'engine-native' ? `Set in ${cell.engine}` : 'None set'}</span>
+                          )}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )}
+                {COMPARE_KPIS.map((def) => {
                   const values = summaries.map((summary) => kpiValue(summary, def.key))
                   const ranked = bestWorst(values, def.better)
+                  const thresholdLabel = COMPARE_THRESHOLDS[def.key]
                   return (
-                    <tr key={def.key}>
+                    <Fragment key={def.key}>
+                    {hasEngineKpis && <tr>
                       <th scope="row" className="compare-row-label">
                         {def.label}<small className="compare-difference">{def.better === 'higher' ? 'Higher' : 'Lower'} is better</small>
                       </th>
@@ -367,7 +461,9 @@ export function ComparePage() {
                             data-testid={`compare-kpi-${def.key}-${run.id}`}
                             className={tint}
                           >
-                            {value === null ? (
+                            {value === null && kpiValue(completed[index], def.key) !== null ? (
+                              <><span className="compare-kpi-value">{def.format(kpiValue(completed[index], def.key)!)}</span><small className="compare-difference">Not ranked · execution failed</small></>
+                            ) : value === null ? (
                               <span className="compare-muted">{EM_DASH}<small className="compare-difference">No collected result</small></span>
                             ) : (
                               <><span className="compare-kpi-value">{def.format(value)}</span><small className="compare-difference">{index === baselineIndex ? 'Baseline' : kpiDifference(value, values[baselineIndex] ?? null, def)}</small></>
@@ -375,7 +471,11 @@ export function ComparePage() {
                           </td>
                         )
                       })}
-                    </tr>
+                    </tr>}
+                    {hasThresholdRows && anyThresholds && thresholdLabel && (
+                      <ThresholdRow thresholdKey={def.key} label={thresholdLabel} def={def} runs={runs} inputs={thresholdInputs} />
+                    )}
+                    </Fragment>
                   )
                 })}
               </>

@@ -1,5 +1,7 @@
 import type { TestResultSummary } from '@apex/pipeline-events'
 
+import { engineLabel, engineVerdict, isMinimumThreshold, judgesPerRow, thresholdMet } from './acceptanceThresholds'
+
 /** Display rules for the KPIs engines report; unknown keys fall back to raw numbers. */
 const METRICS: Record<string, { label: string; unit?: string; scale?: number; minimum?: boolean }> = {
   p95_ms: { label: 'P95 response time', unit: 'ms' },
@@ -10,16 +12,7 @@ const METRICS: Record<string, { label: string; unit?: string; scale?: number; mi
 const ORDER = Object.keys(METRICS)
 
 function metric(key: string) {
-  return METRICS[key] ?? { label: key.replaceAll('_', ' '), minimum: /(^|_)(tps|rps|throughput)(_|$)/.test(key) }
-}
-
-const ENGINE_LABELS: Record<string, string> = { sim: 'Simulated engine', apex_load: 'APEX Load', loadrunner: 'LoadRunner' }
-
-/** The engine's own pass/fail decision, which the table never overrides. */
-function engineVerdict(summary: TestResultSummary): string {
-  const assessed = summary.outcome?.assessment.status
-  if (assessed) return ({ passed: 'Passed', failed: 'Failed', inconclusive: 'Inconclusive', not_assessed: 'Not assessed', unavailable: 'Not available' })[assessed]
-  return summary.passed === true ? 'Passed' : summary.passed === false ? 'Failed' : 'Not assessed'
+  return METRICS[key] ?? { label: key.replaceAll('_', ' '), minimum: isMinimumThreshold(key) }
 }
 
 function format(key: string, value: number) {
@@ -43,20 +36,17 @@ export function KpiComparison({ summary, thresholds, caption }: {
   const keys = [...new Set([...Object.keys(limits), ...Object.keys(kpis)])]
     .sort((a, b) => (ORDER.indexOf(a) + 1 || ORDER.length + 1) - (ORDER.indexOf(b) + 1 || ORDER.length + 1))
   if (keys.length === 0) return null
-  // Only the simulator judges these exact KPIs against these thresholds. Real
-  // engines assess with their own aggregates, so a per-row verdict could
-  // contradict them; show the engine's verdict instead.
-  const perRow = summary.engine === 'sim' && !summary.outcome
+  const perRow = judgesPerRow(summary)
   const rows = keys.map(key => {
     const { label, minimum } = metric(key)
     const limit = limits[key]
     const observed = kpis[key]
-    const met = !perRow || limit === undefined || observed === undefined ? null : minimum ? observed >= limit : observed <= limit
+    const met = perRow ? thresholdMet(key, limit, observed) : null
     return { key, label, minimum, limit, observed, met }
   })
   const verdict = engineVerdict(summary)
   const disagrees = perRow && summary.passed === false && !rows.some(row => row.met === false)
-  const engine = summary.engine ? ENGINE_LABELS[summary.engine] ?? summary.engine : null
+  const engine = engineLabel(summary.engine)
   return (
     <div className="kpi-comparison" role="group" aria-label="Execution results">
       {!perRow && <p><strong>Engine verdict: {verdict}.</strong> {engine ?? 'The engine'} assessed these thresholds with its own measurements.</p>}
