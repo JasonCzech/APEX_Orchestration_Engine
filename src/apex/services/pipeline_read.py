@@ -918,6 +918,7 @@ class PipelineReadService:
         reuse_existing_thread: bool = False,
         recovery_only: bool = False,
         request_intent: str | None = None,
+        actor_id: str | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
 
@@ -1208,6 +1209,13 @@ class PipelineReadService:
             metadata["project_id"] = project_id
         if app_id:
             metadata["app_id"] = app_id
+        if actor_id:
+            # Usage and review attribution read this runtime key, as for native
+            # launches and gate resumes. It names whoever acts now, which can
+            # differ from the idempotency principal (a Cycle dispatch resumed by
+            # another operator). Stamped after the fingerprint so a retry still
+            # compares only the caller's request.
+            run_configurable[RUNTIME_ACTOR_ID_KEY] = actor_id
         if deterministic_thread_id is not None:
             async with self._launch_locks.hold(deterministic_thread_id):
                 return await self._create_or_get_run(
@@ -2329,6 +2337,9 @@ class PipelineReadService:
             await _admit_run_models(
                 run_config, thread_id=thread_id, actor_id=principal_id or "pipeline-facade"
             )
+            # Attribute the rerun to its requester (after the fingerprint).
+            if principal_id:
+                run_config[RUNTIME_ACTOR_ID_KEY] = principal_id
             run: JsonDict | None = None
             conflict = False
             try:

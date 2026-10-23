@@ -2076,8 +2076,44 @@ async def test_scope_launch_pins_defaults_against_later_assistant_edits():
     )
     outgoing = client.runs.args[3]["configurable"]
     assert outgoing["engine"] == "sim"
-    assert set(outgoing) == set(PipelineConfigurable.model_fields)
+    # The frozen contract plus the launcher's attribution (a runtime key).
+    assert set(outgoing) == set(PipelineConfigurable.model_fields) | {"apex_actor_id"}
+    assert outgoing["apex_actor_id"] == "c1"
     # Runtime overlays request fields over newly edited assistant defaults.
     effective = {"engine": "apex_load", "phase_execution": {"changed": True}, **outgoing}
     assert effective["engine"] == "sim"
     assert effective["phase_execution"] is None
+
+
+async def test_launch_attributes_the_acting_consumer_without_persisting_the_claim() -> None:
+    """The actor is a runtime key on the run; the idempotency principal is never stored."""
+    client = FakeClient()
+
+    await PipelineReadService(client).start_run(
+        title="Attributed",
+        principal_id="claim-principal",
+        actor_id="acting-operator",
+    )
+
+    configurable = client.runs.args[3]["configurable"]
+    assert configurable["apex_actor_id"] == "acting-operator"
+    assert "claim-principal" not in repr((client.threads.metadata, client.runs.args))
+    assert "acting-operator" not in repr(client.threads.metadata)
+    assert "acting-operator" not in repr(client.runs.args[4].get("metadata"))
+
+
+async def test_an_idempotent_retry_by_another_actor_adopts_the_original_run() -> None:
+    client = AtomicClient()
+    launch: dict[str, Any] = {"title": "Retried", "idempotency_key": "k", "principal_id": "p"}
+
+    first = await PipelineReadService(client).start_run(**launch, actor_id="operator-a")
+    second = await PipelineReadService(client).start_run(**launch, actor_id="operator-b")
+
+    assert first == second
+    assert client.runs.successful_creates == 1
+
+
+async def test_launch_without_an_actor_stays_unattributed() -> None:
+    client = FakeClient()
+    await PipelineReadService(client).start_run(title="Background", principal_id="reconciler")
+    assert "apex_actor_id" not in client.runs.args[3]["configurable"]

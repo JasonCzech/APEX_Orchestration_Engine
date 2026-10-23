@@ -199,6 +199,9 @@ def test_ambiguous_launch_retains_environment_and_same_key_recovers_across_opera
     assert resumed["attempt"]["id"] == first["attempt"]["id"]
     assert resumed["attempt"]["created_by"] == "current-operator"
     assert [c["principal_id"] for c in pipeline.calls] == ["current-operator"] * 2
+    # The thread stays keyed by the dispatch author; each attempt is attributed
+    # to the operator who made it.
+    assert [c["actor_id"] for c in pipeline.calls] == ["current-operator", "second-operator"]
     assert pipeline.calls[0]["idempotency_key"] == pipeline.calls[1]["idempotency_key"]
 
 
