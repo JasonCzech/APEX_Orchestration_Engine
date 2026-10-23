@@ -25,10 +25,18 @@ Branch `claude/new-test-pipeline-fixes`. Each change set was reviewed by an inde
 | F-19 Long page fade | Not reproduced | The entry fade is 220 ms. The 1–2 s dim seen during the review came from the browser pane being hidden, which throttles CSS animations. No change. |
 | F-20 Review gate repetition / Abort wrap | Fixed | The duplicated accept/request-changes sentence is removed. Each decision's scope note sits under the buttons, so they share one row. |
 
-## Not changed (follow-ups)
+## Follow-ups
 
-- **Model admission (`admit_models`) is also skipped for facade launches.** It lives in the same native auth hook as the manifest, which is how F-01 was found. Facade launches never had admission or `apex_actor_id` attribution, and an existing test deliberately keeps the launch principal out of persisted runs, so changing either was left as a separate decision.
-- **No runtime-level integration test yet.** There is still no test that launches through `/v1` against a real LangGraph runtime. F-01 is covered by unit tests that use the real manifest preparation and plan resolver, and was verified by launching through the dashboard against `langgraph dev`.
+| Item | Status (2026-10-23) |
+|---|---|
+| Model admission (`admit_models`) is also skipped for facade launches | **Fixed in PR #26.** Facade launches and reruns admit before `runs.create` ([FACADE_CONTROLS.md](FACADE_CONTROLS.md)). |
+| Facade launches have no `apex_actor_id` attribution | **Fixed in PR #27**, with usage consumer names in PR #28. |
+| Demo-mode journey e2e stops at Config | **Fixed in PR #26** (`8803ac2`). The offline dataset now serves an analysis connection, and the journey launches. |
+| Production runtime untested | **Done** ([PRODUCTION_RUNTIME_CHECK.md](PRODUCTION_RUNTIME_CHECK.md)). The check found that every wizard launch failed on the Postgres runtime (PR #30) and that the Compose stack could not start as shipped (PR #29). Both are fixed. |
+| No runtime-level integration test | **Open.** No automated test launches through `/v1` against a real LangGraph runtime. Both launch-breaking bugs (F-01 and the Postgres status-code bug) passed unit tests and were only caught by hand. A Postgres-runtime launch in CI would cover both, but it needs a license or LangSmith key in CI. |
+| Compare doesn't show acceptance thresholds | **Open.** Found while exercising Compare on 2026-10-23. |
+| APEX Load handoff | **Not exercised.** It needs a live APEX Load connection. |
+| AKS MinIO manifest uses the unpullable `minio/minio` image | **Open.** PR #29 fixed Compose only. |
 
 ## End-to-end verification (2026-10-22, local `langgraph dev`, production bundle)
 
@@ -42,4 +50,4 @@ A new test was built from scratch in the wizard at 1024×768 (one backend, Simul
 | [after-04-decision-first-review](screens/after-04-decision-first-review.jpg) | A pending decision opens in Run detail, with KPIs beside it |
 | [after-05-failed-run-relaunch](screens/after-05-failed-run-relaunch.jpg) | A failed run shows its reason and Edit and relaunch |
 
-Automated checks at the end of the branch: backend unit suite 6,586 passed (15 skipped), ruff and pyright clean; dashboard 152 test files / 1,311 tests passed, `tsc -b` clean, ESLint with no new warnings; `check:contracts` passed. The demo-mode journey e2e (`e2e/demo-mode.spec.ts`) still stops at Config. The demo data has no analysis connection, and the analysis requirement already on `main` makes that journey unlaunchable in demo mode. Its other two tests pass.
+Automated checks at the end of the branch: backend unit suite 6,586 passed (15 skipped), ruff and pyright clean; dashboard 152 test files / 1,311 tests passed, `tsc -b` clean, ESLint with no new warnings; `check:contracts` passed. At that point the demo-mode journey e2e (`e2e/demo-mode.spec.ts`) still stopped at Config; it was restored later in the same PR (see Follow-ups).

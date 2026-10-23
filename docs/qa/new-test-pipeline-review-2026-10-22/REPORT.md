@@ -6,6 +6,18 @@
 
 **Environment:** production dashboard bundle behind a same-origin proxy (deploy contract), local `langgraph dev` runtime (`langgraph-api 0.10.0`, in-memory store), Postgres/Redis in Docker, **Simulated** engine, signed in as global admin, light theme. Viewports were 1440×900, 1024×768 and 768×1024.
 
+> **Status as of 2026-10-23.** The findings below describe `main` as it was on 2026-10-22.
+>
+> - F-01 through F-20 were fixed in PR #26, except F-19, which was not reproduced. [REMEDIATION.md](REMEDIATION.md) has the change behind each one.
+> - A wizard launch now completes 7/7 on both runtimes:
+>   - `langgraph dev`;
+>   - the production Compose stack (Postgres runtime), after the fixes in PRs #29 and #30. See [PRODUCTION_RUNTIME_CHECK.md](PRODUCTION_RUNTIME_CHECK.md).
+> - The [completeness check](#completeness-check--what-a-tester-needs-vs-what-exists) has a column with the current status.
+> - Still open:
+>   - the APEX Load handoff is unexercised;
+>   - Compare doesn't show acceptance thresholds;
+>   - there is no automated `/v1`-to-runtime integration test.
+
 ---
 
 ## Verdict
@@ -230,22 +242,22 @@ Severity: **P0** blocks the workflow · **P1** major usability or trust problem 
 
 ## Completeness check — what a tester needs vs what exists
 
-| Need | Status |
-|---|---|
-| Define the system under test (layers, primary, traffic entry) | ✓ exists · F-08/F-09 |
-| Choose engine and workload, with thresholds | ✓ · F-07 |
-| Attach tickets and documents as context | ✓ · F-15/F-16 |
-| Choose prompts per phase | ✓ |
-| Choose which phases are agent-run vs human-completed, and review gates | ✓ · F-14 |
-| Save and resume drafts | ✓ |
-| Launch | **✕ F-01** |
-| Watch live progress | not observable (F-01); the phase strip exists |
-| Decide at review gates | ✓ (older runs) |
-| See KPIs against thresholds | **✕ F-06** |
-| Understand a failure | **✕ F-02, F-04** |
-| Recover: edit and relaunch / re-run phases | **✕ F-03** · clone works only for completed runs (F-10) |
-| Compare runs | `Compare` exists on the Tests list (not exercised here) |
-| Hand off to APEX Load for real execution | engine card and "Load integration" links exist (not exercised; Simulated only) |
+| Need | Status (2026-10-22) | Status (2026-10-23) |
+|---|---|---|
+| Define the system under test (layers, primary, traffic entry) | ✓ exists · F-08/F-09 | ✓ F-08/F-09 fixed |
+| Choose engine and workload, with thresholds | ✓ · F-07 | ✓ F-07 fixed: ramp ≤ duration, unit choice |
+| Attach tickets and documents as context | ✓ · F-15/F-16 | ✓ F-15/F-16 fixed |
+| Choose prompts per phase | ✓ | ✓ |
+| Choose which phases are agent-run vs human-completed, and review gates | ✓ · F-14 | ✓ F-14 fixed |
+| Save and resume drafts | ✓ | ✓ |
+| Launch | **✕ F-01** | ✓ 7/7 from the wizard on `langgraph dev` and on the production Postgres runtime |
+| Watch live progress | not observable (F-01); the phase strip exists | ✓ seen on the production stack: "Running, 5/6", then "7/7 phases succeeded" |
+| Decide at review gates | ✓ (older runs) | ✓ on new runs; a pending decision opens in Run detail ([after-04](screens/after-04-decision-first-review.jpg)) |
+| See KPIs against thresholds | **✕ F-06** | ✓ Requested vs observed table ([after-03](screens/after-03-run-complete-kpis-1024.jpg)) |
+| Understand a failure | **✕ F-02, F-04** | ✓ reason on Overview and Timeline; run-scoped Logs ([after-05](screens/after-05-failed-run-relaunch.jpg)) |
+| Recover: edit and relaunch / re-run phases | **✕ F-03** · clone works only for completed runs (F-10) | ✓ **Edit and relaunch** for failed runs; clones keep their topology (F-10) |
+| Compare runs | `Compare` exists on the Tests list (not exercised here) | ◐ Exercised: select 2–4 runs, then per-phase timing, KPI deltas against a chosen baseline, and artifact/warning counts ([after-06](screens/after-06-compare.jpg)). **Gap:** requested thresholds are not shown, so you can't see whether a delta crosses an acceptance limit. |
+| Hand off to APEX Load for real execution | engine card and "Load integration" links exist (not exercised; Simulated only) | **Not exercised.** It needs a live APEX Load connection; only the Simulated engine has been run. |
 
 ---
 
@@ -267,7 +279,7 @@ Severity: **P0** blocks the workflow · **P1** major usability or trust problem 
 - I inspected failed, completed and awaiting-review runs across Overview, Workspace, Timeline, Review and Logs.
 - I diagnosed F-01 from the backend log, the code path, and a **read-only copy** of the dev server's run store. The store was not modified.
 - Only the Simulated engine was used; APEX Load and LoadRunner execution were not exercised. The dark theme was not re-checked.
-- The production runtime was not tested (see F-01).
+- The production runtime was not tested (see F-01). It was tested on 2026-10-23; see [PRODUCTION_RUNTIME_CHECK.md](PRODUCTION_RUNTIME_CHECK.md).
 - No credentials or keys appear in this report or its screenshots.
 - Earlier wizard screenshots (01, 02, 05, 06, 11) were captured at 1024×768. Run-page screenshots were captured at 1440×900.
 
