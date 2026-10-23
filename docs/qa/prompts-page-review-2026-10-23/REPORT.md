@@ -194,7 +194,7 @@ The page does its basic job: you can find a prompt, read its active text without
 
 ## Remediation (2026-10-23)
 
-Branch `claude/prompts-catalog-ux`, stacked on PR #34. All findings, P1 to P3, are addressed.
+Branch `claude/prompts-catalog-ux`, stacked on PR #37, which restores PR #34. All findings, P1 to P3, are addressed.
 
 | Finding | Status | Change |
 |---|---|---|
