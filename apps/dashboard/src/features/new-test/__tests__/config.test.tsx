@@ -90,7 +90,7 @@ describe('ConfigStep', () => {
     expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveTextContent('Person')
     expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    expect(screen.getByText(/Execution — Person/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Execution: Person, bypassed for agentic execution/ })).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Config' }))
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
@@ -116,7 +116,7 @@ describe('ConfigStep', () => {
     await user.click(screen.getByRole('radio', { name: /APEX Load/ }))
     await user.click(screen.getByRole('tab', { name: 'Review' }))
 
-    expect(screen.getByText('Execution configuration needs attention:')).toBeInTheDocument()
+    expect(within(screen.getByRole('list', { name: 'Launch checks' })).getByText('Needs attention before launch.')).toBeInTheDocument()
     expect(screen.queryByText('Select an application before external execution')).not.toBeInTheDocument()
     expect(screen.getByText('Select a target environment before external execution')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()

@@ -1931,6 +1931,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/prompts/{prompt_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Usage */
+        get: operations["getPromptUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/prompts/{prompt_id}/versions": {
         parameters: {
             query?: never;
@@ -5405,6 +5422,29 @@ export interface components {
             selection_enabled: boolean;
             /** Updated At */
             updated_at?: string | null;
+        };
+        /** PromptTestUsageOut */
+        PromptTestUsageOut: {
+            /** Recorded At */
+            recorded_at?: string | null;
+            /** Slot */
+            slot: string;
+            /** Thread Id */
+            thread_id: string;
+            /** Title */
+            title?: string | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * PromptUsageOut
+         * @description Tests that pinned this prompt, newest first, limited to the caller's scopes.
+         */
+        PromptUsageOut: {
+            /** Tests */
+            tests: components["schemas"]["PromptTestUsageOut"][];
+            /** Total Tests */
+            total_tests: number;
         };
         /** PromptVersionDetail */
         PromptVersionDetail: {
@@ -11178,6 +11218,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PromptSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getPromptUsage: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Prompt id */
+                prompt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptUsageOut"];
                 };
             };
             /** @description Validation Error */

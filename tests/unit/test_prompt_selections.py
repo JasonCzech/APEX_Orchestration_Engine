@@ -186,9 +186,9 @@ async def test_manifest_is_pinned_ordered_and_system_locked(db):
     model_system = _compose_system(resolved_state)
     assert (
         model_system.index("SHARED SYSTEM PROMPT")
-        < model_system.index("PHASE CONTEXT")
         < model_system.index("APPLICATION CONTEXT")
         < model_system.index("ENVIRONMENT CONTEXT")
+        < model_system.index("PHASE CONTEXT")
     )
     assert "Analyze checkout" in _compose_user(state, Phase.STORY_ANALYSIS, resolved_state, {})
 

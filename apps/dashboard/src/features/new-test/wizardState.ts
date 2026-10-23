@@ -349,6 +349,20 @@ export function selectedPhases(config: WizardConfig): PhaseName[] {
   return config.phases ?? [...PHASE_NAMES]
 }
 
+/** Assign one phase to an agent or a person, keeping the prompt focus on an agent phase. */
+export function withPhaseOwner(config: WizardConfig, phase: PhaseName, agent: boolean): WizardConfig {
+  const current = new Set(selectedPhases(config))
+  if (agent) current.add(phase)
+  else current.delete(phase)
+  const next = PHASE_NAMES.filter(name => current.has(name))
+  const focus = focusedPromptPhase(config)
+  return {
+    ...config,
+    phases: next.length === PHASE_NAMES.length ? null : next,
+    prompt_focus_phase: focus !== null && next.includes(focus) ? focus : next[0] ?? null,
+  }
+}
+
 /** Focused Prompts phase, coerced onto the currently selected phase plan. */
 export function focusedPromptPhase(config: WizardConfig): PhaseName | null {
   const selected = selectedPhases(config)
@@ -469,7 +483,7 @@ export function stepIssues(
     case 'prompts': {
       if (!selectedPhases(draft.config).length) break
       const selection = draft.prompt_selections
-      if (selectedPhases(draft.config).length && !selection?.system) issues.push('Select a System Prompt')
+      if (selectedPhases(draft.config).length && !selection?.system) issues.push('Select a system prompt')
       for (const phase of selectedPhases(draft.config)) {
         if (!selection?.phases[phase]) issues.push(`Select Phase context for ${phase}`)
       }

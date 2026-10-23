@@ -21,13 +21,13 @@ export interface PromptTabValues {
 export type PromptTabField = Exclude<keyof PromptTabValues, 'context_edits'> | 'environment'
 export interface PromptContextEntry { namespace: string; key: string; prompt_id: string; version: number; content: string; overridden?: boolean }
 
-const PROMPT_CONTEXT_LABELS: Record<string, string> = { application: 'Application context', environment: 'Environment Context' }
+const PROMPT_CONTEXT_LABELS: Record<string, string> = { application: 'Application context', environment: 'Environment context' }
 
 const TABS: Array<{ field: PromptTabField; label: string }> = [
-  { field: 'system', label: 'System Prompt' },
+  { field: 'system', label: 'System prompt' },
   { field: 'phase_prompt', label: 'Phase context' },
   { field: 'application', label: 'Application context' },
-  { field: 'environment', label: 'Environment Context' },
+  { field: 'environment', label: 'Environment context' },
   { field: 'additional_context', label: 'Additional context' },
 ]
 
@@ -71,7 +71,7 @@ export function PromptTabsEditor({
 
   const activeValue =
     active === 'environment' ? '' : active === 'application' ? (values.application ?? '') : values[active]
-  const activeLabel = systemLocked ? TABS.find((tab) => tab.field === active)?.label ?? 'Prompt' : ({ system: 'System prompt', phase_prompt: 'Phase prompt', application: 'Application prompt', environment: 'Environment Context', additional_context: 'Additional context' }[active])
+  const activeLabel = systemLocked ? TABS.find((tab) => tab.field === active)?.label ?? 'Prompt' : ({ system: 'System prompt', phase_prompt: 'Phase prompt', application: 'Application prompt', environment: 'Environment context', additional_context: 'Additional context' }[active])
   const activeDisabled = active === 'application' && !hasApplicationContext
   const selectedEntry = selections?.find(item => item.namespace === (active === 'phase_prompt' ? 'phase' : active))
   const canEdit = editable && !(systemLocked && active === 'system')

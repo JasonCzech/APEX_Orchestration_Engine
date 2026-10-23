@@ -51,6 +51,8 @@ export const queryKeys = {
     listNamespace: (ns: string) => [...queryKeys.prompts.all, 'list', { ns }] as const,
     /** D4 append: prompt fetched by catalog id (GET /v1/prompts/{prompt_id}). */
     byId: (id: string) => [...queryKeys.prompts.all, 'by-id', id] as const,
+    /** Tests that pinned a prompt (GET /v1/prompts/{prompt_id}/usage). */
+    usage: (id: string) => [...queryKeys.prompts.all, 'usage', id] as const,
     /**
      * D5 append: browser list keyed by the full server filter object
      * (include_archived/q). The 'filtered' string at index 2 keeps it disjoint

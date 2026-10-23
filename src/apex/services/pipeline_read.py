@@ -68,6 +68,7 @@ from apex.services.pipeline_public import (
     public_text,
 )
 from apex.services.prompt_selections import review_metadata
+from apex.services.prompt_usage import record_prompt_usage
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_no_catalog,
@@ -87,6 +88,14 @@ from apex.services.run_validation import (
 from apex.settings import get_settings
 
 JsonDict = dict[str, Any]
+
+
+def _run_configurable(run: JsonDict) -> JsonDict:
+    """The configurable a native run was created with, when the runtime returns it."""
+    kwargs = run.get("kwargs")
+    config = kwargs.get("config") if isinstance(kwargs, dict) else None
+    configurable = config.get("configurable") if isinstance(config, dict) else None
+    return configurable if isinstance(configurable, dict) else {}
 
 
 @dataclass(frozen=True)
@@ -1340,6 +1349,10 @@ class PipelineReadService:
                     existing_run.get("run_id"),
                     label="pipeline launch reconciliation",
                 )
+                # Backfill the usage index if the first attempt never recorded it.
+                await record_prompt_usage(
+                    thread_id, _run_configurable(existing_run), title=run_input.get("title")
+                )
                 return {
                     "thread_id": thread_id,
                     "run_id": existing_run_id,
@@ -1456,6 +1469,9 @@ class PipelineReadService:
                             existing_run.get("run_id"),
                             label="pipeline launch reconciliation",
                         )
+                        await record_prompt_usage(
+                            thread_id, run_configurable, title=run_input.get("title")
+                        )
                         return {
                             "thread_id": thread_id,
                             "run_id": existing_run_id,
@@ -1502,6 +1518,8 @@ class PipelineReadService:
             raise LaunchProviderError("pipeline runtime run creation failed")
         if run_id is None:  # pragma: no cover - client contract invariant
             raise LaunchProviderError("pipeline runtime run creation failed")
+        # Index the pinned prompt versions for the catalog's "Used by" (best-effort).
+        await record_prompt_usage(thread_id, run_configurable, title=run_input.get("title"))
         return {
             "thread_id": thread_id,
             "run_id": run_id,

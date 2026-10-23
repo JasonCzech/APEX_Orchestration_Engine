@@ -45,7 +45,7 @@ describe('catalog prompt selections', () => {
     server.use(...handlers())
     const view = setup()
     await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
-    expect(screen.getByLabelText('System Prompt')).toHaveValue('system-default')
+    expect(screen.getByLabelText('System prompt')).toHaveValue('system-default')
     await openTab(/Story Analysis/)
     expect(screen.getByLabelText('Phase context — Story Analysis')).toHaveValue('analysis-default')
     const payload = buildConfigurable(view.draft())
@@ -58,7 +58,7 @@ describe('catalog prompt selections', () => {
     const view = setup()
     const user = userEvent.setup()
     await screen.findByRole('option', { name: 'system-alternative' })
-    await user.selectOptions(screen.getByLabelText('System Prompt'), 'system-alternative')
+    await user.selectOptions(screen.getByLabelText('System prompt'), 'system-alternative')
     await user.click(tab(/Story Analysis/))
     const phase = screen.getByLabelText('Phase context — Story Analysis')
     expect(within(phase).queryByRole('option', { name: /planning-default/ })).not.toBeInTheDocument()
@@ -68,8 +68,8 @@ describe('catalog prompt selections', () => {
     expect(within(app).queryByRole('option', { name: 'app-hidden' })).not.toBeInTheDocument()
     await user.selectOptions(app, 'app-one')
     await user.selectOptions(app, 'app-shared')
-    await user.click(tab(/Environment Context/))
-    await user.selectOptions(screen.getByLabelText('Add Environment Context'), 'env-one')
+    await user.click(tab(/Environment context/))
+    await user.selectOptions(screen.getByLabelText('Add Environment context'), 'env-one')
     expect(view.draft().prompt_selections?.application.map(item => item.prompt_id)).toEqual(['app-one', 'app-shared'])
     await user.click(tab(/Application context/))
     await user.click(within(screen.getByRole('region', { name: 'Application context' })).getAllByRole('button', { name: 'Move up' })[1]!)
@@ -130,24 +130,121 @@ describe('catalog prompt selections', () => {
     initial.scope = { project_id: 'project-one', app_id: 'app-checkout', environment_id: 'env-staging' } as WizardDraft['scope']
     setup(initial)
     await waitFor(() => expect(tab(/System prompt/)).toHaveTextContent('system-default'))
+    // Shared context sits under the system prompt; every phase follows in pipeline order.
     expect(screen.getAllByRole('tab').map(item => item.textContent)).toEqual([
-      expect.stringContaining('System prompt'), expect.stringContaining('Story Analysis'), expect.stringContaining('Test Planning'),
-      expect.stringContaining('Application context'), expect.stringContaining('Environment Context'),
+      expect.stringContaining('System prompt'), expect.stringContaining('Application context'), expect.stringContaining('Environment context'),
+      expect.stringContaining('Story Analysis'), expect.stringContaining('Test Planning'), expect.stringContaining('Env Triage'),
+      expect.stringContaining('Script & Scenario'), expect.stringContaining('Execution'), expect.stringContaining('Reporting & Analysis'),
+      expect.stringContaining('Postmortem'),
     ])
     expect(tab(/Story Analysis/)).toHaveTextContent('analysis-default')
+    expect(tab(/Env Triage/)).toHaveTextContent('Person · bypassed')
     expect(tab(/Application context/)).toHaveTextContent('None')
-    expect(screen.getByText(/Completed by a person, no prompt needed: Env Triage/)).toBeInTheDocument()
     expect(tab(/System prompt/)).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByLabelText('Phase context — Story Analysis')).not.toBeInTheDocument()
     tab(/System prompt/).focus()
     await userEvent.keyboard('{ArrowDown}')
-    expect(tab(/Story Analysis/)).toHaveFocus()
-    expect(tab(/Story Analysis/)).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel', { name: /Story Analysis/ })).toHaveTextContent('phase 1 of 2')
-    await userEvent.keyboard('{End}')
-    expect(tab(/Environment Context/)).toHaveFocus()
-    await userEvent.click(screen.getByRole('button', { name: /Application context/ }))
+    expect(tab(/Application context/)).toHaveFocus()
     expect(tab(/Application context/)).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(tab(/Story Analysis/))
+    expect(screen.getByRole('tabpanel', { name: /Story Analysis/ })).toHaveTextContent('phase 1 of 7')
+    tab(/Story Analysis/).focus()
+    await userEvent.keyboard('{End}')
+    expect(tab(/Postmortem/)).toHaveFocus()
+    await userEvent.click(screen.getByRole('button', { name: /← Reporting & Analysis/ }))
+    expect(tab(/Reporting & Analysis/)).toHaveAttribute('aria-selected', 'true')
+  })
+  it('shows person-run phases as bypassed and switches ownership both ways', async () => {
+    server.use(...handlers())
+    const view = setup()
+    const user = userEvent.setup()
+    await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
+    await user.click(tab(/Test Planning/))
+    const panel = () => screen.getByRole('tabpanel', { name: /Test Planning/ })
+    expect(panel()).toHaveTextContent('Bypassed for agentic execution')
+    expect(panel()).toHaveTextContent('the catalog default context is selected')
+    expect(screen.queryByLabelText('Phase context — Test Planning')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Run this phase with an agent' }))
+    expect(view.draft().config.phases).toEqual(['story_analysis', 'test_planning'])
+    await waitFor(() => expect(view.draft().prompt_selections?.phases.test_planning?.prompt_id).toBe('planning-default'))
+    expect(screen.getByLabelText('Phase context — Test Planning')).toHaveValue('planning-default')
+    expect(tab(/Test Planning/)).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(screen.getByRole('button', { name: 'Bypass: a person completes this phase' }))
+    expect(view.draft().config.phases).toEqual(['story_analysis'])
+    expect(screen.getByRole('heading', { name: 'Test Planning' })).toHaveFocus()
+    expect(screen.getByRole('status')).toHaveTextContent('Test Planning is now completed by a person')
+    expect(tab(/Test Planning/)).toHaveTextContent('Person · bypassed')
+    // The saved context is kept for later, shown read-only, and left out of the launch.
+    expect(view.draft().prompt_selections?.phases.test_planning?.prompt_id).toBe('planning-default')
+    expect(await within(panel()).findByLabelText('planning-default content')).toHaveTextContent('Content for planning-default')
+    expect(within(panel()).queryByRole('button', { name: 'Override for this test' })).not.toBeInTheDocument()
+    expect(buildConfigurable(view.draft()).prompt_selections).toMatchObject({ phases: { story_analysis: expect.anything() } })
+    expect((buildConfigurable(view.draft()).prompt_selections as { phases: object }).phases).not.toHaveProperty('test_planning')
+  })
+  it('shows the phase context beside the prompt the runtime assembles from it', async () => {
+    server.use(...handlers())
+    const view = setup()
+    const user = userEvent.setup()
+    await waitFor(() => expect(view.draft().prompt_selection_issues).toEqual([]))
+    await user.click(tab(/Application context/))
+    await user.selectOptions(screen.getByLabelText('Add Application context'), 'app-one')
+    await user.click(tab(/Environment context/))
+    await user.selectOptions(screen.getByLabelText('Add Environment context'), 'env-one')
+    await user.click(tab(/Story Analysis/))
+    const region = screen.getByRole('region', { name: 'Assembled prompt for Story Analysis' })
+    const assembled = () => region.querySelector('pre.wizard-prompt-content:not(details pre)')!
+    await waitFor(() => expect(assembled()).toHaveTextContent('Content for env-one'))
+    const text = assembled().textContent ?? ''
+    // Same order as compose_selected_system: system, application and environment context, then the phase.
+    const order = ['=== SHARED SYSTEM PROMPT ===', 'Content for system-default', '=== APPLICATION CONTEXT: app-one ===', 'Content for app-one',
+      '=== ENVIRONMENT CONTEXT: env-one ===', 'Content for env-one', '=== PHASE CONTEXT ===', 'Content for analysis-default'].map(part => text.indexOf(part))
+    expect(order.every(index => index >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(within(region).queryByRole('button', { name: 'Override for this test' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Override for this test' }))
+    const editor = screen.getByLabelText('Override analysis-default')
+    await user.clear(editor)
+    await user.type(editor, 'Edited phase context')
+    expect(assembled()).toHaveTextContent('=== PHASE CONTEXT === Edited phase context')
+  })
+  it('adds the runtime scope line to each context and never shows a stuck loading state', async () => {
+    server.use(http.get('*/v1/prompts/archived/versions/:version', () => HttpResponse.json({ detail: 'Not found' }, { status: 404 })), ...handlers())
+    const initial = emptyDraft()
+    initial.config.phases = ['story_analysis', 'test_planning']
+    initial.scope = { project_id: 'project-one', app_id: 'app-checkout', environment_id: 'env-staging', test_scope: {
+      schema_version: 1, primary_participant_id: 'be', traffic_entry_participant_id: 'be',
+      participants: [{ id: 'be', layer: 'backend', project_id: 'project-one', application_id: 'app-checkout', environment_id: 'env-staging' }],
+    } } as WizardDraft['scope']
+    initial.prompt_selections!.application = [{ prompt_id: 'app-one', version_id: 'app-one-v1' }, { prompt_id: 'app-shared', version_id: 'app-shared-v1' }]
+    initial.prompt_selections!.phases.test_planning = { prompt_id: 'archived', version_id: 'old' }
+    setup(initial)
+    const user = userEvent.setup()
+    await waitFor(() => expect(tab(/System prompt/)).toHaveTextContent('system-default'))
+    await user.click(tab(/Story Analysis/))
+    const region = screen.getByRole('region', { name: 'Assembled prompt for Story Analysis' })
+    await waitFor(() => expect(region).toHaveTextContent('=== APPLICATION CONTEXT: app-one === Applies to participants: be (backend, primary system, traffic entry) Content for app-one'))
+    expect(region).toHaveTextContent('=== APPLICATION CONTEXT: app-shared === Shared across all test participants Content for app-shared')
+    // An unavailable phase prompt is reported, not shown as loading.
+    await user.click(tab(/Test Planning/))
+    const planning = screen.getByRole('region', { name: 'Assembled prompt for Test Planning' })
+    await waitFor(() => expect(planning).toHaveTextContent("A selected prompt could not be loaded"))
+    expect(within(planning).queryByRole('status')).not.toBeInTheDocument()
+  })
+  it('offers to run a phase with an agent when every phase is assigned to a person', async () => {
+    server.use(...handlers())
+    const initial = emptyDraft()
+    initial.config.phases = []
+    const view = setup(initial)
+    // The visible label is part of the accessible name (WCAG 2.5.3).
+    await userEvent.click(await screen.findByRole('button', { name: 'Run with an agent: Story Analysis' }))
+    expect(view.draft().config.phases).toEqual(['story_analysis'])
+    await waitFor(() => expect(tab(/Story Analysis/)).toHaveTextContent('analysis-default'))
+    expect(tab(/Story Analysis/)).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Story Analysis' })).toHaveFocus()
+    expect(screen.getByRole('status')).toHaveTextContent('Story Analysis is now run by an agent.')
   })
   it('opens on the first slot that needs attention and flags it in the tab', async () => {
     server.use(...handlers())
