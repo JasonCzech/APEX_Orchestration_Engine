@@ -196,13 +196,12 @@ async def _resolve_pipeline_scope(
             application = await get_application(resolved_app)
             if application is None or application.archived_at is not None:
                 raise HTTPException(status_code=404, detail="application not found")
-            if resolved_project is not None and application.project_id != resolved_project:
+            # project_id is required with app_id (above); it must be one the app is linked to.
+            if resolved_project not in application.project_ids:
                 raise HTTPException(
                     status_code=403,
                     detail="application is outside the requested project",
                 )
-            resolved_project = application.project_id
-            metadata["project_id"] = resolved_project
     return resolved_project, resolved_app
 
 

@@ -426,16 +426,21 @@ async def facets(
     q: Annotated[NoNulStr, Query(max_length=255)] = "",
 ) -> dict[str, Any]:
     from apex.auth.identity import Role
-    from apex.persistence.models import Application
+    from apex.persistence.models import Application, ProjectApplication
 
     predicates = filters.predicates(identity)
+    # Name the application only where it is (still) linked to the event's project.
+    linked = (
+        select(ProjectApplication.application_id)
+        .where(
+            ProjectApplication.application_id == AgentEvent.app_id,
+            ProjectApplication.project_id == AgentEvent.project_id,
+        )
+        .exists()
+    )
     app_query = (
         select(AgentEvent.project_id, AgentEvent.app_id, func.max(Application.name))
-        .outerjoin(
-            Application,
-            (Application.id == AgentEvent.app_id)
-            & (Application.project_id == AgentEvent.project_id),
-        )
+        .outerjoin(Application, (Application.id == AgentEvent.app_id) & linked)
         .where(*predicates, AgentEvent.project_id.is_not(None), AgentEvent.app_id.is_not(None))
         .group_by(AgentEvent.project_id, AgentEvent.app_id)
         .order_by(AgentEvent.project_id, AgentEvent.app_id)

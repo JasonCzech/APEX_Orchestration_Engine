@@ -33,6 +33,7 @@ from apex.persistence.models import (
     CycleExecutionPreparation,
     CycleScriptValidation,
     Environment,
+    ProjectApplication,
     TestCycle,
 )
 from apex.services.connection_credentials import sanitize_credential_text_for_output
@@ -264,7 +265,12 @@ async def create_cycle(body: CycleCreate, session: Session, identity: Operator):
         .where(
             Environment.id == body.environment_id,
             Application.id == body.app_id,
-            Application.project_id == body.project_id,
+            select(ProjectApplication.application_id)
+            .where(
+                ProjectApplication.application_id == Application.id,
+                ProjectApplication.project_id == body.project_id,
+            )
+            .exists(),
             Application.archived_at.is_(None),
         )
     )

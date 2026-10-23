@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from apex.app.dependencies import CurrentIdentity, require_role
 from apex.auth.identity import ConsumerIdentity, Role
-from apex.domain.input_limits import RecordId
+from apex.domain.input_limits import RecordId, ScopeId
 from apex.domain.integrations import EnvRef
 from apex.persistence.db import release_read_transactions
 from apex.persistence.models import Environment
@@ -47,11 +47,18 @@ async def _load_visible_environment(
     repository: SnapshotsRepository, environment_id: str, identity: ConsumerIdentity
 ) -> Environment:
     env = await repository.get_environment(environment_id)
-    if env is None or not identity.allows_scope(
-        project_id=env.application.project_id, app_id=env.application_id
-    ):
+    if env is None or not _accessible_projects(env, identity):
         raise HTTPException(status_code=404, detail="environment not found")
     return env
+
+
+def _accessible_projects(env: Environment, identity: ConsumerIdentity) -> list[str]:
+    """Projects linked to the environment's application that this caller may act in."""
+    return [
+        project_id
+        for project_id in env.application.project_ids
+        if identity.allows_scope(project_id=project_id, app_id=env.application_id)
+    ]
 
 
 @router.get(
@@ -77,9 +84,17 @@ async def rescan_environment(
     repository: SnapshotsRepo,
     resolve_adapter: ResolverDep,
     connection_id: ConnectionIdParam = None,
+    project: Annotated[
+        ScopeId | None,
+        Query(description="Project whose inventory connection scans it (default: first linked)"),
+    ] = None,
 ) -> InventoryView:
     env = await _load_visible_environment(repository, environment_id, identity)
-    project_id = env.application.project_id
+    # A shared application's environment can be scanned through any linked project.
+    projects = _accessible_projects(env, identity)
+    if project is not None and project not in projects:
+        raise HTTPException(status_code=404, detail="environment not found")
+    project_id = project or projects[0]
     environment = EnvRef(id=env.id, name=env.name)
     await release_read_transactions(repository)
     rescan_error: HTTPException | None = None

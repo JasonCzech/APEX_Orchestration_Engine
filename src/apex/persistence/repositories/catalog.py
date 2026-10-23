@@ -1,6 +1,7 @@
 """Async repository for the application/environment catalog (legacy app_env).
 
-Applications carry project_id; environments inherit it via their application.
+Applications link to one or more projects (project_applications); environments
+belong to their application and are visible through any of its projects.
 Visibility filtering is parameterized (`visible_projects`) so routers translate
 identity scopes into a plain allow-list — the repository stays auth-agnostic.
 """
@@ -18,9 +19,11 @@ from apex.auth.identity import ScopeRef
 from apex.domain.input_limits import MAX_DESCRIPTION_CHARS, MAX_SCOPE_ID_CHARS
 from apex.persistence.models import (
     Application,
+    CatalogMerge,
     Environment,
     EnvironmentHost,
     EnvironmentSnapshot,
+    ProjectApplication,
     ProjectLabel,
 )
 from apex.persistence.repositories._conflicts import (
@@ -42,6 +45,10 @@ class CatalogInUseError(Exception):
     """An immutable retained record still references this catalog resource."""
 
 
+class ConcurrentLinkError(Exception):
+    """Another request changed the same application's project links first."""
+
+
 class DuplicateNameError(Exception):
     """A unique (parent, name) constraint was violated."""
 
@@ -49,7 +56,8 @@ class DuplicateNameError(Exception):
 _ENVIRONMENT_MUTABLE_FIELDS = frozenset(
     {"name", "kind", "base_url", "options", "target_approved", "target_version"}
 )
-_APPLICATION_MUTABLE_FIELDS = frozenset({"name", "description"})
+_APPLICATION_MUTABLE_FIELDS = frozenset({"name", "description", "project_ids"})
+_MAX_APPLICATION_PROJECTS = 64
 _MAX_ENVIRONMENT_HOSTS = 256
 
 
@@ -203,13 +211,13 @@ class CatalogRepository:
         offset: int = 0,
     ) -> list[Application]:
         """`visible_projects=None` means unrestricted (admin/unscoped consumers)."""
-        stmt = select(Application).order_by(Application.project_id, Application.name)
+        stmt = select(Application).order_by(Application.name)
         if project is not None:
-            stmt = stmt.where(Application.project_id == project)
+            stmt = stmt.where(_linked_to([project]))
         if visible_projects is not None:
-            stmt = stmt.where(Application.project_id.in_(list(visible_projects)))
+            stmt = stmt.where(_linked_to(visible_projects))
         if allowed_scopes is not None:
-            scope_filter = _application_scope_filter(allowed_scopes)
+            scope_filter = application_scope_filter(allowed_scopes)
             stmt = stmt.where(scope_filter if scope_filter is not None else false())
         if not include_archived:
             stmt = stmt.where(Application.archived_at.is_(None))
@@ -218,10 +226,23 @@ class CatalogRepository:
     async def get_application(self, application_id: str) -> Application | None:
         return await self._session.get(Application, application_id)
 
+    async def get_application_following_merges(self, application_id: str) -> Application | None:
+        """Like get_application, but an id merged away by migration 0047 (run history
+        still records it) resolves to the application it was merged into."""
+        app = await self.get_application(application_id)
+        if app is not None:
+            return app
+        kept = await self._session.scalar(
+            select(CatalogMerge.new_id).where(
+                CatalogMerge.old_id == application_id, CatalogMerge.kind == "application"
+            )
+        )
+        return None if kept is None else await self.get_application(kept)
+
     async def create_application(
-        self, *, project_id: str, name: str, description: str | None = None
+        self, *, project_ids: Sequence[str], name: str, description: str | None = None
     ) -> Application:
-        _bounded_text(project_id, label="application project_id", max_chars=MAX_SCOPE_ID_CHARS)
+        projects = _project_ids(project_ids)
         _bounded_text(name, label="application name", max_chars=255)
         _bounded_text(
             description,
@@ -230,7 +251,7 @@ class CatalogRepository:
             min_chars=0,
             allow_none=True,
         )
-        app = Application(project_id=project_id, name=name, description=description)
+        app = Application(project_ids=projects, name=name, description=description)
         self._session.add(app)
         await self._commit_and_refresh(app)
         return app
@@ -245,6 +266,10 @@ class CatalogRepository:
             raise ValueError("unsupported application fields")
         if "name" in changes:
             _bounded_text(changes["name"], label="application name", max_chars=255)
+        if "project_ids" in changes:
+            changes = {**changes, "project_ids": _project_ids(changes["project_ids"])}
+            # Links live in another table; the application row still records the change.
+            app.updated_at = datetime.now(UTC)
         if "description" in changes:
             _bounded_text(
                 changes["description"],
@@ -279,15 +304,11 @@ class CatalogRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Environment]:
-        stmt = (
-            _environment_query()
-            .join(Application)
-            .order_by(Application.project_id, Application.name, Environment.name)
-        )
+        stmt = _environment_query().join(Application).order_by(Application.name, Environment.name)
         if application_id is not None:
             stmt = stmt.where(Environment.application_id == application_id)
         if visible_projects is not None:
-            stmt = stmt.where(Application.project_id.in_(list(visible_projects)))
+            stmt = stmt.where(_linked_to(visible_projects))
         if allowed_scopes is not None:
             scope_filter = _environment_scope_filter(allowed_scopes)
             stmt = stmt.where(scope_filter if scope_filter is not None else false())
@@ -446,16 +467,21 @@ class CatalogRepository:
 
     async def _commit(self) -> None:
         duplicate_name = False
+        link_race = False
         try:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
             if _is_duplicate_catalog_name(exc):
                 duplicate_name = True
+            elif driver_constraint_name(exc.orig) == "pk_project_applications":
+                link_race = True
             else:
                 raise
         if duplicate_name:
             raise DuplicateNameError("catalog name already exists")
+        if link_race:
+            raise ConcurrentLinkError("application project links changed concurrently")
 
     async def _commit_and_refresh(self, instance: Application) -> None:
         await self._commit()
@@ -472,7 +498,7 @@ class CatalogRepository:
 def _is_duplicate_catalog_name(exc: IntegrityError) -> bool:
     constraint_name = driver_constraint_name(exc.orig)
     duplicate_constraints = {
-        "uq_applications_project_id",
+        "uq_applications_name",
         "uq_environments_application_id",
     }
     if constraint_name in duplicate_constraints:
@@ -481,17 +507,41 @@ def _is_duplicate_catalog_name(exc: IntegrityError) -> bool:
     return any(name in message for name in duplicate_constraints) or (
         "unique constraint failed" in message
         and (
-            ("applications.project_id" in message and "applications.name" in message)
+            ("applications.name" in message and "applications.project_id" not in message)
             or ("environments.application_id" in message and "environments.name" in message)
         )
     )
 
 
-def _application_scope_filter(scopes: Sequence[ScopeRef]) -> Any | None:
+def _linked_to(project_ids: Sequence[str]) -> Any:
+    """The application (``Application.id``) is linked to at least one of these projects."""
+    return (
+        select(ProjectApplication.application_id)
+        .where(
+            ProjectApplication.application_id == Application.id,
+            ProjectApplication.project_id.in_(list(project_ids)),
+        )
+        .exists()
+    )
+
+
+def _project_ids(values: Any) -> list[str]:
+    """Validated, de-duplicated, sorted project ids; an application needs at least one."""
+    if type(values) not in (list, tuple) or not values or len(values) > _MAX_APPLICATION_PROJECTS:
+        raise ValueError(f"an application needs 1-{_MAX_APPLICATION_PROJECTS} projects")
+    for value in values:
+        _bounded_text(value, label="application project_id", max_chars=MAX_SCOPE_ID_CHARS)
+    return sorted(set(values))
+
+
+def application_scope_filter(scopes: Sequence[ScopeRef]) -> Any | None:
+    """SQL twin of ``ConsumerIdentity.allows_scope`` for applications: a project-wide
+    scope reaches every application linked to that project; an app scope reaches
+    that application while it stays linked to the scope's project."""
     project_wide = {scope.project_id for scope in scopes if scope.app_id is None}
-    clauses = [Application.project_id == project_id for project_id in sorted(project_wide)]
+    clauses = [_linked_to(sorted(project_wide))] if project_wide else []
     clauses.extend(
-        and_(Application.project_id == scope.project_id, Application.id == scope.app_id)
+        and_(Application.id == scope.app_id, _linked_to([scope.project_id]))
         for scope in scopes
         if scope.app_id is not None and scope.project_id not in project_wide
     )
@@ -499,14 +549,5 @@ def _application_scope_filter(scopes: Sequence[ScopeRef]) -> Any | None:
 
 
 def _environment_scope_filter(scopes: Sequence[ScopeRef]) -> Any | None:
-    project_wide = {scope.project_id for scope in scopes if scope.app_id is None}
-    clauses = [Application.project_id == project_id for project_id in sorted(project_wide)]
-    clauses.extend(
-        and_(
-            Application.project_id == scope.project_id,
-            Environment.application_id == scope.app_id,
-        )
-        for scope in scopes
-        if scope.app_id is not None and scope.project_id not in project_wide
-    )
-    return or_(*clauses) if clauses else None
+    # Environments are listed joined to their application, so the same filter applies.
+    return application_scope_filter(scopes)

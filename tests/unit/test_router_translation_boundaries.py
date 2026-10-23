@@ -42,7 +42,7 @@ async def test_inventory_provider_translation_drops_raw_exception_context(
         id="env-1",
         name="Production",
         application_id="app-1",
-        application=SimpleNamespace(project_id="project-1"),
+        application=SimpleNamespace(project_ids=["project-1"]),
     )
 
     class Repository:

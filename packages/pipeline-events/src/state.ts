@@ -66,7 +66,7 @@ export const ToolCallRecordSchema = z
   .object({
     id: z.string(),
     tool: z.string().optional(),
-    args_preview: z.record(z.unknown()).optional(),
+    args_preview: z.record(z.string(), z.unknown()).optional(),
     // Descriptive outcome only; preserve future statuses for a neutral UI instead of dropping evidence.
     status: z.string().optional(),
     duration_ms: z.number().int().nullish(),
@@ -109,7 +109,7 @@ export const EngineHandleSchema = z
     release_id: z.string().optional(),
     mapping_revision: z.string().optional(),
     idempotency_key: z.string().optional(),
-    extras: z.record(z.string()).optional(),
+    extras: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 export type EngineHandle = z.infer<typeof EngineHandleSchema>;
@@ -176,7 +176,7 @@ export const LoadTestSpecSchema = z
     vusers: z.number().optional(),
     ramp_s: z.number().optional(),
     duration_s: z.number().optional(),
-    slas: z.record(z.number()).optional(),
+    slas: z.record(z.string(), z.number()).optional(),
     target_environment: z.string().nullish(),
     release_id: z.string().nullish(),
     mapping_revision: z.string().nullish(),
@@ -217,7 +217,7 @@ export const TestResultSummarySchema = z
     engine: z.string().optional(),
     passed: z.boolean().nullish(),
     outcome: IntegrationOutcomeSchema.nullish(),
-    kpis: z.record(z.number()).optional(),
+    kpis: z.record(z.string(), z.number()).optional(),
     sla_breaches: z.array(z.string()).optional(),
     notes: z.string().nullish(),
   })
@@ -261,7 +261,7 @@ export const PhaseResultEntrySchema = z
     approvals: z.array(ApprovalRecordSchema).optional(),
     tool_calls: z.array(ToolCallRecordSchema).optional(),
     resolved_prompt_source: ResolvedPromptSourceSchema.nullish(),
-    usage_metadata: z.record(z.unknown()).optional(),
+    usage_metadata: z.record(z.string(), z.unknown()).optional(),
     // Extra keys: prompt resolution + revise loop (phase_subgraph.py)
     resolved_prompt: ResolvedPromptSchema.optional(),
     revise_instructions: z.string().nullish(),
@@ -270,10 +270,10 @@ export const PhaseResultEntrySchema = z
     load_test_spec: LoadTestSpecSchema.optional(),
     test_summary: TestResultSummarySchema.optional(),
     /** Acceptance thresholds the execution was judged against (public projection). */
-    acceptance_thresholds: z.record(z.number()).optional(),
+    acceptance_thresholds: z.record(z.string(), z.number()).optional(),
     engine: z.string().optional(),
     engine_connection_id: z.string().nullish(),
-    engine_options: z.record(z.unknown()).optional(),
+    engine_options: z.record(z.string(), z.unknown()).optional(),
     engine_handle: EngineHandleSchema.optional(),
     engine_started_at: z.string().optional(),
     engine_poll_last: EnginePollSampleSchema.optional(),
@@ -293,10 +293,10 @@ export const PipelineStateSchema = z
     current_phase: PhaseNameSchema.nullish(),
     run_aborted: z.boolean().optional(),
     /** Effective PipelineConfigurable snapshot persisted for resumes/reruns. */
-    run_config: z.record(z.unknown()).optional(),
-    prompt_reviews: z.record(PhaseNameSchema, PromptReviewDraftSchema).optional(),
+    run_config: z.record(z.string(), z.unknown()).optional(),
+    prompt_reviews: z.partialRecord(PhaseNameSchema, PromptReviewDraftSchema).optional(),
     application_reviews: z.record(z.string(), ApplicationReviewSchema).optional(),
-    phase_results: z.record(PhaseResultEntrySchema).optional(),
+    phase_results: z.record(z.string(), PhaseResultEntrySchema).optional(),
     artifacts: z.array(ArtifactRefSchema).optional(),
     dialogue: z.array(DialogueEntrySchema).optional(),
     context_packets: z.array(ContextPacketSchema).optional(),

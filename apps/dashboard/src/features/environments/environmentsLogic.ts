@@ -50,8 +50,8 @@ export interface EnvironmentGroup {
   key: string
   /** Application name, or the raw application_id when the app is not visible. */
   label: string
-  /** Project caption under the group header (empty for unknown apps). */
-  project: string
+  /** Projects the application is linked to (empty for unknown apps). */
+  projects: string[]
   /** The application record, when it is visible (description, archived state). */
   application?: Application
   environments: Environment[]
@@ -75,7 +75,7 @@ export function groupEnvironments(
     groups.push({
       key: app.id,
       label: app.name,
-      project: app.project_id,
+      projects: app.project_ids,
       application: app,
       environments: list.sort((a, b) => a.name.localeCompare(b.name)),
     })
@@ -86,7 +86,7 @@ export function groupEnvironments(
     groups.push({
       key: appId,
       label: appId,
-      project: '',
+      projects: [],
       environments: list.sort((a, b) => a.name.localeCompare(b.name)),
     })
   }
@@ -125,19 +125,12 @@ export function targetHost(url: string): string {
 
 export type ReadinessFilter = '' | TargetStatus
 
-export interface ProjectGroup {
-  project: string
-  applications: EnvironmentGroup[]
-  environmentCount: number
-  needsApproval: number
-}
-
 /**
- * Applications grouped under their project, with environments narrowed by the
- * search text and readiness filter. An application whose name matches keeps all
- * its environments; otherwise only matching environments are listed.
+ * Applications narrowed by the search text and readiness filter. An application
+ * whose name (or one of its projects) matches keeps all its environments;
+ * otherwise only matching environments are listed.
  */
-export function projectGroups(
+export function filterGroups(
   groups: EnvironmentGroup[],
   { search = '', readiness = '', projectName = () => '' }: {
     search?: string
@@ -145,28 +138,29 @@ export function projectGroups(
     /** Display name of a project, so searching "ACC Perf" finds its applications. */
     projectName?: (projectId: string) => string
   } = {},
-): ProjectGroup[] {
+): EnvironmentGroup[] {
   const needle = search.trim().toLowerCase()
-  const byProject = new Map<string, EnvironmentGroup[]>()
+  const result: EnvironmentGroup[] = []
   for (const group of groups) {
-    const appMatches = !needle || `${group.label} ${group.project} ${projectName(group.project)}`.toLowerCase().includes(needle)
+    const haystack = [group.label, ...group.projects, ...group.projects.map(projectName)].join(' ')
+    const appMatches = !needle || haystack.toLowerCase().includes(needle)
     const environments = group.environments.filter(environment =>
       (appMatches || `${environment.name} ${environment.base_url ?? ''}`.toLowerCase().includes(needle)) &&
       (!readiness || targetStatus(environment) === readiness))
     // Keep an application with no environments visible unless a filter excludes it.
     const keep = environments.length > 0 || (group.environments.length === 0 && appMatches && !readiness)
-    if (!keep) continue
-    byProject.set(group.project, [...(byProject.get(group.project) ?? []), { ...group, environments }])
+    if (keep) result.push({ ...group, environments })
   }
-  return [...byProject.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([project, applications]) => {
-      const all = applications.flatMap(application => application.environments)
-      return {
-        project,
-        applications,
-        environmentCount: all.length,
-        needsApproval: all.filter(environment => targetStatus(environment) === 'needs-approval').length,
-      }
-    })
+  return result
+}
+
+/** What the signed-in user may do with project links (create/edit dialogs). */
+export interface ProjectChoices {
+  /** Projects offered as checkboxes. */
+  options: string[]
+  /** Whether the user may link or unlink this project. */
+  canChange: (projectId: string) => boolean
+  /** Unscoped administrators may type a project ID that has no applications yet. */
+  allowOther: boolean
+  caption: (projectId: string) => string
 }

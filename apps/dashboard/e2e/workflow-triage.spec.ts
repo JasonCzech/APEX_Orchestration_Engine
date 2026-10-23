@@ -27,7 +27,7 @@ async function install(page: Page, cycle: () => Cycle, handle?: Handler) {
     const consumer = { id: 'reviewer', name: 'Scoped reviewer', role: 'operator', scopes: [{ project_id: 'project-one', app_id: null }] }
     if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: { cycles: true }, limits: { max_context_packets: 32 }, consumer }
     else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: consumer.id, ...consumer, consumer_type: 'dashboard', is_unscoped: false, capabilities: {} }
-    else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }]
+    else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_ids: ['project-one'], name: 'Checkout API' }]
     else if (path === '/v1/catalog/environments') json = [{ id: 'env-one', application_id: 'app-one', name: 'Performance staging' }]
     else if (path === '/v1/cycles/triage-cycle') json = cycle()
     else if (path === '/v1/cycles') json = [cycle()]

@@ -48,7 +48,7 @@ _DIRECT_RUNS_ALLOWED_METADATA_KEY = "apex_direct_runs_allowed"
 @pytest.fixture(autouse=True)
 def _catalog_application(monkeypatch: pytest.MonkeyPatch) -> None:
     async def load(app_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id=app_id, project_id="p1", archived_at=None)
+        return SimpleNamespace(id=app_id, project_ids=["p1"], archived_at=None)
 
     monkeypatch.setattr(auth_handlers, "_load_catalog_application", load)
 
@@ -133,7 +133,7 @@ class PublicPipelineFixture:
         for p in scope.participants:
             application = SimpleNamespace(
                 id=p.application_id,
-                project_id=p.project_id,
+                project_ids=[p.project_id],
                 name=p.application_id,
                 description="Catalog application",
                 archived_at=None,
@@ -1334,7 +1334,7 @@ async def test_unscoped_threads_create_run_validates_catalog_app_project_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def mismatched_app(_app_id: str) -> SimpleNamespace:
-        return SimpleNamespace(id="a1", project_id="p2", archived_at=None)
+        return SimpleNamespace(id="a1", project_ids=["p2"], archived_at=None)
 
     monkeypatch.setattr(auth_handlers, "_load_catalog_application", mismatched_app)
     value: Any = {

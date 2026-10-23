@@ -1,5 +1,6 @@
-// Offline demo catalog: projects, per-project application registrations, environments,
-// and the System / Phase / Application / Environment prompt layers that reference them.
+// Offline demo catalog: projects, the applications they share (each registered once and
+// linked to every project that tests it), environments, and the System / Phase /
+// Application / Environment prompt layers that reference them.
 // Application roles, hostnames, volumes and thresholds are synthetic demo assumptions.
 import type { PhaseName } from '@apex/pipeline-events'
 
@@ -153,8 +154,13 @@ export const DEMO_ENVIRONMENTS: Record<DemoEnvCode, DemoEnvironmentDefinition> =
   },
 }
 
-export const demoAppId = (project: string, app: DemoAppCode): string => `app-${project}-${app}`
-export const demoEnvId = (project: string, app: DemoAppCode, env: DemoEnvCode): string => `env-${project}-${app}-${env}`
+/** The project that first registered an application; its id keeps that project's prefix. */
+export const demoHomeProject = (app: DemoAppCode): string => DEMO_PROJECTS.find(project => project.apps.includes(app))!.id
+/** Projects linked to an application (every project that tests it). */
+export const demoAppProjects = (app: DemoAppCode): string[] => DEMO_PROJECTS.filter(project => project.apps.includes(app)).map(project => project.id)
+/** Applications are shared across projects, so the id ignores which project asks. */
+export const demoAppId = (_project: string, app: DemoAppCode): string => `app-${demoHomeProject(app)}-${app}`
+export const demoEnvId = (_project: string, app: DemoAppCode, env: DemoEnvCode): string => `env-${demoHomeProject(app)}-${app}-${env}`
 export const demoBaseUrl = (app: DemoAppCode, env: DemoEnvCode): string =>
   env === 'perf-tlg' || env === 'perf-bsse' ? `https://${app}.${env}.example.test` : `https://${app}.${env}.perf.example.test`
 
@@ -269,18 +275,19 @@ export interface DemoContextPromptSeed {
 
 export function demoApplicationPrompts(): DemoContextPromptSeed[] {
   const rows: DemoContextPromptSeed[] = []
-  for (const project of DEMO_PROJECTS) {
-    for (const code of project.apps) {
-      const app = DEMO_APPS[code]
-      const id = demoAppId(project.id, code)
-      rows.push({
-        id: `prompt-${id}`,
-        key: id,
-        application_id: id,
-        description: `${app.name} application context — ${project.name}`,
-        content: `${app.name} (${app.layer === 'middle' ? 'middle tier' : app.layer}) in ${project.name}\n${app.context}\n\nProject focus: ${project.focus}`,
-      })
-    }
+  // One context per application: it describes the system, whichever project tests it.
+  const codes = [...new Set(DEMO_PROJECTS.flatMap(project => project.apps))]
+  for (const code of codes) {
+    const app = DEMO_APPS[code]
+    const id = demoAppId('', code)
+    const projects = DEMO_PROJECTS.filter(project => project.apps.includes(code)).map(project => project.name)
+    rows.push({
+      id: `prompt-${id}`,
+      key: id,
+      application_id: id,
+      description: `${app.name} application context`,
+      content: `${app.name} (${app.layer === 'middle' ? 'middle tier' : app.layer})\n${app.context}\n\nTested by: ${projects.join(', ')}`,
+    })
   }
   rows.push({
     id: 'prompt-shared-order-integrity',
@@ -301,12 +308,14 @@ export function demoEnvironmentPrompts(): DemoContextPromptSeed[] {
     for (const code of anchors) {
       for (const env of DEMO_APPS[code].environments) {
         const id = demoEnvId(project.id, code, env)
+        // Environments belong to their (shared) application: describe each once.
+        if (rows.some(row => row.id === `prompt-${id}`)) continue
         const environment = DEMO_ENVIRONMENTS[env]
         rows.push({
           id: `prompt-${id}`,
           key: id,
           environment_id: id,
-          description: `${environment.name} environment context — ${DEMO_APPS[code].name} (${project.name})`,
+          description: `${environment.name} environment context — ${DEMO_APPS[code].name}`,
           content: `${environment.name} for ${DEMO_APPS[code].name}\n${environment.context}`,
         })
       }

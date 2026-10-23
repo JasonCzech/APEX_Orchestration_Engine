@@ -133,7 +133,7 @@ async def test_applications_create_and_accept_exact_existing_rows() -> None:
 
     assert isinstance(created_session.added[0], Application)
     assert report.applications_created == ["p/app"]
-    existing = Application(id="a1", project_id="p", name="app", description="desc")
+    existing = Application(id="a1", project_ids=["p"], name="app", description="desc")
     existing_session = FakeSession([existing])
     await runner._apply_applications(
         doc,
@@ -144,9 +144,24 @@ async def test_applications_create_and_accept_exact_existing_rows() -> None:
     assert existing_session.added == []
 
 
+async def test_application_declared_for_another_project_is_linked_not_copied() -> None:
+    doc = _document({"applications": [{"project_id": "q", "name": "app", "description": "desc"}]})
+    existing = Application(id="a1", project_ids=["p"], name="app", description="desc")
+    session = FakeSession([existing])
+    messages: list[str] = []
+
+    report = BootstrapReport()
+    await runner._apply_applications(doc, _as_async_session(session), report, messages.append)
+
+    assert session.added == []
+    assert report.applications_created == []
+    assert existing.project_ids == ["p", "q"]
+    assert any("linked to project" in message for message in messages)
+
+
 async def test_application_drift_is_rejected_by_safe_field_name() -> None:
     doc = _document({"applications": [{"project_id": "p", "name": "app"}]})
-    existing = Application(id="a1", project_id="p", name="app", description="unexpected")
+    existing = Application(id="a1", project_ids=["p"], name="app", description="unexpected")
 
     with pytest.raises(BootstrapError, match="description"):
         await runner._apply_applications(
@@ -174,7 +189,7 @@ async def test_environment_create_persists_hosts_and_target_generation(
             ]
         }
     )
-    app = Application(id="a1", project_id="p", name="app")
+    app = Application(id="a1", project_ids=["p"], name="app")
     session = FakeSession([app, None])
     report = BootstrapReport()
 
@@ -209,7 +224,7 @@ async def test_environment_existing_target_is_reapproved_only_after_exact_match(
             ]
         }
     )
-    app = Application(id="a1", project_id="p", name="app")
+    app = Application(id="a1", project_ids=["p"], name="app")
     existing = Environment(
         id="e1",
         application_id="a1",
@@ -257,7 +272,7 @@ async def test_environment_rejects_missing_application_and_invalid_target(
             lambda _message: None,
         )
 
-    app = Application(id="a1", project_id="p", name="app")
+    app = Application(id="a1", project_ids=["p"], name="app")
     monkeypatch.setattr(
         runner,
         "validate_adapter_base_url",

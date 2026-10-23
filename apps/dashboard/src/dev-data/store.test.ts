@@ -30,8 +30,8 @@ describe('dev-data store', () => {
     expect((await store.handleApexRequest(new Request(`${endpoint}?project=acc-perf`, { method: 'DELETE' })))?.status).toBe(204)
     store = createDevDataStore()
     expect((await labels()).map(row => row.project_id)).toEqual(['digital-perf', 'legacy-perf', 'npi', 'hrp'])
-    const apps = await jsonOf<Array<{ project_id: string }>>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/applications')))
-    expect(apps.some(app => app.project_id === 'acc-perf')).toBe(true)
+    const apps = await jsonOf<Array<{ project_ids: string[] }>>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/applications')))
+    expect(apps.some(app => app.project_ids.includes('acc-perf'))).toBe(true)
   })
 
   it('derives every demo summary from its corresponding phase state', async () => {

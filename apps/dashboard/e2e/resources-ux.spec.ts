@@ -11,7 +11,7 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
       let json: unknown = {}
       if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: {}, limits: { max_context_packets: 32 }, consumer: { id: 'operator', name: 'Resource reviewer', role, scopes: scoped } }
       else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'operator', name: 'Resource reviewer', consumer_type: 'dashboard', role, scopes: scoped, is_unscoped: !scoped.length, capabilities: {} }
-      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }]
+      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_ids: ['project-one'], name: 'Checkout API' }]
       else if (path === '/v1/documents') json = { items: [doc], total: 1 }
       else if (path === '/v1/documents/document-full-identity') json = doc
       else if (path === '/v1/pipelines') json = { items: ['run-a', 'run-b'].map((id, index) => ({ thread_id: id, title: 'Checkout release test', project_id: 'project-one', app_id: 'app-one', thread_status: 'idle', execution_result: 'passed', phase_strip: [{ phase: 'execution', status: 'succeeded' }], created_at: `2026-10-1${index + 6}T12:00:00Z`, updated_at: '2026-10-17T13:00:00Z' })), limit: 20, offset: 0 }

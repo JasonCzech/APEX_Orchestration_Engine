@@ -17,6 +17,9 @@ import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { usePromptList } from '@/api/hooks/usePrompts'
 import { Dialog } from '@/components/Dialog'
 
+import { ProjectsPicker } from './environmentsForm'
+import type { ProjectChoices } from './environmentsLogic'
+
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`
 }
@@ -66,26 +69,31 @@ export function DeleteEnvironmentDialog({ environment, onClose, onDeleted }: {
   )
 }
 
-/** Rename or describe an application. Names are unique within a project. */
-export function EditApplicationDialog({ application, siblingNames, onClose }: {
+/** Rename, describe, or link/unlink projects. Names are unique across the catalog. */
+export function EditApplicationDialog({ application, siblingNames, projects, onClose }: {
   application: Application
   siblingNames: string[]
+  projects: ProjectChoices
   onClose: () => void
 }) {
   const update = useUpdateApplication()
   const [name, setName] = useState(application.name)
   const [description, setDescription] = useState(application.description ?? '')
+  const [projectIds, setProjectIds] = useState(application.project_ids)
   const trimmed = name.trim()
   const duplicate = trimmed !== application.name && siblingNames.includes(trimmed)
-  const changed = trimmed !== application.name || (description.trim() || null) !== (application.description ?? null)
-  const canSave = trimmed !== '' && !duplicate && changed && !update.isPending
+  const projectsChanged = projectIds.join('\n') !== application.project_ids.join('\n')
+  const unlinked = application.project_ids.filter(projectId => !projectIds.includes(projectId))
+  const changed = trimmed !== application.name || (description.trim() || null) !== (application.description ?? null) || projectsChanged
+  const canSave = trimmed !== '' && !duplicate && projectIds.length > 0 && changed && !update.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSave) return
-    const body: { name?: string; description?: string | null } = {}
+    const body: { name?: string; description?: string | null; project_ids?: string[] } = {}
     if (trimmed !== application.name) body.name = trimmed
     if ((description.trim() || null) !== (application.description ?? null)) body.description = description.trim() || null
+    if (projectsChanged) body.project_ids = projectIds
     update.mutate({ applicationId: application.id, body }, { onSuccess: onClose })
   }
 
@@ -98,11 +106,18 @@ export function EditApplicationDialog({ application, siblingNames, onClose }: {
         <input type="text" className="field-input" aria-label="Application name" value={name} onChange={(event) => setName(event.target.value)}
           aria-invalid={duplicate || undefined} aria-describedby={duplicate ? 'edit-application-duplicate' : undefined} />
       </label>
-      {duplicate && <p id="edit-application-duplicate" className="env-form-error" role="alert">Another application in this project already uses this name.</p>}
+      {duplicate && <p id="edit-application-duplicate" className="env-form-error" role="alert">Another application already uses this name.</p>}
       <label className="env-field">
         <span className="env-field-label">Description</span>
         <textarea className="field-input" aria-label="Application description" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
       </label>
+      <ProjectsPicker value={projectIds} onChange={setProjectIds} {...projects} />
+      {projectIds.length === 0 && <p className="env-form-error" role="alert">Keep at least one project.</p>}
+      {unlinked.length > 0 && (
+        <p className="env-field-help env-target-note" role="status">
+          New tests in {unlinked.map(projects.caption).join(', ')} can no longer choose {application.name} or its environments. Existing tests keep their history.
+        </p>
+      )}
       {update.isError && <div className="env-inline-error" role="alert"><span>Save failed: {update.error.message}</span></div>}
       <div className="env-panel-actions">
         <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} disabled={update.isPending}>Cancel</button>

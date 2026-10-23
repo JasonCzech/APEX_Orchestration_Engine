@@ -14,7 +14,7 @@ from apex.domain.cycle_handoff import (
 )
 from apex.domain.cycles import cycle_progress, version_digest
 from apex.domain.input_limits import RecordId
-from apex.persistence.models import Application, Environment, TestCycle
+from apex.persistence.models import Application, Environment, ProjectApplication, TestCycle
 from apex.routers.cycles import CycleRead, Operator, Session, enabled, find, view
 from apex.settings import get_settings
 
@@ -76,7 +76,12 @@ async def next_cycle(
         .where(
             Environment.id == parent.environment_id,
             Application.id == parent.app_id,
-            Application.project_id == parent.project_id,
+            select(ProjectApplication.application_id)
+            .where(
+                ProjectApplication.application_id == Application.id,
+                ProjectApplication.project_id == parent.project_id,
+            )
+            .exists(),
             Application.archived_at.is_(None),
         )
     )

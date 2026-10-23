@@ -38,6 +38,7 @@ async def db(monkeypatch):
                     Base.metadata.tables[f"apex.{name}"]
                     for name in (
                         "applications",
+                        "project_applications",
                         "environments",
                         "environment_hosts",
                         "environment_snapshots",
@@ -52,8 +53,8 @@ async def db(monkeypatch):
     async with factory() as session:
         session.add_all(
             [
-                Application(id="app-one", name="One", project_id="project-one"),
-                Application(id="app-two", name="Two", project_id="project-two"),
+                Application(id="app-one", name="One", project_ids=["project-one"]),
+                Application(id="app-two", name="Two", project_ids=["project-two"]),
             ]
         )
         await session.commit()

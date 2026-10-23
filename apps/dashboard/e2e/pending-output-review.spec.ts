@@ -26,7 +26,7 @@ async function fixture(page: Page) {
     else if (path === '/v1/pipelines') json = { items: [first, second], total: 2, limit: 100, offset: 0 }
     else if (path === `/v1/pipelines/${first.thread_id}`) json = first
     else if (path === `/v1/pipelines/${second.thread_id}`) json = second
-    else if (path === '/v1/catalog/applications') json = [{ id: 'app-acc', project_id: 'demo', name: 'ACC' }]
+    else if (path === '/v1/catalog/applications') json = [{ id: 'app-acc', project_ids: ['demo'], name: 'ACC' }]
     else if (path === '/v1/catalog/projects' || path === '/v1/catalog/environments') json = []
     else if (path.endsWith('/prompt-review')) return route.fulfill({ status: 404, json: { detail: 'No saved prompt review' } })
     return route.fulfill({ json })

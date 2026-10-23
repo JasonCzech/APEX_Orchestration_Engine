@@ -18,7 +18,7 @@ const cycle = { id: 'c1', name: 'Checkout cycle', project_id: 'p1', app_id: 'a1'
 function mount(path = '/cycles') {
   const state = authenticatedState('viewer', 'Viewer', [{ project_id: 'p1', app_id: null }])
   if (state.status === 'authenticated') state.systemInfo.features = { cycles: true }
-  server.use(http.get('*/v1/cycles/c1/executions', () => HttpResponse.json({ preparations: [], connections: [], linked_runs: [], recent_runs: [], revision: 1 })), http.get('*/v1/catalog/applications', () => HttpResponse.json([{ id: 'a1', project_id: 'p1', name: 'Checkout' }])), http.get('*/v1/catalog/environments', () => HttpResponse.json([{ id: 'e1', application_id: 'a1', name: 'Staging' }])), http.get('*/v1/catalog/projects', () => HttpResponse.json([{ project_id: 'p1', name: 'Payments' }])))
+  server.use(http.get('*/v1/cycles/c1/executions', () => HttpResponse.json({ preparations: [], connections: [], linked_runs: [], recent_runs: [], revision: 1 })), http.get('*/v1/catalog/applications', () => HttpResponse.json([{ id: 'a1', project_ids: ['p1'], name: 'Checkout' }])), http.get('*/v1/catalog/environments', () => HttpResponse.json([{ id: 'e1', application_id: 'a1', name: 'Staging' }])), http.get('*/v1/catalog/projects', () => HttpResponse.json([{ project_id: 'p1', name: 'Payments' }])))
   return renderApp({ initialEntries: [path], authState: state })
 }
 

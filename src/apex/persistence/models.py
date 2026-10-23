@@ -290,14 +290,13 @@ class ProjectLabel(Base):
 
 
 class Application(Base):
+    """A system under test. One application serves any number of projects
+    (``project_links``); its environments belong to it, not to a project."""
+
     __tablename__ = "applications"
-    __table_args__ = (
-        UniqueConstraint("project_id", "name"),
-        Index("ix_applications_project_id", "project_id"),
-    )
+    __table_args__ = (UniqueConstraint("name"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    project_id: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -309,6 +308,56 @@ class Application(Base):
     environments: Mapped[list["Environment"]] = relationship(
         back_populates="application", cascade="all, delete-orphan"
     )
+    project_links: Mapped[list["ProjectApplication"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="ProjectApplication.project_id",
+    )
+
+    @property
+    def project_ids(self) -> list[str]:
+        """The projects this application is linked to, sorted."""
+        return [link.project_id for link in self.project_links]
+
+    @project_ids.setter
+    def project_ids(self, values: list[str]) -> None:
+        # Diff rather than replace: re-adding an existing (project, application)
+        # row in the same flush would collide with its own primary key.
+        wanted = list(dict.fromkeys(values))
+        kept = [link for link in self.project_links if link.project_id in wanted]
+        have = {link.project_id for link in kept}
+        self.project_links = sorted(
+            kept + [ProjectApplication(project_id=pid) for pid in wanted if pid not in have],
+            key=lambda link: link.project_id,
+        )
+
+
+class ProjectApplication(Base):
+    """Links an application to a project that tests it (many-to-many)."""
+
+    __tablename__ = "project_applications"
+    __table_args__ = (Index("ix_project_applications_application_id", "application_id"),)
+
+    project_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    application: Mapped[Application] = relationship(back_populates="project_links")
+
+
+class CatalogMerge(Base):
+    """Audit trail of duplicate catalog rows merged by migration 0047 (old id → kept id)."""
+
+    __tablename__ = "catalog_merges"
+
+    old_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # "application" | "environment"
+    new_id: Mapped[str] = mapped_column(String(32))
+    old_project_id: Mapped[str | None] = mapped_column(String(255))
+    merged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Environment(Base):

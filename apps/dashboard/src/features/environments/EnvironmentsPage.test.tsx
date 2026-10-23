@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { Application, Environment } from '@/api/hooks/useEnvironments'
 import { authenticatedState, renderApp } from '@/test/render'
@@ -45,13 +45,17 @@ afterEach(() => {
 })
 
 describe('EnvironmentsPage', () => {
-  it('groups applications under their project and shows whether each environment is ready', async () => {
+  it('lists each application once with the projects that use it, and whether each environment is ready', async () => {
     server.use(...catalogReadHandlers())
     renderList()
 
-    const project = await screen.findByRole('region', { name: /^Project .*proj-alpha/ })
-    expect(within(project).getByText(/2 applications · 3 environments/)).toBeInTheDocument()
-    const checkout = within(project).getByRole('region', { name: 'Application Checkout' })
+    const checkout = await screen.findByRole('region', { name: 'Application Checkout' })
+    expect(within(within(checkout).getByRole('list', { name: 'Projects using Checkout' })).getAllByRole('link').map(link => link.textContent)).toEqual(['proj-alpha'])
+    // A shared application appears once, linked to both projects; its environments aren't copied per project.
+    const search = screen.getByRole('region', { name: 'Application Search' })
+    expect(within(within(search).getByRole('list', { name: 'Projects using Search' })).getAllByRole('link').map(link => link.getAttribute('href')))
+      .toEqual(['/environments?project=proj-alpha', '/environments?project=proj-beta'])
+    expect(screen.getAllByTestId('env-row-env-search-dev')).toHaveLength(1)
     expect(within(checkout).getByText('Payment funnel services')).toBeInTheDocument()
 
     const staging = within(checkout).getByTestId(`env-row-${ENV_STAGING.id}`)
@@ -65,6 +69,15 @@ describe('EnvironmentsPage', () => {
     expect(within(dev).getByText('No target')).toBeInTheDocument()
     expect(within(dev).getByText('Virtual machines')).toBeInTheDocument()
     expect(document.querySelector('.env-summary')).toHaveTextContent('2 applications · 3 environments')
+  })
+
+  it('narrows to one project and names it in a project bar', async () => {
+    server.use(...catalogReadHandlers())
+    renderList('operator', '/environments?project=proj-beta')
+
+    expect(await screen.findByRole('region', { name: 'Application Search' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: /^Project .*proj-beta/ })).toHaveTextContent('1 application used by this project')
+    expect(screen.queryByRole('region', { name: 'Application Checkout' })).not.toBeInTheDocument()
   })
 
   it('filters by target status from the summary and keeps filters in the URL', async () => {
@@ -172,20 +185,25 @@ describe('EnvironmentsPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'New application' }))
     const dialog = screen.getByRole('dialog', { name: 'New application' })
-    await user.type(within(dialog).getByRole('textbox', { name: 'Project' }), 'proj-alpha')
+    await user.click(within(dialog).getByRole('checkbox', { name: /proj-alpha/ }))
+    // A project that has no applications yet can be typed in by an unscoped administrator.
+    await user.type(within(dialog).getByRole('textbox', { name: 'Other project ID' }), 'proj-gamma')
+    await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
+    expect(within(dialog).getByRole('checkbox', { name: /proj-gamma/ })).toBeChecked()
     await user.type(within(dialog).getByRole('textbox', { name: 'Application name' }), 'checkout')
     // Names are unique by exact match (the database constraint is case-sensitive).
     expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
     await user.clear(within(dialog).getByRole('textbox', { name: 'Application name' }))
     await user.type(within(dialog).getByRole('textbox', { name: 'Application name' }), 'Checkout')
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('already has an application with this name')
+    // Names are global: another project links the existing application instead of copying it.
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Link your project to it')
     expect(within(dialog).getByRole('button', { name: 'Create application' })).toBeDisabled()
     await user.clear(within(dialog).getByRole('textbox', { name: 'Application name' }))
     await user.type(within(dialog).getByRole('textbox', { name: 'Application name' }), 'Orders')
     await user.type(within(dialog).getByRole('textbox', { name: 'Application description' }), 'Order services')
     await user.click(within(dialog).getByRole('button', { name: 'Create application' }))
 
-    await waitFor(() => expect(create.captured).toEqual([{ project_id: 'proj-alpha', name: 'Orders', description: 'Order services' }]))
+    await waitFor(() => expect(create.captured).toEqual([{ project_ids: ['proj-alpha', 'proj-gamma'], name: 'Orders', description: 'Order services' }]))
     const orders = await screen.findByRole('region', { name: 'Application Orders' })
     const form = within(orders).getByRole('form', { name: 'New environment' })
     expect(within(form).getByRole('status')).toHaveTextContent('Orders was created')
@@ -266,11 +284,13 @@ describe('EnvironmentsPage', () => {
     const edit = screen.getByRole('dialog', { name: 'Edit application Checkout' })
     await user.clear(within(edit).getByRole('textbox', { name: 'Application name' }))
     await user.type(within(edit).getByRole('textbox', { name: 'Application name' }), 'Search')
-    expect(within(edit).getByRole('alert')).toHaveTextContent('Another application in this project already uses this name')
+    expect(within(edit).getByRole('alert')).toHaveTextContent('Another application already uses this name')
     await user.clear(within(edit).getByRole('textbox', { name: 'Application name' }))
     await user.type(within(edit).getByRole('textbox', { name: 'Application name' }), 'Checkout web')
+    // Share it with a second project.
+    await user.click(within(edit).getByRole('checkbox', { name: /proj-beta/ }))
     await user.click(within(edit).getByRole('button', { name: 'Save changes' }))
-    await waitFor(() => expect(writes.captured[0]).toEqual({ method: 'PATCH', path: APP_CHECKOUT.id, body: { name: 'Checkout web' } }))
+    await waitFor(() => expect(writes.captured[0]).toEqual({ method: 'PATCH', path: APP_CHECKOUT.id, body: { name: 'Checkout web', project_ids: ['proj-alpha', 'proj-beta'] } }))
 
     const search = await screen.findByRole('region', { name: 'Application Search' })
     await user.click(within(search).getByRole('button', { name: 'Application actions: Search' }))
@@ -309,21 +329,6 @@ describe('EnvironmentsPage', () => {
     expect(screen.getByRole('menuitem', { name: 'Edit details…' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Archive…' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Delete…' })).not.toBeInTheDocument()
-  })
-
-  it('collapses a project and remembers it', async () => {
-    server.use(...catalogReadHandlers())
-    const user = userEvent.setup()
-    const first = renderList()
-
-    const toggle = await screen.findByRole('button', { name: /Collapse project/ })
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    await user.click(toggle)
-    expect(screen.queryByRole('region', { name: 'Application Checkout' })).not.toBeInTheDocument()
-    first.unmount()
-
-    renderList()
-    expect(await screen.findByRole('button', { name: /Expand project/ })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('requires typing the environment name before delete fires', async () => {
@@ -376,7 +381,7 @@ describe('EnvironmentsPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'New application' }))
     const dialog = screen.getByRole('dialog', { name: 'New application' })
-    await user.type(within(dialog).getByRole('textbox', { name: 'Project' }), 'proj-alpha')
+    await user.click(within(dialog).getByRole('checkbox', { name: /proj-alpha/ }))
     await user.type(within(dialog).getByRole('textbox', { name: 'Application name' }), 'Orders')
     await user.click(within(dialog).getByRole('button', { name: 'Create application' }))
 
@@ -386,19 +391,27 @@ describe('EnvironmentsPage', () => {
     expect(router.state.location.search).toBe('')
   })
 
-  it('still collapses projects when browser storage throws', async () => {
-    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
-    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
-    try {
-      server.use(...catalogReadHandlers())
-      const user = userEvent.setup()
-      renderList()
 
-      await user.click(await screen.findByRole('button', { name: /Collapse project/ }))
-      expect(screen.queryByRole('region', { name: 'Application Checkout' })).not.toBeInTheDocument()
-    } finally {
-      getItem.mockRestore()
-      setItem.mockRestore()
-    }
+  it('offers archive and delete of a shared application only with access to every project using it', async () => {
+    server.use(...catalogReadHandlers())
+    const user = userEvent.setup()
+    renderApp({ initialEntries: ['/environments'], authState: authenticatedState('admin', 'Alpha admin', [{ project_id: 'proj-alpha', app_id: null }]) })
+
+    // Search is shared with proj-beta, which this administrator can't act in: it can be edited, not archived or deleted.
+    const search = await screen.findByRole('region', { name: 'Application Search' })
+    await user.click(within(search).getByRole('button', { name: 'Application actions: Search' }))
+    expect(screen.getByRole('menuitem', { name: 'Edit details…' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Archive…' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Delete…' })).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    await user.click(within(search).getByRole('button', { name: 'Environment actions: dev in Search' }))
+    expect(screen.queryByRole('menuitem', { name: 'Delete…' })).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    // Checkout is used by proj-alpha only.
+    const checkout = screen.getByRole('region', { name: 'Application Checkout' })
+    await user.click(within(checkout).getByRole('button', { name: 'Application actions: Checkout' }))
+    expect(screen.getByRole('menuitem', { name: 'Archive…' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Delete…' })).toBeInTheDocument()
   })
 })

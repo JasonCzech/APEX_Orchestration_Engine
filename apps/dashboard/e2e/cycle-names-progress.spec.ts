@@ -38,7 +38,7 @@ for (const profile of ['viewer', 'app-admin', 'project-admin', 'global-admin'] a
         if (namesDenied) return route.fulfill({ status: 403, json: { detail: 'Project names are unavailable' } })
         if (request.method() === 'PUT') { const body = request.postDataJSON(); writes.push(body); labels = labels.map(row => row.project_id === body.project_id ? { ...row, name: body.name } : row); json = labels.find(row => row.project_id === body.project_id) }
         else json = labels
-      } else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }, { id: 'app-two', project_id: 'project-two', name: 'Other API' }]
+      } else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_ids: ['project-one'], name: 'Checkout API' }, { id: 'app-two', project_ids: ['project-two'], name: 'Other API' }]
       else if (path === '/v1/catalog/environments') json = [{ id: 'env-one', application_id: 'app-one', name: 'Staging', kind: 'test', base_url: null, hosts: [], options: {}, created_at: timestamp, updated_at: timestamp }]
       else if (path === '/v1/pipelines' || path === '/v1/engine-runs') json = { items: [], total: 0 }
       else if (path === '/v1/cycles') json = summaries

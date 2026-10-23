@@ -2566,8 +2566,8 @@ export interface components {
             description?: string | null;
             /** Name */
             name: string;
-            /** Project Id */
-            project_id: string;
+            /** Project Ids */
+            project_ids: string[];
         };
         /** ApplicationOut */
         ApplicationOut: {
@@ -2584,8 +2584,8 @@ export interface components {
             id: string;
             /** Name */
             name: string;
-            /** Project Id */
-            project_id: string;
+            /** Project Ids */
+            project_ids: string[];
             /**
              * Updated At
              * Format: date-time
@@ -2598,6 +2598,8 @@ export interface components {
             description?: string | null;
             /** Name */
             name?: string | null;
+            /** Project Ids */
+            project_ids?: string[] | null;
         };
         /** ArchiveExecutionPreparation */
         ArchiveExecutionPreparation: {
@@ -10488,6 +10490,8 @@ export interface operations {
             query?: {
                 /** @description Explicit cluster-inventory connection id */
                 connection_id?: string | null;
+                /** @description Project whose inventory connection scans it (default: first linked) */
+                project?: string | null;
             };
             header?: never;
             path: {

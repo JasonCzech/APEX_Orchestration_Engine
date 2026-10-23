@@ -19,7 +19,7 @@ const NOW = '2026-06-12T12:00:00Z'
 export const APP_CHECKOUT: Application = {
   id: 'app-checkout',
   name: 'Checkout',
-  project_id: 'proj-alpha',
+  project_ids: ['proj-alpha'],
   description: 'Payment funnel services',
   archived_at: null,
   created_at: NOW,
@@ -29,7 +29,8 @@ export const APP_CHECKOUT: Application = {
 export const APP_SEARCH: Application = {
   id: 'app-search',
   name: 'Search',
-  project_id: 'proj-alpha',
+  // Shared: one application, its environments, used by two projects.
+  project_ids: ['proj-alpha', 'proj-beta'],
   description: null,
   archived_at: null,
   created_at: NOW,
@@ -169,7 +170,7 @@ export function createApplicationHandler(id = 'app-new', into?: Application[]) {
     captured.push(body)
     const created: Application = {
       id,
-      project_id: body.project_id,
+      project_ids: body.project_ids,
       name: body.name,
       description: body.description ?? null,
       archived_at: null,

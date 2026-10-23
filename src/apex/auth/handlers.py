@@ -325,7 +325,7 @@ async def _ensure_catalog_app_scope(identity: ConsumerIdentity, value: Mapping[s
     if not app_id or not project_id:
         return
     app = await _load_catalog_application(str(app_id))
-    if app is None or app.archived_at is not None or app.project_id != project_id:
+    if app is None or app.archived_at is not None or project_id not in app.project_ids:
         _deny_authz(
             identity,
             action="threads.scope",
@@ -338,7 +338,8 @@ async def _load_catalog_application(app_id: str) -> Any:
     from apex.persistence.repositories.catalog import CatalogRepository
 
     async with get_sessionmaker()() as session:
-        return await CatalogRepository(session).get_application(app_id)
+        # Threads launched before migration 0047 may name an application merged since.
+        return await CatalogRepository(session).get_application_following_merges(app_id)
 
 
 def ensure_role(

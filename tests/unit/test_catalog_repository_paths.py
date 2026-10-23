@@ -14,6 +14,7 @@ from apex.auth.identity import ScopeRef
 from apex.persistence.models import (
     Application,
     Base,
+    CatalogMerge,
     Environment,
     EnvironmentSnapshot,
 )
@@ -56,6 +57,7 @@ async def test_catalog_crud_visibility_hosts_and_snapshots() -> None:
         connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
         for table in (
             "apex.applications",
+            "apex.project_applications",
             "apex.environments",
             "apex.environment_hosts",
             "apex.environment_snapshots",
@@ -65,9 +67,9 @@ async def test_catalog_crud_visibility_hosts_and_snapshots() -> None:
         with Session(engine, expire_on_commit=False) as session:
             repository = CatalogRepository(cast(AsyncSession, _AsyncFacade(session)))
             first = await repository.create_application(
-                project_id="project-1", name="Checkout", description="old"
+                project_ids=["project-1"], name="Checkout", description="old"
             )
-            second = await repository.create_application(project_id="project-2", name="Search")
+            second = await repository.create_application(project_ids=["project-2"], name="Search")
             assert await repository.get_application(first.id) is first
             assert [app.id for app in await repository.list_applications(project="project-1")] == [
                 first.id
@@ -83,8 +85,34 @@ async def test_catalog_crud_visibility_hosts_and_snapshots() -> None:
                 )
             ] == [first.id]
 
-            await repository.update_application(first, {"description": "new"})
+            # An app scope in a project the application isn't linked to reaches nothing.
+            assert (
+                await repository.list_applications(
+                    allowed_scopes=[ScopeRef(project_id="project-2", app_id=first.id)]
+                )
+                == []
+            )
+            # Linking a second project shares the application (and its environments) with it.
+            await repository.update_application(
+                first,
+                {"description": "new", "project_ids": ["project-2", "project-1", "project-2"]},
+            )
             assert first.description == "new"
+            assert first.project_ids == ["project-1", "project-2"]
+            assert {app.id for app in await repository.list_applications(project="project-2")} == {
+                first.id,
+                second.id,
+            }
+            assert [
+                app.id
+                for app in await repository.list_applications(
+                    allowed_scopes=[ScopeRef(project_id="project-2", app_id=first.id)]
+                )
+            ] == [first.id]
+            with pytest.raises(ValueError, match="projects"):
+                await repository.update_application(first, {"project_ids": []})
+            await repository.update_application(first, {"project_ids": ["project-1"]})
+            assert first.project_ids == ["project-1"]
             await repository.set_application_archived(first, True)
             assert await repository.list_applications(project="project-1") == []
             assert [
@@ -168,12 +196,34 @@ async def test_catalog_translates_sqlite_duplicate_names() -> None:
     with engine.begin() as connection:
         connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
         Base.metadata.tables["apex.applications"].create(connection)
+        Base.metadata.tables["apex.project_applications"].create(connection)
     try:
         with Session(engine, expire_on_commit=False) as session:
             repository = CatalogRepository(cast(AsyncSession, _AsyncFacade(session)))
-            await repository.create_application(project_id="project-1", name="duplicate")
+            await repository.create_application(project_ids=["project-1"], name="duplicate")
+            # Names are global: another project links the existing application instead.
             with pytest.raises(DuplicateNameError, match="already exists"):
-                await repository.create_application(project_id="project-1", name="duplicate")
+                await repository.create_application(project_ids=["project-2"], name="duplicate")
+    finally:
+        engine.dispose()
+
+
+async def test_catalog_follows_ids_merged_by_migration_0047() -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
+        for table in ("apex.applications", "apex.project_applications", "apex.catalog_merges"):
+            Base.metadata.tables[table].create(connection)
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            repository = CatalogRepository(cast(AsyncSession, _AsyncFacade(session)))
+            kept = await repository.create_application(project_ids=["p1", "p2"], name="ACC")
+            session.add(CatalogMerge(old_id="old-acc", kind="application", new_id=kept.id))
+            session.commit()
+            assert await repository.get_application("old-acc") is None
+            assert await repository.get_application_following_merges("old-acc") is kept
+            assert await repository.get_application_following_merges(kept.id) is kept
+            assert await repository.get_application_following_merges("never-existed") is None
     finally:
         engine.dispose()
 
@@ -188,7 +238,7 @@ def test_catalog_bounded_text_rejects_invalid_values(value: Any) -> None:
 async def test_catalog_repository_rejects_credentials_in_scalar_labels() -> None:
     repository = CatalogRepository(cast(AsyncSession, object()))
     credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
-    application = Application(project_id="project-1", name="safe")
+    application = Application(project_ids=["project-1"], name="safe")
     environment = Environment(
         application_id="a" * 32,
         name="safe",
@@ -198,7 +248,7 @@ async def test_catalog_repository_rejects_credentials_in_scalar_labels() -> None
     )
 
     with pytest.raises(ValueError, match="credential material"):
-        await repository.create_application(project_id="project-1", name=credential)
+        await repository.create_application(project_ids=["project-1"], name=credential)
     with pytest.raises(ValueError, match="credential material"):
         await repository.update_application(application, {"description": credential})
     with pytest.raises(ValueError, match="credential material"):
@@ -228,7 +278,7 @@ async def test_catalog_repository_never_executes_hostile_mapping_hooks() -> None
             raise AssertionError("custom dictionary keys must not execute")
 
     repository = CatalogRepository(cast(AsyncSession, object()))
-    application = Application(project_id="project-1", name="safe")
+    application = Application(project_ids=["project-1"], name="safe")
     environment = Environment(
         application_id="a" * 32,
         name="safe",
@@ -290,7 +340,7 @@ async def test_catalog_repository_never_executes_hostile_scalar_hooks() -> None:
         )
 
     hostile_archived = HostileTruth()
-    application = Application(project_id="project-1", name="safe")
+    application = Application(project_ids=["project-1"], name="safe")
     repository = CatalogRepository(cast(AsyncSession, object()))
     with pytest.raises(ValueError, match="archived state must be a boolean"):
         await repository.set_application_archived(application, cast(Any, hostile_archived))
@@ -377,14 +427,14 @@ async def test_catalog_reload_detects_a_disappearing_environment() -> None:
 
 
 def test_catalog_scope_and_driver_constraint_helpers() -> None:
-    assert catalog_module._application_scope_filter([]) is None
+    assert catalog_module.application_scope_filter([]) is None
     assert catalog_module._environment_scope_filter([]) is None
     scopes = [
         ScopeRef(project_id="project-1"),
         ScopeRef(project_id="project-1", app_id="covered-by-project"),
         ScopeRef(project_id="project-2", app_id="app-2"),
     ]
-    assert catalog_module._application_scope_filter(scopes) is not None
+    assert catalog_module.application_scope_filter(scopes) is not None
     assert catalog_module._environment_scope_filter(scopes) is not None
 
     class DriverConstraintError(Exception):
@@ -392,6 +442,6 @@ def test_catalog_scope_and_driver_constraint_helpers() -> None:
             super().__init__("duplicate catalog row")
             self.diag = SimpleNamespace(constraint_name=constraint_name)
 
-    original = DriverConstraintError("uq_applications_project_id")
+    original = DriverConstraintError("uq_applications_name")
     error = catalog_module.IntegrityError("insert", {}, original)
     assert catalog_module._is_duplicate_catalog_name(error)

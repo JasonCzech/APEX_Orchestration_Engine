@@ -21,7 +21,7 @@ async def test_application_environment_roundtrip() -> None:
     try:
         async with maker() as session:
             repo = CatalogRepository(session)
-            app = await repo.create_application(project_id=project, name="it-app")
+            app = await repo.create_application(project_ids=[project], name="it-app")
             assert app.created_at is not None
 
             env = await repo.create_environment(
@@ -34,7 +34,7 @@ async def test_application_environment_roundtrip() -> None:
 
             fetched = await repo.get_environment(env.id)
             assert fetched is not None
-            assert fetched.application.project_id == project
+            assert fetched.application.project_ids == [project]
 
             env = await repo.update_environment(
                 fetched, {"name": "it-env-2"}, hosts=[{"hostname": "h3.local"}]

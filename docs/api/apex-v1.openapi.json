@@ -1300,16 +1300,21 @@
             "title": "Name",
             "type": "string"
           },
-          "project_id": {
-            "maxLength": 255,
-            "minLength": 1,
-            "pattern": "^[^\\x00]*$",
-            "title": "Project Id",
-            "type": "string"
+          "project_ids": {
+            "items": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Project Ids",
+            "type": "array"
           }
         },
         "required": [
-          "project_id",
+          "project_ids",
           "name"
         ],
         "title": "ApplicationCreate",
@@ -1353,9 +1358,12 @@
             "title": "Name",
             "type": "string"
           },
-          "project_id": {
-            "title": "Project Id",
-            "type": "string"
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Ids",
+            "type": "array"
           },
           "updated_at": {
             "format": "date-time",
@@ -1365,7 +1373,7 @@
         },
         "required": [
           "id",
-          "project_id",
+          "project_ids",
           "name",
           "description",
           "archived_at",
@@ -1404,6 +1412,25 @@
               }
             ],
             "title": "Name"
+          },
+          "project_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Ids"
           }
         },
         "title": "ApplicationUpdate",
@@ -20716,6 +20743,27 @@
               ],
               "description": "Explicit cluster-inventory connection id",
               "title": "Connection Id"
+            }
+          },
+          {
+            "description": "Project whose inventory connection scans it (default: first linked)",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project whose inventory connection scans it (default: first linked)",
+              "title": "Project"
             }
           }
         ],

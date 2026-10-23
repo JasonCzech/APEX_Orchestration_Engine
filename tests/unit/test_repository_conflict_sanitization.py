@@ -36,7 +36,7 @@ def _integrity_error(constraint: str) -> IntegrityError:
     ("classifier", "constraint"),
     [
         (_is_duplicate_connection_name, "uq_connections_name"),
-        (_is_duplicate_catalog_name, "uq_applications_project_id"),
+        (_is_duplicate_catalog_name, "uq_applications_name"),
         (_is_duplicate_prompt_key, "uq_prompts_namespace"),
         (_is_duplicate_saved_query_name, "uq_saved_queries_global_name"),
         (_is_duplicate_consumer_name, "uq_api_consumers_name"),
@@ -105,7 +105,7 @@ async def test_unrelated_connection_integrity_error_is_not_mislabeled() -> None:
 
 @pytest.mark.parametrize(
     "constraint",
-    ["uq_applications_project_id", "uq_environments_application_id"],
+    ["uq_applications_name", "uq_environments_application_id"],
 )
 async def test_catalog_duplicate_is_fixed_and_drops_driver_context(constraint: str) -> None:
     session = Mock()
@@ -116,7 +116,7 @@ async def test_catalog_duplicate_is_fixed_and_drops_driver_context(constraint: s
 
     with pytest.raises(DuplicateNameError) as raised:
         await CatalogRepository(session).create_application(
-            project_id="CANARY-CALLER-PROJECT",
+            project_ids=["CANARY-CALLER-PROJECT"],
             name="CANARY-CALLER-NAME",
         )
 
@@ -136,7 +136,7 @@ async def test_unrelated_catalog_integrity_error_is_not_mislabeled() -> None:
     session.rollback = AsyncMock()
 
     with pytest.raises(IntegrityError) as raised:
-        await CatalogRepository(session).create_application(project_id="project", name="unique")
+        await CatalogRepository(session).create_application(project_ids=["project"], name="unique")
 
     assert raised.value is error
     session.rollback.assert_awaited_once()

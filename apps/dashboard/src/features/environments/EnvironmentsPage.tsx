@@ -4,11 +4,13 @@ import { Skeleton } from '@/components/ux/Skeleton'
 import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
 /**
- * /environments — applications and their test environments, grouped by
- * project. Each row says whether external engines can run against the
- * environment (target status) and when it was last scanned. Filters live in the
- * URL (?q, ?project, ?target, ?archived, ?application). Create, edit and delete
- * are operator+ (application delete is admin); the server enforces both.
+ * /environments — applications and their test environments. An application
+ * owns its environments and is linked to any number of projects (shown as
+ * chips; ?project narrows to one). Each row says whether external engines can
+ * run against the environment (target status) and when it was last scanned.
+ * Filters live in the URL (?q, ?project, ?target, ?archived, ?application).
+ * Create, edit and delete are operator+ (application delete is admin); the
+ * server enforces both.
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
@@ -32,7 +34,7 @@ import { TableToolbar } from '@/components/ux/TableToolbar'
 import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { formatRelative, formatTimestamp } from '@/utils/time'
 
-import { HostsEditor } from './environmentsForm'
+import { HostsEditor, ProjectsPicker } from './environmentsForm'
 import {
   ArchiveApplicationDialog,
   DeleteApplicationDialog,
@@ -43,39 +45,22 @@ import {
   KIND_LABELS,
   KIND_OPTIONS,
   TARGET_STATUS_LABELS,
+  filterGroups,
   groupEnvironments,
   hostsToPayload,
   kindLabel,
   parseOptionsJson,
-  projectGroups,
   targetHost,
   targetStatus,
   type EnvironmentGroup,
   type HostDraft,
+  type ProjectChoices,
   type ReadinessFilter,
 } from './environmentsLogic'
 import './environments.css'
 
 const EM_DASH = '—'
 const SKELETON_ROWS = 4
-const COLLAPSED_STORAGE_KEY = 'apex.environments.collapsedProjects'
-
-function readCollapsed(): string[] {
-  try {
-    const raw: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_STORAGE_KEY) ?? '[]')
-    return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-function writeCollapsed(projects: string[]) {
-  try {
-    window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(projects))
-  } catch {
-    // Remembering collapsed projects is a convenience only.
-  }
-}
 
 /** Target status badge shared with the detail page's wording. */
 export function TargetBadge({ environment }: { environment: Pick<Environment, 'base_url' | 'target_approved'> }) {
@@ -85,32 +70,32 @@ export function TargetBadge({ environment }: { environment: Pick<Environment, 'b
 }
 
 function CreateApplicationDialog({
-  projectOptions,
+  projects,
+  initialProjects,
   existing,
   onClose,
   onCreated,
 }: {
-  projectOptions: string[] | null
+  projects: ProjectChoices
+  initialProjects: string[]
   existing: Application[]
   onClose: () => void
   onCreated: (application: Application) => void
 }) {
   const create = useCreateApplication()
-  const labels = useProjectLabels()
-  const projectCaption = (id: string) => `${(!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || 'Project name unavailable'} (${id})`
-  const [projectId, setProjectId] = useState(projectOptions?.length === 1 ? projectOptions[0]! : '')
+  const [projectIds, setProjectIds] = useState(initialProjects)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  // Names are unique per project, archived applications included (exact match, like the database).
-  const duplicateOf = name.trim() === '' ? undefined : existing.find(app => app.project_id === projectId.trim() && app.name === name.trim())
+  // Names are unique across the catalog, archived applications included (exact match, like the database).
+  const duplicateOf = name.trim() === '' ? undefined : existing.find(app => app.name === name.trim())
   const duplicate = Boolean(duplicateOf)
-  const canSubmit = projectId.trim() !== '' && name.trim() !== '' && !duplicate && !create.isPending
+  const canSubmit = projectIds.length > 0 && name.trim() !== '' && !duplicate && !create.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit) return
     create.mutate(
-      { project_id: projectId.trim(), name: name.trim(), description: description.trim() || null },
+      { project_ids: projectIds, name: name.trim(), description: description.trim() || null },
       { onSuccess: onCreated },
     )
   }
@@ -120,29 +105,17 @@ function CreateApplicationDialog({
       onClose={() => { if (!create.isPending) onClose() }} panelAs="form" onSubmit={submit}>
       <div>
         <h2 className="env-panel-title">New application</h2>
-        <p className="env-panel-caption">An application is a system under test. Add its test environments next.</p>
+        <p className="env-panel-caption">An application is a system under test, shared by the projects that test it. Add its environments next.</p>
       </div>
-      <div className="env-form-grid">
-        <label className="env-field">
-          <span className="env-field-label">Project</span>
-          {projectOptions ? (
-            <select className="field-select" aria-label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-              <option value="">Select a project…</option>
-              {projectOptions.map((project) => <option key={project} value={project}>{projectCaption(project)}</option>)}
-            </select>
-          ) : (
-            <input type="text" className="field-input" aria-label="Project" placeholder="project-id" value={projectId} onChange={(event) => setProjectId(event.target.value)} />
-          )}
-        </label>
-        <label className="env-field">
-          <span className="env-field-label">Name</span>
-          <input type="text" className="field-input" aria-label="Application name" placeholder="Checkout" value={name}
-            onChange={(event) => setName(event.target.value)} aria-invalid={duplicate || undefined} />
-        </label>
-      </div>
+      <label className="env-field">
+        <span className="env-field-label">Name</span>
+        <input type="text" className="field-input" aria-label="Application name" placeholder="Checkout" value={name}
+          onChange={(event) => setName(event.target.value)} aria-invalid={duplicate || undefined} />
+      </label>
       {duplicate && <p className="env-form-error" role="alert">{duplicateOf?.archived_at
-        ? 'An archived application in this project already uses this name. Unarchive it instead, or choose another name.'
-        : 'This project already has an application with this name.'}</p>}
+        ? 'An archived application already uses this name. Unarchive it and link your project instead, or choose another name.'
+        : 'An application with this name already exists. Link your project to it (Edit details…) instead of creating a copy, or choose another name.'}</p>}
+      <ProjectsPicker value={projectIds} onChange={setProjectIds} {...projects} />
       <label className="env-field">
         <span className="env-field-label">Description</span>
         <textarea className="field-input" aria-label="Application description" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
@@ -260,11 +233,13 @@ function CreateEnvironmentPanel({
   )
 }
 
-function EnvironmentRow({ environment, applicationName, canMutate, onDelete }: {
+function EnvironmentRow({ environment, applicationName, canMutate, canDelete, onDelete }: {
   environment: Environment
   /** Disambiguates the row menu's name: environment names repeat across applications. */
   applicationName: string
   canMutate: boolean
+  /** Delete affects every project using the application, so it needs access through all of them. */
+  canDelete: boolean
   onDelete: (environment: Environment) => void
 }) {
   const navigate = useNavigate()
@@ -292,7 +267,7 @@ function EnvironmentRow({ environment, applicationName, canMutate, onDelete }: {
             ...(canMutate
               ? [
                   { label: 'Edit', onSelect: () => void navigate(`${path}?edit=1`), disabled: writePending },
-                  { label: 'Delete…', onSelect: () => onDelete(environment), disabled: writePending },
+                  ...(canDelete ? [{ label: 'Delete…', onSelect: () => onDelete(environment), disabled: writePending }] : []),
                 ]
               : []),
           ]}
@@ -306,9 +281,10 @@ type ApplicationDialog = { kind: 'edit' | 'archive' | 'delete'; application: App
 
 function ApplicationBlock({
   group,
-  accessibleName,
+  projectName,
   totalEnvironments,
   canMutate,
+  canChangeEverywhere,
   canDelete,
   creating,
   justCreated,
@@ -319,10 +295,12 @@ function ApplicationBlock({
   onApplicationDialog,
 }: {
   group: EnvironmentGroup
-  /** The application's name, plus its project when another project has an application of the same name. */
-  accessibleName: string
+  /** A project's display name (its ID when it has none). */
+  projectName: (projectId: string) => string
   totalEnvironments: number
   canMutate: boolean
+  /** Archive and delete affect every project using the application. */
+  canChangeEverywhere: boolean
   canDelete: boolean
   creating: boolean
   justCreated: boolean
@@ -336,7 +314,7 @@ function ApplicationBlock({
   const archived = Boolean(application?.archived_at)
   const menu = application && canMutate ? [
     { label: 'Edit details…', onSelect: () => onApplicationDialog({ kind: 'edit', application, environmentCount: totalEnvironments }) },
-    { label: archived ? 'Unarchive…' : 'Archive…', onSelect: () => onApplicationDialog({ kind: 'archive', application, environmentCount: totalEnvironments }) },
+    ...(canChangeEverywhere ? [{ label: archived ? 'Unarchive…' : 'Archive…', onSelect: () => onApplicationDialog({ kind: 'archive', application, environmentCount: totalEnvironments }) }] : []),
     ...(canDelete ? [{ label: 'Delete…', onSelect: () => onApplicationDialog({ kind: 'delete', application, environmentCount: totalEnvironments }) }] : []),
   ] : []
   const canAdd = Boolean(application) && canMutate && !archived && !creating
@@ -350,16 +328,23 @@ function ApplicationBlock({
     wasCreating.current = creating
   }, [creating])
   return (
-    <section className={`env-group${archived ? ' env-group--archived' : ''}`} aria-label={`Application ${accessibleName}`}>
+    <section className={`env-group${archived ? ' env-group--archived' : ''}`} aria-label={`Application ${group.label}`}>
       <header className="env-group-header">
         <div className="env-group-heading">
-          <h3 className="env-group-title"><Link to={`/environments?application=${encodeURIComponent(group.key)}`}>{group.label}</Link></h3>
+          <h2 className="env-group-title"><Link to={`/environments?application=${encodeURIComponent(group.key)}`}>{group.label}</Link></h2>
           {archived && <span className="topbar-meta-chip">Archived</span>}
           <span className="env-muted env-group-count">{totalEnvironments} {totalEnvironments === 1 ? 'environment' : 'environments'}</span>
+          {group.projects.length > 0 && (
+            <ul className="env-project-chips" aria-label={`Projects using ${group.label}`}>
+              {group.projects.map(projectId => (
+                <li key={projectId}><Link className="env-project-chip" to={`/environments?project=${encodeURIComponent(projectId)}`} title={projectId}>{projectName(projectId)}</Link></li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="env-group-actions">
           {canAdd && group.environments.length > 0 && <button ref={addButton} type="button" className="btn btn-ghost btn-sm" onClick={onAddEnvironment}>Add environment</button>}
-          {menu.length > 0 && <OverflowMenu label={`Application actions: ${accessibleName}`} items={menu} />}
+          {menu.length > 0 && <OverflowMenu label={`Application actions: ${group.label}`} items={menu} />}
         </div>
       </header>
       {application?.description && <p className="env-group-description">{application.description}</p>}
@@ -392,7 +377,7 @@ function ApplicationBlock({
             </thead>
             <tbody>
               {group.environments.map((environment) => (
-                <EnvironmentRow key={environment.id} environment={environment} applicationName={accessibleName} canMutate={canMutate && !archived} onDelete={onDeleteEnvironment} />
+                <EnvironmentRow key={environment.id} environment={environment} applicationName={group.label} canMutate={canMutate && !archived} canDelete={canChangeEverywhere && !archived} onDelete={onDeleteEnvironment} />
               ))}
             </tbody>
           </table>
@@ -415,20 +400,37 @@ export function EnvironmentsPage() {
   // (still returned by the environments list) must stay with them rather than look orphaned.
   const applications = useApplicationsIndex({ includeArchived: true })
   const labels = useProjectLabels()
+  const projectName = (id: string) => (!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || id
   const projectCaption = (id: string) => `${(!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || 'Project name unavailable'} (${id})`
   const environments = useEnvironmentsIndex()
   const consumer = useConsumer()
   const canMutate = canLaunchPipelines(consumer)
   const canApproveTarget = isGlobalAdmin(consumer)
   const projectWideScopes = Array.from(new Set((consumer?.scopes ?? []).filter((scope) => !scope.app_id).map((scope) => scope.project_id))).sort()
-  const canCreateApplication = canMutate && (isGlobalAdmin(consumer) || projectWideScopes.length > 0)
-  const applicationProjectOptions = (consumer?.scopes.length ?? 0) > 0 ? projectWideScopes : null
+  const unscoped = (consumer?.scopes.length ?? 0) === 0
+  const canCreateApplication = canMutate && (canApproveTarget || projectWideScopes.length > 0)
+  const knownProjects = useMemo(
+    () => [...new Set([...(applications.data ?? []).flatMap(app => app.project_ids), ...(labels.data ?? []).map(row => row.project_id)])].sort(),
+    [applications.data, labels.data],
+  )
+  // Linking or unlinking a project needs project-wide access to it (the server enforces the same rule).
+  const projectChoices: ProjectChoices = {
+    options: unscoped ? knownProjects : projectWideScopes,
+    canChange: projectId => unscoped || projectWideScopes.includes(projectId),
+    allowOther: unscoped && canMutate,
+    caption: projectCaption,
+  }
+  const canMutateApplication = (application: Application | undefined, key: string) =>
+    (application?.project_ids ?? []).some(projectId => canMutateAudience(consumer, projectId, key))
+  // Archive and delete reach every linked project. Links outside your scope aren't listed;
+  // the server refuses those changes and the dialog says why.
+  const canChangeEverywhere = (application: Application | undefined, key: string) =>
+    Boolean(application?.project_ids.length) && application!.project_ids.every(projectId => canMutateAudience(consumer, projectId, key))
 
   const [creatingApplication, setCreatingApplication] = useState(false)
   const [creatingEnvironmentFor, setCreatingEnvironmentFor] = useState<{ applicationId: string; justCreated: boolean } | null>(null)
   const [deleting, setDeleting] = useState<Environment | null>(null)
   const [applicationDialog, setApplicationDialog] = useState<ApplicationDialog | null>(null)
-  const [collapsed, setCollapsed] = useState<string[]>(readCollapsed)
 
   function setParam(key: string, value: string) {
     setSearchParams(prev => {
@@ -445,13 +447,6 @@ export function EnvironmentsPage() {
       return next
     }, { replace: true })
   }
-  function toggleProject(project: string) {
-    setCollapsed(current => {
-      const next = current.includes(project) ? current.filter(item => item !== project) : [...current, project]
-      writeCollapsed(next)
-      return next
-    })
-  }
 
   const shownApplications = useMemo(
     () => (applications.data ?? []).filter(application => showArchived || !application.archived_at),
@@ -461,42 +456,37 @@ export function EnvironmentsPage() {
     const hidden = new Set((applications.data ?? []).filter(application => !showArchived && application.archived_at).map(application => application.id))
     return groupEnvironments(shownApplications, (environments.data ?? []).filter(environment => !hidden.has(environment.application_id)))
   }, [applications.data, environments.data, shownApplications, showArchived])
-  // Same-named applications in different projects (ACC in several) need the project in their accessible names.
-  const ambiguousNames = useMemo(() => {
-    const projectsByName = new Map<string, Set<string>>()
-    for (const group of allGroups) projectsByName.set(group.label, (projectsByName.get(group.label) ?? new Set()).add(group.project))
-    return new Set([...projectsByName].filter(([, projects]) => projects.size > 1).map(([name]) => name))
-  }, [allGroups])
-  const totals = useMemo(() => new Map(allGroups.map(group => [group.key, group.environments.length])), [allGroups])
-  const projects = useMemo(
-    () => projectGroups(
-      allGroups.filter(group => (!applicationFilter || group.key === applicationFilter) && (!projectFilter || group.project === projectFilter)),
+  const groups = useMemo(
+    () => filterGroups(
+      allGroups.filter(group => (!applicationFilter || group.key === applicationFilter) && (!projectFilter || group.projects.includes(projectFilter))),
       { search, readiness, projectName: id => (!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || '' },
     ),
     [allGroups, applicationFilter, projectFilter, search, readiness, labels.data, labels.isError],
   )
-  const visibleEnvironments = (environments.data ?? []).filter(environment => allGroups.some(group => group.key === environment.application_id))
+  const totals = useMemo(() => new Map(allGroups.map(group => [group.key, group.environments.length])), [allGroups])
+  const visibleEnvironments = allGroups.flatMap(group => group.environments)
   const needsApproval = visibleEnvironments.filter(environment => targetStatus(environment) === 'needs-approval').length
   const filterCount = Number(Boolean(search.trim())) + Number(Boolean(projectFilter)) + Number(Boolean(readiness)) + Number(Boolean(applicationFilter))
   const filtered = filterCount > 0
-  const matchedEnvironments = projects.reduce((sum, project) => sum + project.environmentCount, 0)
+  const matchedEnvironments = groups.reduce((sum, group) => sum + group.environments.length, 0)
 
   const isPending = applications.isPending || environments.isPending
   const queryError = environments.error ?? applications.error
   const hasCachedData = Boolean(applications.data && environments.data)
   const filteredApplication = applicationFilter ? allGroups.find(group => group.key === applicationFilter) : undefined
+  const projectApplications = projectFilter ? allGroups.filter(group => group.projects.includes(projectFilter)) : []
 
   return (
     <section className="env-page animate-enter">
       <header className="env-toolbar glass-panel">
         <TableToolbar label="Application filters" filterCount={filterCount} onClear={clearFilters}>
           <label className="ux-field">Search applications and environments
-            <input type="search" className="field-input" placeholder="Name or target host" value={search} onChange={(event) => setParam('q', event.target.value)} />
+            <input type="search" className="field-input" placeholder="Name, project or target host" value={search} onChange={(event) => setParam('q', event.target.value)} />
           </label>
           <label className="ux-field">Project
             <select className="field-select" value={projectFilter} onChange={(event) => setParam('project', event.target.value)}>
               <option value="">All projects</option>
-              {[...new Set(shownApplications.map((app) => app.project_id))].sort().map((project) => <option key={project} value={project}>{projectCaption(project)}</option>)}
+              {[...new Set([...shownApplications.flatMap((app) => app.project_ids), ...(projectFilter ? [projectFilter] : [])])].sort().map((project) => <option key={project} value={project}>{projectCaption(project)}</option>)}
             </select>
           </label>
           <label className="ux-field">Target
@@ -516,6 +506,12 @@ export function EnvironmentsPage() {
           <button type="button" className="btn btn-primary btn-sm env-new-application" onClick={() => setCreatingApplication(true)}>New application</button>
         )}
       </header>
+      {projectFilter && (
+        <section className="env-project-bar glass-panel" aria-label={`Project ${projectCaption(projectFilter)}`}>
+          <ProjectIdentity projectId={projectFilter} editable headingLevel="h2" />
+          <span className="env-muted">{projectApplications.length} {projectApplications.length === 1 ? 'application' : 'applications'} used by this project</span>
+        </section>
+      )}
       {hasCachedData && (
         <p className="env-summary">
           {allGroups.length} {allGroups.length === 1 ? 'application' : 'applications'} · {visibleEnvironments.length} {visibleEnvironments.length === 1 ? 'environment' : 'environments'}
@@ -527,18 +523,19 @@ export function EnvironmentsPage() {
 
       {creatingApplication && (
         <CreateApplicationDialog
-          projectOptions={applicationProjectOptions}
+          projects={projectChoices}
+          initialProjects={projectFilter && projectChoices.canChange(projectFilter) ? [projectFilter] : projectWideScopes.length === 1 && !unscoped ? projectWideScopes : []}
           existing={applications.data ?? []}
           onClose={() => setCreatingApplication(false)}
           onCreated={(application) => {
             setCreatingApplication(false)
+            // A new application has no environments yet: clear filters that would hide it.
             setSearchParams(prev => {
               const next = new URLSearchParams(prev)
               for (const key of ['q', 'target', 'application']) next.delete(key)
-              if (next.get('project')) next.set('project', application.project_id)
+              if (next.get('project') && !application.project_ids.includes(next.get('project')!)) next.delete('project')
               return next
             }, { replace: true })
-            setCollapsed(current => current.filter(project => project !== application.project_id))
             setCreatingEnvironmentFor({ applicationId: application.id, justCreated: true })
           }}
         />
@@ -552,7 +549,7 @@ export function EnvironmentsPage() {
         <Skeleton label="Loading environments" rows={SKELETON_ROWS} />
       ) : queryError && !hasCachedData ? (
         <ProblemCard title="Environments unavailable" message={queryError.message} onRetry={() => { void applications.refetch(); void environments.refetch() }} />
-      ) : projects.length === 0 ? (
+      ) : groups.length === 0 ? (
         <StateCard kind={filtered ? 'filtered' : 'empty'}
           title={filtered ? 'No matching applications' : 'No applications yet'}
           action={filtered
@@ -564,56 +561,35 @@ export function EnvironmentsPage() {
               : 'Your role has read-only access. Ask a project operator to create an application.'}</p>
         </StateCard>
       ) : (
-        projects.map((project) => {
-          const open = filtered || !collapsed.includes(project.project)
-          const bodyId = `env-project-${project.project}`
-          return (
-            <section key={project.project} className="env-project" aria-label={`Project ${projectCaption(project.project)}`}>
-              <header className="env-project-header">
-                <button type="button" className="env-project-toggle" aria-expanded={open} aria-controls={open ? bodyId : undefined} onClick={() => toggleProject(project.project)} disabled={filtered}
-                  aria-label={`${open ? 'Collapse' : 'Expand'} project ${projectCaption(project.project)}`}>
-                  <span aria-hidden="true">{open ? '▾' : '▸'}</span>
-                </button>
-                <div className="env-project-title">{project.project ? <ProjectIdentity projectId={project.project} editable headingLevel="h2" /> : <h2 className="project-identity-heading">Unknown project</h2>}</div>
-                <span className="env-muted env-project-counts">
-                  {project.applications.length} {project.applications.length === 1 ? 'application' : 'applications'} · {project.environmentCount} {project.environmentCount === 1 ? 'environment' : 'environments'}
-                  {project.needsApproval > 0 && <> · <span className="env-needs-approval">{project.needsApproval} need approval</span></>}
-                </span>
-              </header>
-              {open && (
-                <div id={bodyId} className="env-project-body">
-                  {project.applications.map((group) => (
-                    <ApplicationBlock
-                      key={group.key}
-                      group={group}
-                      accessibleName={ambiguousNames.has(group.label) ? `${group.label} (${projectCaption(group.project)})` : group.label}
-                      totalEnvironments={totals.get(group.key) ?? group.environments.length}
-                      canMutate={canMutateAudience(consumer, group.project, group.key)}
-                      canDelete={consumer?.role === 'admin' && canMutateAudience(consumer, group.project, group.key)}
-                      creating={creatingEnvironmentFor?.applicationId === group.key}
-                      justCreated={creatingEnvironmentFor?.applicationId === group.key && creatingEnvironmentFor.justCreated}
-                      canApproveTarget={canApproveTarget}
-                      onAddEnvironment={() => setCreatingEnvironmentFor({ applicationId: group.key, justCreated: false })}
-                      onCloseCreate={() => setCreatingEnvironmentFor(null)}
-                      onDeleteEnvironment={setDeleting}
-                      onApplicationDialog={setApplicationDialog}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )
-        })
+        groups.map((group) => (
+          <ApplicationBlock
+            key={group.key}
+            group={group}
+            projectName={projectName}
+            totalEnvironments={totals.get(group.key) ?? group.environments.length}
+            canMutate={canMutateApplication(group.application, group.key)}
+            canChangeEverywhere={canChangeEverywhere(group.application, group.key)}
+            canDelete={consumer?.role === 'admin' && canChangeEverywhere(group.application, group.key)}
+            creating={creatingEnvironmentFor?.applicationId === group.key}
+            justCreated={creatingEnvironmentFor?.applicationId === group.key && creatingEnvironmentFor.justCreated}
+            canApproveTarget={canApproveTarget}
+            onAddEnvironment={() => setCreatingEnvironmentFor({ applicationId: group.key, justCreated: false })}
+            onCloseCreate={() => setCreatingEnvironmentFor(null)}
+            onDeleteEnvironment={setDeleting}
+            onApplicationDialog={setApplicationDialog}
+          />
+        ))
       )}
 
-      {!isPending && !queryError && !canMutate && projects.length > 0 && (
+      {!isPending && !queryError && !canMutate && groups.length > 0 && (
         <p className="env-permission-note">Your role has read-only access to applications and environments.</p>
       )}
 
       {deleting && <DeleteEnvironmentDialog environment={deleting} onClose={() => setDeleting(null)} />}
       {applicationDialog?.kind === 'edit' && (
         <EditApplicationDialog application={applicationDialog.application}
-          siblingNames={(applications.data ?? []).filter(app => app.project_id === applicationDialog.application.project_id && app.id !== applicationDialog.application.id).map(app => app.name)}
+          siblingNames={(applications.data ?? []).filter(app => app.id !== applicationDialog.application.id).map(app => app.name)}
+          projects={projectChoices}
           onClose={() => setApplicationDialog(null)} />
       )}
       {applicationDialog?.kind === 'archive' && (

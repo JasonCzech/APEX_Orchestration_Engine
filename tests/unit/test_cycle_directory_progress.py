@@ -34,6 +34,7 @@ from apex.persistence.models import (
     CycleExecutionPreparation,
     CycleScriptValidation,
     Environment,
+    ProjectApplication,
     ProjectLabel,
 )
 from apex.persistence.models import TestCycle as CycleRow
@@ -93,6 +94,7 @@ def directory() -> Iterator[tuple[TestClient, Engine, list[str]]]:
             "project_labels",
             "api_consumers",
             "applications",
+            "project_applications",
             "environments",
             "test_cycles",
             "cycle_execution_preparations",
@@ -119,7 +121,7 @@ def directory() -> Iterator[tuple[TestClient, Engine, list[str]]]:
                     consumer_type="dashboard",
                     role="admin",
                 ),
-                Application(id="a1", project_id="p1", name="Checkout"),
+                Application(id="a1", project_ids=["p1"], name="Checkout"),
                 Environment(id="e1", application_id="a1", name="Test"),
             ]
         )
@@ -178,7 +180,9 @@ def test_project_names_allow_duplicates_rename_remove_without_changing_resource_
     assert client.delete("/catalog/projects", params={"project": "p1"}).status_code == 204
     assert client.get("/catalog/projects", params={"project": "p1"}).json() == []
     with Session(engine) as session:
-        assert session.scalar(select(Application.project_id).where(Application.id == "a1")) == "p1"
+        assert session.scalars(
+            select(ProjectApplication.project_id).where(ProjectApplication.application_id == "a1")
+        ).all() == ["p1"]
         assert session.scalar(select(CycleRow.project_id).where(CycleRow.id == "c1")) == "p1"
 
 

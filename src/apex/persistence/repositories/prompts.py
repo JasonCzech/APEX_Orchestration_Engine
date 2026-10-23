@@ -17,6 +17,7 @@ from apex.persistence.repositories._conflicts import (
     bounded_driver_message,
     driver_constraint_name,
 )
+from apex.persistence.repositories.catalog import application_scope_filter
 
 
 class DuplicatePromptKeyError(Exception):
@@ -49,17 +50,10 @@ class PromptRepository:
         identity = self.identity
         if identity is None or identity.is_unscoped:
             return true()
-        app_scope = or_(
-            *[
-                and_(
-                    Application.project_id == scope.project_id,
-                    Application.id == scope.app_id if scope.app_id else true(),
-                )
-                for scope in identity.scopes
-            ],
-            false(),
+        app_scope = application_scope_filter(identity.scopes)
+        apps = select(Application.id).where(
+            app_scope if app_scope is not None else false(), Application.archived_at.is_(None)
         )
-        apps = select(Application.id).where(app_scope, Application.archived_at.is_(None))
         envs = select(Environment.id).where(Environment.application_id.in_(apps))
         return or_(
             Prompt.namespace.not_in(["application", "environment"]),

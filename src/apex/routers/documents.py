@@ -399,7 +399,7 @@ async def upload_document(
         if (
             application is None
             or application.archived_at is not None
-            or application.project_id != project_id
+            or project_id not in application.project_ids
         ):
             raise HTTPException(status_code=422, detail="app_id is not valid for project_id")
 
