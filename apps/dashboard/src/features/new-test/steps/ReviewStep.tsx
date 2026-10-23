@@ -246,11 +246,11 @@ export function ReviewStep({
         <ReviewCard title="Prompts" step="prompts" onEdit={onEditStep}>
           {draft.prompt_selections ? <ul>
             <SelectedPromptSummary label="System Prompt" selection={draft.prompt_selections.system} />
-            {phases.map(phase => <SelectedPromptSummary key={phase} label={`Phase context — ${PHASE_LABELS[phase]}`} selection={draft.prompt_selections?.phases[phase]} />)}
             {draft.prompt_selections.application.map(item => <SelectedPromptSummary key={item.prompt_id} label="Application context" selection={item} />)}
             {!draft.prompt_selections.application.length && <li>Application context: None</li>}
             {draft.prompt_selections.environment.map(item => <SelectedPromptSummary key={item.prompt_id} label="Environment Context" selection={item} />)}
             {!draft.prompt_selections.environment.length && <li>Environment Context: None</li>}
+            {phases.map(phase => <SelectedPromptSummary key={phase} label={`Phase context — ${PHASE_LABELS[phase]}`} selection={draft.prompt_selections?.phases[phase]} />)}
           </ul> : overrides.length === 0 ? (
             <p className="wizard-caption">Catalog prompts (no run overrides)</p>
           ) : (

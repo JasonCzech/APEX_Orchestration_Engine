@@ -32,6 +32,7 @@ import {
   normalizePhases,
   normalizeAnalysis,
   selectedPhases,
+  withPhaseOwner,
   type EngineId,
   type GatesMode,
   type WizardConfig,
@@ -176,29 +177,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
   }
 
   function togglePhase(phase: PhaseName) {
-    const current = new Set(phases)
-    let nextFocus: PhaseName | null = promptFocus
-
-    if (current.has(phase)) {
-      current.delete(phase)
-    } else {
-      current.add(phase)
-    }
-
-    const next = PHASE_NAMES.filter((name) => current.has(name))
-    if (nextFocus !== null && !next.includes(nextFocus)) {
-      nextFocus = next[0] ?? null
-    }
-    onChange((prev) => {
-      return {
-        ...prev,
-        config: {
-          ...prev.config,
-          phases: next.length === PHASE_NAMES.length ? null : next,
-          prompt_focus_phase: nextFocus,
-        },
-      }
-    })
+    onChange((prev) => ({ ...prev, config: withPhaseOwner(prev.config, phase, !selectedPhases(prev.config).includes(phase)) }))
   }
 
   function setGatesMode(mode: GatesMode) {
