@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, and_, false, or_, select
+from sqlalchemy import Select, and_, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -400,6 +400,30 @@ class CatalogRepository:
             .limit(1)
         )
         return await self._session.scalar(stmt)
+
+    async def latest_snapshots(self, environment_ids: list[str]) -> dict[str, EnvironmentSnapshot]:
+        """The newest snapshot of each environment, in one query (list views)."""
+        if not environment_ids:
+            return {}
+        newest = (
+            select(
+                EnvironmentSnapshot.environment_id,
+                func.max(EnvironmentSnapshot.scanned_at).label("scanned_at"),
+            )
+            .where(EnvironmentSnapshot.environment_id.in_(environment_ids))
+            .group_by(EnvironmentSnapshot.environment_id)
+            .subquery()
+        )
+        rows = await self._session.scalars(
+            select(EnvironmentSnapshot).join(
+                newest,
+                and_(
+                    EnvironmentSnapshot.environment_id == newest.c.environment_id,
+                    EnvironmentSnapshot.scanned_at == newest.c.scanned_at,
+                ),
+            )
+        )
+        return {row.environment_id: row for row in rows}
 
     # ── internals ───────────────────────────────────────────────────────────
 

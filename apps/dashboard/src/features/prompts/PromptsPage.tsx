@@ -27,7 +27,8 @@ import {
 } from '@/api/hooks/usePrompts'
 import { useAssistants } from '@/api/hooks/useAssistants'
 import { isApiError } from '@/api/errors'
-import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { RequireGlobalAdmin, isGlobalAdmin } from '@/auth/RequireRole'
+import { useConsumer } from '@/auth/AuthProvider'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
@@ -327,7 +328,7 @@ function keyProblem(draft: CreateDraft, existing: PromptSummary[]): string | nul
   return null
 }
 
-function CreatePromptPanel({ initialNamespace, onClose }: { initialNamespace: string; onClose: () => void }) {
+function CreatePromptPanel({ initialNamespace, initialEnvironmentId = '', onClose }: { initialNamespace: string; initialEnvironmentId?: string; onClose: () => void }) {
   const navigate = useNavigate()
   const create = useCreatePrompt()
   const applications = useApplicationsIndex()
@@ -335,7 +336,7 @@ function CreatePromptPanel({ initialNamespace, onClose }: { initialNamespace: st
   // The whole catalog, not the filtered page: uniqueness and "Start from" span it.
   const catalog = usePromptList({ includeArchived: true })
   const existing = useMemo(() => catalog.data ?? [], [catalog.data])
-  const [draft, setDraft] = useState<CreateDraft>(() => emptyDraft(initialNamespace))
+  const [draft, setDraft] = useState<CreateDraft>(() => ({ ...emptyDraft(initialNamespace), environment_id: initialNamespace === 'environment' ? initialEnvironmentId : '' }))
   const [pendingSource, setPendingSource] = useState<string | null>(null)
   const keyHelpId = useId()
   const source = existing.find(row => row.id === draft.copy_from)
@@ -529,6 +530,18 @@ export function PromptsPage() {
   const committedQ = searchParams.get('q') ?? ''
   const [search, setSearch] = useState(committedQ)
   const [creating, setCreating] = useState<string | null>(null)
+  const [creatingEnvironmentId, setCreatingEnvironmentId] = useState('')
+  const consumer = useConsumer()
+  // Other pages link here to start a prompt, e.g. ?new=environment&environment_id=…
+  const newCategory = searchParams.get('new')
+  useEffect(() => {
+    if (!newCategory) return
+    if (isGlobalAdmin(consumer) && (CATEGORY_ORDER as readonly string[]).includes(newCategory)) {
+      setCreating(newCategory)
+      setCreatingEnvironmentId(searchParams.get('environment_id') ?? '')
+    }
+    setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('new'); next.delete('environment_id'); return next }, { replace: true })
+  }, [newCategory, consumer, searchParams, setSearchParams])
   const pageRef = useRef<HTMLElement>(null)
   const narrow = useNarrow(pageRef, NARROW_PAGE_PX)
   const sheetHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -736,7 +749,7 @@ export function PromptsPage() {
         </Dialog>
       )}
 
-      {creating !== null && <CreatePromptPanel initialNamespace={creating} onClose={() => setCreating(null)} />}
+      {creating !== null && <CreatePromptPanel initialNamespace={creating} initialEnvironmentId={creatingEnvironmentId} onClose={() => { setCreating(null); setCreatingEnvironmentId('') }} />}
     </section>
   )
 }

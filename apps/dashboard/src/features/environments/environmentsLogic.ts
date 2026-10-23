@@ -52,6 +52,8 @@ export interface EnvironmentGroup {
   label: string
   /** Project caption under the group header (empty for unknown apps). */
   project: string
+  /** The application record, when it is visible (description, archived state). */
+  application?: Application
   environments: Environment[]
 }
 
@@ -74,6 +76,7 @@ export function groupEnvironments(
       key: app.id,
       label: app.name,
       project: app.project_id,
+      application: app,
       environments: list.sort((a, b) => a.name.localeCompare(b.name)),
     })
   }
@@ -88,4 +91,82 @@ export function groupEnvironments(
     })
   }
   return groups
+}
+
+/** Readable kind labels; the stored values stay k8s / vm / other. */
+export const KIND_LABELS: Record<string, string> = { k8s: 'Kubernetes', vm: 'Virtual machines', other: 'Other' }
+
+export function kindLabel(kind: string | null | undefined): string | null {
+  return kind ? KIND_LABELS[kind] ?? kind : null
+}
+
+/** Whether external engines can run against an environment. */
+export type TargetStatus = 'approved' | 'needs-approval' | 'no-target'
+
+export const TARGET_STATUS_LABELS: Record<TargetStatus, string> = {
+  'approved': 'Approved',
+  'needs-approval': 'Needs approval',
+  'no-target': 'No target',
+}
+
+export function targetStatus(environment: Pick<Environment, 'base_url' | 'target_approved'>): TargetStatus {
+  if (!environment.base_url) return 'no-target'
+  return environment.target_approved ? 'approved' : 'needs-approval'
+}
+
+/** The host part of a target URL for compact display; the raw value if it doesn't parse. */
+export function targetHost(url: string): string {
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
+  }
+}
+
+export type ReadinessFilter = '' | TargetStatus
+
+export interface ProjectGroup {
+  project: string
+  applications: EnvironmentGroup[]
+  environmentCount: number
+  needsApproval: number
+}
+
+/**
+ * Applications grouped under their project, with environments narrowed by the
+ * search text and readiness filter. An application whose name matches keeps all
+ * its environments; otherwise only matching environments are listed.
+ */
+export function projectGroups(
+  groups: EnvironmentGroup[],
+  { search = '', readiness = '', projectName = () => '' }: {
+    search?: string
+    readiness?: ReadinessFilter
+    /** Display name of a project, so searching "ACC Perf" finds its applications. */
+    projectName?: (projectId: string) => string
+  } = {},
+): ProjectGroup[] {
+  const needle = search.trim().toLowerCase()
+  const byProject = new Map<string, EnvironmentGroup[]>()
+  for (const group of groups) {
+    const appMatches = !needle || `${group.label} ${group.project} ${projectName(group.project)}`.toLowerCase().includes(needle)
+    const environments = group.environments.filter(environment =>
+      (appMatches || `${environment.name} ${environment.base_url ?? ''}`.toLowerCase().includes(needle)) &&
+      (!readiness || targetStatus(environment) === readiness))
+    // Keep an application with no environments visible unless a filter excludes it.
+    const keep = environments.length > 0 || (group.environments.length === 0 && appMatches && !readiness)
+    if (!keep) continue
+    byProject.set(group.project, [...(byProject.get(group.project) ?? []), { ...group, environments }])
+  }
+  return [...byProject.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([project, applications]) => {
+      const all = applications.flatMap(application => application.environments)
+      return {
+        project,
+        applications,
+        environmentCount: all.length,
+        needsApproval: all.filter(environment => targetStatus(environment) === 'needs-approval').length,
+      }
+    })
 }

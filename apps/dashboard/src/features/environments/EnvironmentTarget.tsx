@@ -36,7 +36,7 @@ export function EnvironmentTarget({ environment, canApprove, onEdit }: {
   })
   return <section className="env-card glass-panel" aria-labelledby="environment-target-heading">
     <h2 id="environment-target-heading" className="env-card-title">Execution target</h2>
-    <p><span className={`status-badge ${environment.target_approved ? 'success' : 'warning'}`}>{environment.target_approved ? 'Approved' : 'Not approved'}</span> · Version {environment.target_version}</p>
+    <p><span className={`status-badge ${environment.target_approved ? 'success' : environment.base_url ? 'warning' : 'neutral'}`}>{environment.target_approved ? 'Approved' : environment.base_url ? 'Needs approval' : 'No target'}</span></p>
     <p className="env-base-url">{environment.base_url ?? 'No target URL configured.'}</p>
     <p className="env-muted">External engines require an approved target. Simulation uses the environment as context only. Changing the target requires a new approval.</p>
     {!environment.target_approved && !canApprove && <p className="env-muted">Ask a global administrator to configure and approve this target.</p>}
@@ -46,7 +46,7 @@ export function EnvironmentTarget({ environment, canApprove, onEdit }: {
     {reviewVersion !== null && <Dialog ariaLabel="Approve execution target" onClose={() => { if (!approve.isPending) setReviewVersion(null) }} overlayClassName="env-target-overlay" className="glass-panel env-target-dialog">
       <h2>Approve execution target?</h2>
       <p>This authorizes external test execution against <strong>{environment.base_url}</strong> for {environment.name}. Confirm that this destination is permitted for performance testing before approving.</p>
-      <p>Target version: {reviewVersion}. The server rejects this approval if the target changed.</p>
+      <p>If the target changes before you approve, the approval is refused and you can review the new target.</p>
       {targetChanged && !approve.isError && <p className="tonal-card warning" role="alert">The target changed during this review. Close this review and check the updated target before approving.</p>}
       {!canApprove && <p className="tonal-card warning" role="alert">Target approval requires a global administrator. Your current permissions no longer allow this action.</p>}
       {approve.isError && <p className="tonal-card danger" role="alert">{approve.error.message} Close this review and check the refreshed target before trying again.</p>}

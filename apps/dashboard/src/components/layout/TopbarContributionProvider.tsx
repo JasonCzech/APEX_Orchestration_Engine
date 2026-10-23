@@ -10,6 +10,8 @@ import {
 interface TopbarContributionContextValue {
   contribution: ReactNode
   setContribution: (node: ReactNode) => void
+  title: string | null
+  setTitle: (title: string | null) => void
 }
 
 const TopbarContributionContext = createContext<TopbarContributionContextValue | null>(null)
@@ -20,7 +22,8 @@ const TopbarContributionContext = createContext<TopbarContributionContextValue |
  */
 export function TopbarContributionProvider({ children }: { children: ReactNode }) {
   const [contribution, setContribution] = useState<ReactNode>(null)
-  const value = useMemo(() => ({ contribution, setContribution }), [contribution])
+  const [title, setTitle] = useState<string | null>(null)
+  const value = useMemo(() => ({ contribution, setContribution, title, setTitle }), [contribution, title])
   return (
     <TopbarContributionContext.Provider value={value}>
       {children}
@@ -48,4 +51,21 @@ export function useTopbarContribution(node: ReactNode): void {
     setContribution(node)
     return () => setContribution(null)
   }, [node, setContribution])
+}
+
+/** The page title a screen set for itself, if any (read by the Topbar). */
+export function useTopbarTitleOverride(): string | null {
+  return useTopbarContributionContext().title
+}
+
+/**
+ * Screens about one record (an environment, say) name the page after it
+ * instead of the route's generic title, for the duration of their mount.
+ */
+export function useTopbarTitle(title: string | null): void {
+  const { setTitle } = useTopbarContributionContext()
+  useEffect(() => {
+    setTitle(title)
+    return () => setTitle(null)
+  }, [title, setTitle])
 }

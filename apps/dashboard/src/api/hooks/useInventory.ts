@@ -86,10 +86,11 @@ export function useRescanEnvironment(
     },
     onSuccess: (fresh) => {
       queryClient.setQueryData(queryKeys.inventory.environment(environmentId), fresh)
-      // The catalog detail carries a last_snapshot summary — keep it honest.
+      // The catalog detail and the list's Last scan column carry a last_snapshot summary — keep both honest.
       void queryClient.invalidateQueries({
         queryKey: queryKeys.catalog.environment(environmentId),
       })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.environmentsIndex() })
     },
   })
 }

@@ -28,7 +28,7 @@ const routes = [
   ['/work-items/saved', 'Saved queries'],
   ['/work-items/jira/PERF-241?connection_id=conn-jira', 'Ticket'],
   ['/environments', 'Applications & environments'],
-  ['/environments/env-acc-perf-acc-perfhyper2', 'Environment'],
+  ['/environments/env-acc-perf-acc-perfhyper2', 'PERFHYPER2'],
   ['/context', 'Knowledge & documents'],
   ['/evidence', 'Evidence'],
   ['/analytics', 'Agent analytics'],
