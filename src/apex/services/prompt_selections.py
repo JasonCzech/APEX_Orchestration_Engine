@@ -280,15 +280,14 @@ def compose_selected_system(resolved: Mapping[str, Any]) -> str:
             + entry["content"]
             for entry in resolved.get("contexts", [])
         )
-    # Application and environment context frame the phase: they come before
-    # its instructions, matching the order the wizard presents them.
     return (
         PLATFORM_POLICY
         + "\n=== SHARED SYSTEM PROMPT ===\n"
         + resolved["system"].strip()
-        + (f"\n\n{application}" if application else "")
         + "\n=== PHASE CONTEXT ===\n"
         + resolved["user"]
+        + "\n\n"
+        + application
     )
 
 

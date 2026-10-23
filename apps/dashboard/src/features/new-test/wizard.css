@@ -625,6 +625,37 @@
 
 /* Review step */
 
+.wizard-review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.wizard-review-card {
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Readiness spans the grid so its sentences read as one line, not a column. */
+.wizard-review-card--wide { grid-column: 1 / -1; }
+
+.wizard-review-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wizard-review-card-title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
 .wizard-review-dl {
   margin: 0;
   display: grid;
@@ -730,97 +761,6 @@
 .wizard-workload h3 { margin: 0; }
 .wizard-workload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .wizard-review-pair { display: contents; }
-
-/* Review: a summary that reads in wizard order beside a sticky launch checklist. */
-.wizard-review { container-type: inline-size; }
-.wizard-review-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 16px; align-items: start; }
-.wizard-review-main { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-/* First in the DOM so the checklist is read and tabbed first; placed beside the summary. */
-.wizard-review-aside { grid-column: 2; grid-row: 1; position: sticky; top: 16px; min-width: 0; max-height: calc(100dvh - 120px); overflow-y: auto; }
-@container (max-width: 860px) {
-  .wizard-review-layout { grid-template-columns: minmax(0, 1fr); }
-  .wizard-review-main, .wizard-review-aside { grid-column: 1; grid-row: auto; }
-  .wizard-review-aside { position: static; max-height: none; overflow: visible; }
-}
-
-.wizard-review-hero { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; border-radius: var(--radius); }
-.wizard-review-title { margin: 0; font-size: var(--font-size-lg, 1.25rem); overflow-wrap: anywhere; }
-.wizard-review-request { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-.wizard-review-request p { margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
-.wizard-review-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 6px 0 0; }
-.wizard-review-facts > div { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); }
-.wizard-review-facts dt { font-size: var(--font-size-xs); color: var(--text-muted); }
-.wizard-review-facts dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
-
-.wizard-review-sections { display: flex; flex-direction: column; padding: 4px 20px; border-radius: var(--radius); }
-.wizard-review-section { display: flex; flex-direction: column; gap: 10px; padding: 16px 0; }
-.wizard-review-section + .wizard-review-section { border-top: 1px solid var(--border-subtle, var(--border)); }
-.wizard-review-section-head { display: flex; align-items: center; gap: 10px; }
-.wizard-review-section-title { margin: 0; font-size: var(--font-size-base); font-weight: 700; }
-.wizard-review-edit { margin-left: auto; }
-.wizard-review-section-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.wizard-review-status { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: var(--font-size-xs); font-weight: 600; color: var(--text-secondary); }
-.wizard-review-status--ok { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
-.wizard-review-status--attention { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
-.wizard-review-muted { margin: 0; color: var(--text-muted); font-size: var(--font-size-sm); }
-
-/* Rows instead of bullets: each item sits on its own separated line. */
-.wizard-review-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-.wizard-review-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; font-size: var(--font-size-sm); }
-.wizard-review-row + .wizard-review-row { border-top: 1px solid var(--border-subtle, var(--border)); }
-.wizard-review-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
-.wizard-review-layer { flex: none; min-width: 88px; font-size: var(--font-size-xs); font-weight: 700; letter-spacing: var(--label-tracking, 0.05em); text-transform: var(--label-case, uppercase); color: var(--text-muted); }
-.wizard-review-key { flex: none; font-family: var(--font-mono); font-size: var(--font-size-xs); }
-.wizard-review-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.wizard-review-tag { display: inline-flex; padding: 1px 8px; border: 1px solid var(--accent-border); border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-size: var(--font-size-xs); font-weight: 600; white-space: nowrap; }
-.wizard-review-tag--warning { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
-.wizard-review-section-body .wizard-review-dl { padding-top: 4px; }
-
-/* Phase plan: one step per phase, in order; each opens the phase on the Prompts step. */
-.wizard-review-phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
-.wizard-review-phase { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; height: 100%; padding: 10px; border: 1px solid var(--accent-border); border-top: 3px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
-.wizard-review-phase:hover { background: var(--bg-hover); }
-.wizard-review-phase:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wizard-review-phase--person { border-color: var(--border); border-top-style: dashed; border-top-color: var(--text-muted); background: transparent; }
-.wizard-review-phase-num { font-size: var(--font-size-xs); font-weight: 700; color: var(--text-muted); }
-.wizard-review-phase-name { font-size: var(--font-size-sm); font-weight: 700; }
-.wizard-review-phase-owner { font-size: var(--font-size-xs); font-weight: 600; color: var(--accent-text); }
-.wizard-review-phase--person .wizard-review-phase-owner { color: var(--text-secondary); }
-.wizard-review-phase-gates { font-size: var(--font-size-xs); color: var(--text-muted); }
-
-/* Workload: the requested values as tiles, value above label. */
-.wizard-review-workload .wizard-review-dl { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
-.wizard-review-workload .wizard-review-pair { display: flex; flex-direction: column-reverse; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); }
-.wizard-review-workload .wizard-review-pair dd { font-size: var(--font-size-base); font-weight: 700; }
-.wizard-review-workload .wizard-review-pair dt { font-size: var(--font-size-xs); }
-
-.wizard-review-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
-.wizard-review-table th, .wizard-review-table td { padding: 7px 0; text-align: left; vertical-align: top; border-top: 1px solid var(--border-subtle, var(--border)); }
-.wizard-review-table tr:first-child th, .wizard-review-table tr:first-child td { border-top: 0; }
-.wizard-review-table th { width: 36%; padding-right: 12px; font-weight: 500; color: var(--text-muted); }
-.wizard-review-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.wizard-review-link { padding: 0; border: 0; background: none; color: var(--accent-text); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
-.wizard-review-link:hover { text-decoration: underline; }
-.wizard-review-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.wizard-review-checklist { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: var(--radius); border-top: 3px solid var(--success-border); }
-.wizard-review-checklist--attention { border-top-color: var(--warning-border); }
-.wizard-review-checklist .wizard-caption { margin: 0; }
-.wizard-review-verdict { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 700; }
-.wizard-review-verdict-mark { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid var(--success-border); background: var(--success-bg); color: var(--success-text); font-size: 12px; }
-.wizard-review-checklist--attention .wizard-review-verdict-mark { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
-.wizard-review-issues ul { margin: 0; padding: 0; list-style: none; gap: 6px; }
-.wizard-review-issue { display: block; width: 100%; padding: 8px 10px; border: 1px solid var(--warning-border); border-radius: var(--radius); background: var(--warning-bg); color: var(--warning-text); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer; }
-.wizard-review-issue:hover { border-color: var(--warning-text); }
-.wizard-review-issue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wizard-review-issue-step { font-weight: 700; }
-.wizard-review-issue-go { display: block; margin-top: 4px; font-weight: 600; }
-.wizard-review-checks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: var(--font-size-sm); }
-.wizard-review-checks li { display: flex; flex-direction: column; gap: 2px; padding-left: 26px; position: relative; }
-.wizard-review-checks li::before { position: absolute; left: 0; top: 0; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-.wizard-review-checks li.is-ok::before { content: '✓' / ''; border: 1px solid var(--success-border); background: var(--success-bg); color: var(--success-text); }
-.wizard-review-checks li.is-attention::before { content: '!' / ''; border: 1px solid var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
-.wizard-review-checks li span { color: var(--text-secondary); }
 .wizard-inline-issues { margin: 6px 0 0; padding-left: 20px; list-style: disc; }
 @media (max-width: 680px) {
   .wizard-workload-grid { grid-template-columns: 1fr; }
@@ -884,9 +824,6 @@
 }
 .wizard-prompt-tab--ok .wizard-prompt-tab-marker { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
 .wizard-prompt-tab--attention .wizard-prompt-tab-marker { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning-text); }
-.wizard-prompt-tab--bypassed .wizard-prompt-tab-marker { border-style: dashed; color: var(--text-muted); }
-.wizard-prompt-tab--bypassed .wizard-prompt-tab-label { color: var(--text-secondary); }
-.wizard-prompt-tab--bypassed .wizard-prompt-tab-summary { font-style: italic; }
 .wizard-prompt-tab-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .wizard-prompt-tab-label { font-weight: 600; font-size: var(--font-size-sm); }
 .wizard-prompt-tab[aria-selected='true'] .wizard-prompt-tab-label { color: var(--accent-text); }
@@ -899,7 +836,6 @@
 .wizard-prompt-block--flat { padding: 0; }
 /* The selected prompt reads in full and fills the panel down to the pager. */
 .wizard-prompt-tabpanel > .wizard-prompt-block--flat:not(section),
-.wizard-prompt-split > .wizard-prompt-block--flat,
 .wizard-prompt-block--flat > .wizard-prompt-preview { flex: 1 1 auto; }
 .wizard-prompt-preview { gap: 8px; padding: 0; }
 .wizard-prompt-preview-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
@@ -923,28 +859,6 @@
 .wizard-prompt-context-item { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border-subtle, var(--border)); }
 .wizard-prompt-pager { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border-subtle, var(--border)); }
 .wizard-prompt-legacy { display: flex; flex-direction: column; gap: 8px; }
-.wizard-prompt-bypassed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
-.wizard-prompt-bypassed p { margin: 0; flex: 1 1 280px; }
-/* A bypassed phase's saved context is shown for reference only. */
-.wizard-prompt-bypassed ~ .wizard-prompt-preview .wizard-prompt-content { min-height: 120px; color: var(--text-secondary); }
-.wizard-prompt-owner { justify-content: space-between; align-items: center; }
-/* Phase tabs: the editable phase context beside the read-only assembled prompt. */
-.wizard-prompt-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; flex: 1 1 auto; align-items: stretch; }
-.wizard-prompt-split > .wizard-prompt-block--flat { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.wizard-prompt-assembled { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-left: 16px; border-left: 1px solid var(--border-subtle, var(--border)); }
-.wizard-prompt-assembled h4 { margin: 0; font-size: var(--font-size-sm); }
-.wizard-prompt-assembled > p { margin: 0; }
-.wizard-prompt-assembled > .wizard-prompt-content { background: var(--bg-tertiary, var(--bg-secondary)); color: var(--text-secondary); }
-.wizard-prompt-assembled-policy summary { cursor: pointer; font-size: var(--font-size-sm); color: var(--text-secondary); }
-.wizard-prompt-assembled-policy .wizard-prompt-content { min-height: 0; margin-top: 8px; }
-/* Stack by the panel's own width: the app sidebar and prompt rail take space too. */
-.wizard-prompt-tabpanel { container-type: inline-size; }
-@container (max-width: 760px) {
-  .wizard-prompt-split { grid-template-columns: minmax(0, 1fr); }
-  .wizard-prompt-assembled { padding-left: 0; padding-top: 12px; border-left: 0; border-top: 1px solid var(--border-subtle, var(--border)); }
-}
-.wizard-prompt-owner-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.wizard-prompt-owner-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
 .wizard-prompt-legacy h3 { margin: 0; }
 @media (max-width: 900px) {
   .wizard-prompt-layout { grid-template-columns: minmax(0, 1fr); }
