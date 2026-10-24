@@ -58,6 +58,13 @@ API/event contracts and runs the complete dashboard gate.
 
 ## Dashboard
 
+The dashboard includes **Help & documentation** at `/help`: searchable operator
+and administrator guides, contextual help for each major screen, and a bundled
+read-only domain API reference. Canonical articles live in [`docs/help/`](docs/help/).
+Start with [Concepts & navigation](docs/help/welcome.md) or
+[Your first simulated test](docs/help/first-test.md). Maintenance and validation:
+[`docs/help-maintenance.md`](docs/help-maintenance.md).
+
 The web dashboard lives in `apps/dashboard` (npm workspaces — install at the
 repo root). It is a fully decoupled static SPA: the backend never serves it.
 

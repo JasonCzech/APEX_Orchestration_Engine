@@ -18,6 +18,7 @@
     "typecheck:backend": "uv run python scripts/dev.py typecheck",
     "check:backend": "uv run python scripts/dev.py check",
     "check:prompts": "uv run python scripts/export_prompt_catalog.py --check",
+    "check:docs": "npm run -w @apex/dashboard check:docs",
     "dev:dashboard": "npm run -w @apex/dashboard dev",
     "build:dashboard": "npm run -w @apex/dashboard build",
     "test:dashboard": "npm run -w @apex/dashboard test",

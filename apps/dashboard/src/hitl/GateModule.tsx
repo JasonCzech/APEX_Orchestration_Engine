@@ -192,6 +192,8 @@ export function GateModuleView({
         </div>
       )}
 
+      {(isEngineRetryGateKind(gate.kind) || gate.kind === 'analysis_recovery') && <p className="wizard-caption"><Link to="/help/troubleshooting#provider-and-analysis-recovery">Help with provider recovery</Link></p>}
+
       {payload === null && (
         <div className="tonal-card warning" data-testid="gate-payload-drift">
           This gate's payload did not match the dashboard's contract (schema drift). Actions are

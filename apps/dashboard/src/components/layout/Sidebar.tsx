@@ -331,6 +331,11 @@ function SidebarContent({ drawer = false, collapsed = false, expanded = false, i
         </div>
         <div className="nav-section nav-section--settings">
           <SidebarLink
+            item={{ to: '/help', label: 'Help & documentation', icon: <Icon d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5zM20 17v4H6.5A2.5 2.5 0 0 1 4 19.5M8 7h8M8 11h6" /> }}
+            pathname={location.pathname}
+            onNavigate={onNavigate}
+          />
+          <SidebarLink
             item={{ to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> }}
             pathname={location.pathname}
             onNavigate={onNavigate}
