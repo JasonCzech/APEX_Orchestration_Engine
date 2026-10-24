@@ -33,8 +33,8 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   // The traffic entry's environment is the execution target.
   await expect(page.locator('#wizard-environment option:checked')).toHaveText(/^PERFHYPER2\b/)
   await page.getByRole('tab', { name: 'Config', exact: true }).click()
-  await expect(page.getByText(/pins engine “apexload”/)).toBeVisible()
-  await page.getByRole('radio', { name: /APEX Load/ }).click()
+  // The seeded draft names the engine the way launches do (F-03).
+  await expect(page.getByRole('radio', { name: /APEX Load/ })).toHaveAttribute('aria-checked', 'true')
   await page.getByRole('tab', { name: 'Tickets' }).click()
   await page.getByLabel('Find by description').fill('Find Jira Align ACC add-a-line release scope')
   await page.getByRole('button', { name: 'Preview ticket query' }).click()
@@ -155,8 +155,7 @@ test('APEX Load mutations persist across refresh and reset to canonical fixtures
 })
 
 test('engine selection supports one keyboard tab stop and wrapping arrows', async ({ page }) => {
-  await page.goto('/runs/new')
-  await page.getByRole('tab', { name: 'Config', exact: true }).click()
+  await page.goto('/runs/new?step=config')
   const radios = page.getByRole('radiogroup', { name: 'Execution engine' }).getByRole('radio')
   await radios.first().focus()
   await radios.first().press('ArrowRight')

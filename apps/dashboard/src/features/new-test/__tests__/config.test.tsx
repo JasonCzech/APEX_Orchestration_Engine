@@ -1,7 +1,7 @@
 /**
  * Config section: phase-subset toggles with blocking dependency errors, the
- * gates segmented control + custom matrix, and the golden-config picker
- * pre-filling engine/gates from the assistant's configurable.
+ * gates segmented control + custom matrix, and organization presets (applied
+ * from the wizard's preset bar) pre-filling engine/gates.
  */
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -47,6 +47,12 @@ const DEFAULTED = {
   name: 'Baseline defaults',
   description: 'Uses PipelineConfigurable defaults',
   config: { configurable: {} },
+}
+
+async function applyFromBar(user: ReturnType<typeof userEvent.setup>, open: string, name: string) {
+  await user.click(screen.getByRole('button', { name: open }))
+  await user.click(await screen.findByRole('button', { name: `Choose: ${name}` }))
+  await user.click(within(await screen.findByRole('dialog', { name: `Apply ${name}` })).getByRole('button', { name: 'Apply preset' }))
 }
 
 describe('ConfigStep', () => {
@@ -147,43 +153,28 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
-  it('golden-config pick shows the inherited chip and pre-fills engine + gates', async () => {
+  it('applies an organization preset from the preset bar and names it there', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN, DEFAULTED, SYSTEM_DEFAULT])
-    assistantsGet.mockImplementation((assistantId: string) => {
-      const assistant = [GOLDEN, DEFAULTED, SYSTEM_DEFAULT].find(
-        (candidate) => candidate.assistant_id === assistantId,
-      )
-      return Promise.resolve(assistant)
-    })
+    assistantsGet.mockImplementation((assistantId: string) => Promise.resolve(
+      [GOLDEN, DEFAULTED, SYSTEM_DEFAULT].find(candidate => candidate.assistant_id === assistantId)))
     installWizardHandlers()
     const user = userEvent.setup()
     const rendered = renderWizard('/runs/new?step=config')
 
-    // The dev server's system-created default assistant is filtered out.
-    expect(await screen.findByRole('button', { name: /Nightly checkout soak/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^pipeline$/ })).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /Nightly checkout soak/ }))
-    expect(screen.getByTestId('config-inherited-chip')).toHaveTextContent('config inherited')
-
-    // Engine pre-filled from the assistant's configurable…
-    expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
-    // …and gates landed as a custom matrix honoring the pinned auto pair.
+    await applyFromBar(user, 'Use a preset…', 'Nightly checkout soak')
+    // The dev server's system-created default assistant is never offered.
+    expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute('aria-checked', 'true')
     const matrix = screen.getByTestId('gates-matrix')
     expect(within(matrix).getByLabelText('Execution prompt review gated')).not.toBeChecked()
     expect(within(matrix).getByLabelText('Story Analysis prompt review gated')).toBeChecked()
+    const bar = screen.getByTestId('preset-bar')
+    expect(bar).toHaveTextContent('Nightly checkout soak')
+    expect(bar).toHaveTextContent('no changes')
 
-    // Switching to an assistant that omits engine/gates must restore backend
-    // defaults instead of leaking the previous assistant's pinned values.
-    await user.click(screen.getByRole('button', { name: /Baseline defaults/ }))
-    await user.click(screen.getByRole('button', { name: 'Apply preset' }))
-    expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
+    // Switching to a preset that omits engine/gates restores the defaults instead
+    // of leaking the previous preset's pinned values.
+    await applyFromBar(user, 'Change preset…', 'Baseline defaults')
+    expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Review every phase' })).toBeChecked()
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save draft' }))
@@ -191,17 +182,23 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
-  it('confirms replacing a custom review policy before applying a preset', async () => {
+  it('shows what a preset would replace, and Back leaves the test unchanged', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN])
     installWizardHandlers()
     const user = userEvent.setup()
     const rendered = renderWizard('/runs/new?step=config')
     await user.click(screen.getByRole('radio', { name: 'Run automatically' }))
-    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
-    const dialog = await screen.findByRole('dialog', { name: 'Apply test preset' })
-    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Use a preset…' }))
+    await user.click(await screen.findByRole('button', { name: 'Choose: Nightly checkout soak' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Apply Nightly checkout soak' })
+    const changes = within(confirm).getByRole('table', { name: 'Settings that change' })
+    expect(within(changes).getByRole('row', { name: /Engine Simulated LoadRunner/ })).toBeInTheDocument()
+    expect(within(changes).getByRole('row', { name: /Review policy Run automatically Custom reviews/ })).toBeInTheDocument()
+    expect(within(confirm).getByRole('button', { name: 'Back' })).toHaveFocus()
+    await user.click(within(confirm).getByRole('button', { name: 'Back' }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Choose a preset' })).getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('radio', { name: 'Run automatically' })).toBeChecked()
-    expect(screen.queryByTestId('config-inherited-chip')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preset-bar')).toHaveTextContent('Not started from a preset')
     rendered.unmount()
   })
 
@@ -216,9 +213,7 @@ describe('ConfigStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: 'Config' }))
-    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
-    await user.click(within(await screen.findByRole('dialog', { name: 'Apply test preset' })).getByRole('button', { name: 'Apply preset' }))
+    await applyFromBar(user, 'Use a preset…', 'Nightly checkout soak')
     await user.click(screen.getByRole('tab', { name: 'Review' }))
     const preview = JSON.parse(screen.getByTestId('launch-payload-json').textContent!)
     expect(preview.configurable.test_scope).toEqual(topology)
@@ -233,8 +228,7 @@ describe('ConfigStep', () => {
     const rendered = renderWizard()
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Config' }))
-    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
-    await user.click(within(await screen.findByRole('dialog', { name: 'Apply test preset' })).getByRole('button', { name: 'Apply preset' }))
+    await applyFromBar(user, 'Use a preset…', 'Nightly checkout soak')
     expect(screen.getByText(/pins engine “apexload”/)).toBeInTheDocument()
     const engines = within(screen.getByRole('radiogroup', { name: 'Execution engine' })).getAllByRole('radio')
     expect(engines.every(engine => engine.getAttribute('aria-checked') === 'false')).toBe(true)
@@ -251,41 +245,23 @@ describe('ConfigStep', () => {
     rendered.unmount()
   })
 
-  it('applies a new golden config after an in-place search-param navigation', async () => {
+  it('applies a deep-linked preset (old ?golden= links too) and drops the parameter', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN, DEFAULTED])
     installWizardHandlers()
-    const rendered = renderWizard(
-      '/runs/new?step=config&golden=asst-gold',
-    )
+    const rendered = renderWizard('/runs/new?step=config&golden=asst-gold')
 
     await waitFor(() =>
-      expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute(
-        'aria-checked',
-        'true',
-      ),
-    )
-    await waitFor(() =>
-      expect(rendered.router.state.location.search).not.toContain('golden='),
-    )
+      expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute('aria-checked', 'true'))
+    await waitFor(() => expect(rendered.router.state.location.search).not.toContain('golden='))
 
     await act(async () => {
-      await rendered.router.navigate(
-        '/runs/new?step=config&golden=asst-defaulted',
-      )
+      await rendered.router.navigate('/runs/new?step=config&preset=organization:asst-defaulted')
     })
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Apply preset' }))
-
     await waitFor(() =>
-      expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(
-        'aria-checked',
-        'true',
-      ),
-    )
+      expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute('aria-checked', 'true'))
     expect(screen.getByRole('radio', { name: 'Review every phase' })).toBeChecked()
-    await waitFor(() =>
-      expect(rendered.router.state.location.search).not.toContain('golden='),
-    )
+    expect(screen.getByTestId('preset-bar')).toHaveTextContent('Baseline defaults')
+    await waitFor(() => expect(rendered.router.state.location.search).not.toContain('preset='))
     rendered.unmount()
   })
 })
@@ -301,10 +277,12 @@ it.each([
   installWizardHandlers([draftRead({ id: 'selected-prompts', payload: draft as unknown as Record<string, unknown> })])
   const user = userEvent.setup()
   const rendered = renderWizard('/runs/new?draft=selected-prompts&step=config')
-  await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
-  const dialog = await screen.findByRole('dialog', { name: 'Apply test preset' })
-  expect(dialog).toHaveTextContent('prompt selections')
-  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-  expect(screen.queryByTestId('config-inherited-chip')).not.toBeInTheDocument()
+  await user.click(await screen.findByRole('button', { name: 'Use a preset…' }))
+  await user.click(await screen.findByRole('button', { name: 'Choose: Nightly checkout soak' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Apply Nightly checkout soak' })
+  // The confirmation lists the prompt selections it would replace.
+  expect(within(dialog).getByRole('row', { name: /^Prompts / })).toBeInTheDocument()
+  await user.click(within(dialog).getByRole('button', { name: 'Back' }))
+  expect(screen.getByTestId('preset-bar')).toHaveTextContent('Not started from a preset')
   rendered.unmount()
 })

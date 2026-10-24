@@ -1,0 +1,94 @@
+/* Test presets: picker rows, dialogs, list table and detail page. */
+
+.preset-muted { color: var(--text-muted); font-size: var(--font-size-sm); }
+.preset-warning { margin: 0; color: var(--warning-text); font-size: var(--font-size-sm); }
+.preset-badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.preset-badge { font-size: var(--font-size-xs, 0.75rem); }
+
+/* Picker */
+.preset-picker { display: flex; flex-direction: column; gap: 12px; }
+.preset-search { max-width: 360px; }
+.preset-group { display: flex; flex-direction: column; gap: 6px; }
+.preset-group-title { margin: 0; font-size: var(--font-size-base); font-weight: 700; }
+.preset-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius); }
+.preset-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 12px; }
+.preset-row + .preset-row { border-top: 1px solid var(--border-subtle, var(--border)); }
+.preset-row-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; grid-column: 1; }
+.preset-row-name { font-weight: 600; color: var(--text-primary); }
+.preset-row-description { margin: 0; grid-column: 1; color: var(--text-secondary); font-size: var(--font-size-sm); }
+.preset-row-summary { margin: 0; grid-column: 1; color: var(--text-muted); font-size: var(--font-size-sm); }
+.preset-row-actions { display: flex; align-items: center; gap: 6px; grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+.preset-row-preview { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+
+/* Settings and changes */
+.preset-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; }
+.preset-field { display: contents; }
+.preset-field dt { color: var(--text-muted); font-size: var(--font-size-sm); }
+.preset-field dd { margin: 0; font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.preset-changes th[scope="row"] { font-weight: 600; }
+
+/* Dialogs */
+.preset-dialog { width: min(40rem, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 1.5rem; background: var(--bg-elevated); display: flex; flex-direction: column; gap: 12px; }
+.preset-dialog--wide { width: min(56rem, calc(100vw - 32px)); }
+.preset-dialog-title { margin: 0; font-size: var(--font-size-md, 1.05rem); }
+.preset-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.preset-label { display: flex; flex-direction: column; gap: 4px; font-size: var(--font-size-sm); font-weight: 600; }
+.preset-fieldset { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
+.preset-fieldset legend { padding: 0; margin-bottom: 4px; font-size: var(--font-size-sm); font-weight: 600; }
+.preset-choice { display: flex; align-items: flex-start; gap: 8px; font-size: var(--font-size-sm); }
+.preset-include span { display: flex; flex-direction: column; }
+.preset-include-summary { color: var(--text-muted); font-size: var(--font-size-xs, 0.75rem); }
+
+/* List page */
+.preset-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px; padding: 10px 12px; border-radius: var(--radius); }
+.preset-toolbar .ux-table-toolbar { flex: 1 1 520px; flex-wrap: wrap; align-items: flex-end; }
+.preset-page-hint { margin: 0; }
+.preset-table-group { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--radius); }
+.preset-table td { vertical-align: top; font-size: var(--font-size-sm); }
+/* One column grid for every application's table, so columns line up down the page. */
+.preset-table { table-layout: fixed; min-width: 860px; }
+.preset-table th:nth-child(1) { width: 30%; }
+.preset-table th:nth-child(2) { width: 13%; }
+.preset-table th:nth-child(3), .preset-table th:nth-child(7) { width: 9%; }
+.preset-table th:nth-child(4), .preset-table th:nth-child(5), .preset-table th:nth-child(6) { width: 11%; }
+.preset-table th:nth-child(8) { width: 6%; }
+.preset-table td { overflow-wrap: anywhere; }
+.preset-table .preset-badge { white-space: nowrap; overflow-wrap: normal; }
+.preset-toolbar input[type="search"] { min-width: 240px; }
+/* Narrow screens keep what identifies a preset; its full settings are on its page. */
+@media (max-width: 900px) {
+  .preset-table { min-width: 0; }
+  .preset-table th:nth-child(2), .preset-table td:nth-child(2),
+  .preset-table th:nth-child(5), .preset-table td:nth-child(5),
+  .preset-table th:nth-child(7), .preset-table td:nth-child(7) { display: none; }
+  .preset-table th:nth-child(1) { width: 40%; }
+  .preset-table th:nth-child(4), .preset-table th:nth-child(6) { width: 20%; }
+  .preset-table th:nth-child(3) { width: 12%; }
+  .preset-table th:nth-child(8) { width: 8%; }
+}
+@media (max-width: 600px) {
+  .preset-table th:nth-child(3), .preset-table td:nth-child(3),
+  .preset-table th:nth-child(4), .preset-table td:nth-child(4) { display: none; }
+  .preset-table th:nth-child(1) { width: 52%; }
+  .preset-table th:nth-child(6) { width: 34%; }
+  .preset-table th:nth-child(8) { width: 14%; }
+  .preset-toolbar input[type="search"] { min-width: 0; }
+}
+.preset-table .preset-row-name { display: inline-block; }
+
+/* Detail page */
+.preset-detail-header { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: var(--radius); }
+.preset-detail-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.preset-detail-facts { margin: 0; color: var(--text-secondary); font-size: var(--font-size-sm); }
+.preset-detail-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.preset-detail-section { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: var(--radius); }
+.preset-detail-section--wide { grid-column: 1 / -1; }
+.preset-history { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.preset-history-head { margin: 0; font-size: var(--font-size-sm); }
+
+@media (max-width: 640px) {
+  .preset-row { grid-template-columns: minmax(0, 1fr); }
+  .preset-row-actions { grid-column: 1; grid-row: auto; }
+  .preset-toolbar .ux-table-toolbar { flex-basis: auto; }
+  .preset-toolbar .ux-table-toolbar .ux-field { flex: 1 1 100%; }
+}

@@ -112,7 +112,7 @@ describe('dev-data store', () => {
     const bytes = store.getArtifactBytes('http://localhost/v1/artifacts/reports/exec-report')
 
     expect(bytes?.mediaType).toBe('application/json')
-    expect(await bytes?.blob.text()).toContain('apexload')
+    expect(await bytes?.blob.text()).toContain('apex_load')
   })
 
   it('returns an explicit offline-demo problem for unhandled v1 routes', async () => {

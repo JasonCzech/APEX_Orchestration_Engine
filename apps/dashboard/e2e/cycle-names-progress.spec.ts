@@ -96,8 +96,8 @@ for (const profile of ['viewer', 'app-admin', 'project-admin', 'global-admin'] a
     expect(directoryReads).toEqual([])
     namesDenied = false
     await page.goto('/golden-configs/preset-one')
-    const scope = page.getByRole('region', { name: 'Scope defaults' })
-    await expect(scope.getByText(editable ? 'Payments renamed' : 'Payments', { exact: true })).toBeVisible()
-    await expect(scope.getByRole('button', { name: 'Copy Project ID', exact: true })).toBeVisible()
+    // The preset page names its project rather than showing the id (F-12).
+    await expect(page.getByTestId('preset-facts')).toContainText(editable ? 'Payments renamed' : 'Payments')
+    await expect(page.getByTestId('preset-facts')).not.toContainText('project-one')
   })
 }

@@ -52,7 +52,7 @@ for (const profile of ['admin', 'operator'] as const) {
       return route.fulfill({ json })
     })
     await page.setViewportSize({ width: 1440, height: 900 })
-    await page.goto('/runs/new')
+    await page.goto('/runs/new?step=scope')
     await page.getByLabel('Title', { exact: true }).fill('Reviewed workload')
     await page.getByLabel('Request', { exact: true }).fill('Exercise the checkout request under reviewed load.')
     // Scope is a system topology: one backend card with its own catalog fields.
@@ -62,7 +62,7 @@ for (const profile of ['admin', 'operator'] as const) {
     // operator, whose execution connection then asks for that application.
     if (profile === 'operator') await page.getByRole('radio', { name: 'Primary system under test', exact: true }).check()
     await page.getByRole('tab', { name: 'Review', exact: true }).click()
-    const issueName = profile === 'operator' ? /Select an application for the configured execution connection/ : /every participant/
+    const issueName = profile === 'operator' ? /Select an application for the configured execution connection/ : /for every system/
     const missing = page.getByTestId('review-issues').getByRole('button', { name: issueName })
     await expect(missing).toBeVisible()
     await expect(page.getByRole('button', { name: 'Launch test', exact: true })).toBeDisabled()

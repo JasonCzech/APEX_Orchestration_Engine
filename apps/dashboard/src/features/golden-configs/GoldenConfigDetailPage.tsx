@@ -1,21 +1,11 @@
-import { useTimestampPreference } from '@/theme/preferences'
-import { Skeleton } from '@/components/ux/Skeleton'
-import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
 /**
- * /golden-configs/:assistantId — structured READ view of the assistant's
- * pinned config.configurable (scope defaults, engine, gate policy matrix,
- * prompt pins, limits) + collapsible raw JSON.
- *
- * Editing: SDK assistants.update IS browser-exposed (verified against
- * @langchain/langgraph-sdk client typings), so admins get an [Edit JSON]
- * mode — parse-validated textarea, saved via useUpdateGoldenConfig; the server
- * bumps the assistant version on every update.
- *
- * [New test from this preset] deep-links the wizard's Config step with
- * ?golden=<assistant_id>; the wizard preselects the matching golden config.
+ * /test-presets/:assistantId — an organization preset (a `pipeline` assistant):
+ * the shared preset page (settings in the wizard's words, usage, actions) plus,
+ * for platform administrators, the raw configurable and its JSON editor.
+ * Saving publishes a new assistant version.
  */
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { useParams } from 'react-router'
 
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
@@ -26,156 +16,24 @@ import {
   type GoldenConfigEntry,
 } from '@/api/hooks/useAssistants'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { organizationPreset } from '@/api/hooks/useTestPresets'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin } from '@/auth/RequireRole'
-import { canLaunchPipelines } from '@/auth/RequireRole'
-import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
-import { formatRelative } from '@/utils/time'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { PresetDetail } from '@/features/presets/PresetDetail'
+import { useTimestampPreference } from '@/theme/preferences'
 
 import {
   engineLabel,
   engineOf,
   gateMatrixView,
-  inferGatesMode,
-  limitsView,
   parseConfigurableJson,
   phaseLabel,
   promptPinsView,
-  scopeView,
-  selectedPhasesView,
 } from './configView'
 import './golden-configs.css'
-
-const EM_DASH = '—'
-
-function GateCell({ mode }: { mode: 'gated' | 'auto' }) {
-  return <span className={`gc-gate-cell gc-gate-cell--${mode}`}>{mode}</span>
-}
-
-/** Compact read-only 7x2 gate matrix (own rendering — nothing shared with the wizard). */
-function GateMatrix({ configurable }: { configurable: Record<string, unknown> }) {
-  const matrix = gateMatrixView(configurable['gates'])
-  const planned = new Set(selectedPhasesView(configurable))
-  return (
-    <div className="data-table-wrap">
-      <table className="data-table gc-gate-table" data-testid="gc-gate-matrix">
-        <thead>
-          <tr>
-            <th>Phase</th>
-            <th>Prompt review</th>
-            <th>Output review</th>
-          </tr>
-        </thead>
-        <tbody>
-          {PHASE_NAMES.map((phase) => (
-            <tr key={phase} className={planned.has(phase) ? undefined : 'gc-phase-skipped'}>
-              <td>
-                {phaseLabel(phase)}
-                {!planned.has(phase) && <span className="gc-skip-note"> (not in plan)</span>}
-              </td>
-              <td>
-                <GateCell mode={matrix[phase].prompt_review} />
-              </td>
-              <td>
-                <GateCell mode={matrix[phase].output_review} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function ReadSections({ entry }: { entry: GoldenConfigEntry }) {
-  const configurable = entry.configurable
-  const scope = scopeView(configurable)
-  const applications = useApplications(scope.project ?? undefined)
-  const environments = useEnvironments(scope.app)
-  const application = applications.data?.find((item) => item.id === scope.app)
-  const environment = environments.data?.find((item) => item.id === scope.environment)
-  const engine = engineOf(configurable)
-  const pins = promptPinsView(configurable)
-  const limits = limitsView(configurable)
-  const phases = selectedPhasesView(configurable)
-
-  return (
-    <div className="gc-sections">
-      <section className="glass-panel gc-section" aria-label="Scope defaults">
-        <h3 className="gc-section-title">Scope defaults</h3>
-        <dl className="gc-kv">
-          <dt>Project</dt>
-          <dd>{scope.project ? <ProjectIdentity projectId={scope.project} /> : EM_DASH}</dd>
-          <dt>Application</dt>
-          <dd>{application?.name ?? (scope.app ? 'Name unavailable' : EM_DASH)}{scope.app && <small> · <code>{scope.app}</code></small>}</dd>
-          <dt>Environment</dt>
-          <dd>{environment?.name ?? (scope.environment ? 'Name unavailable' : EM_DASH)}{scope.environment && <small> · <code>{scope.environment}</code></small>}</dd>
-        </dl>
-      </section>
-
-      <section className="glass-panel gc-section" aria-label="Engine">
-        <h3 className="gc-section-title">Engine</h3>
-        <div className="gc-card-chips">
-          <span className="dash-context-chip gc-chip-engine">{engineLabel(engine)}</span>
-          <span className="dash-context-chip">
-            {phases.length} of {PHASE_NAMES.length} phases in plan
-          </span>
-        </div>
-      </section>
-
-      <section className="glass-panel gc-section gc-section--wide" aria-label="Gate policy">
-        <h3 className="gc-section-title">
-          Gate policy <span className="dash-context-chip">{inferGatesMode(configurable['gates'])}</span>
-        </h3>
-        <GateMatrix configurable={configurable} />
-      </section>
-
-      <section className="glass-panel gc-section" aria-label="Prompt overrides">
-        <h3 className="gc-section-title">Prompt overrides</h3>
-        {pins.length === 0 ? (
-          <p className="gc-muted">No prompt pins — phases use the latest catalog versions.</p>
-        ) : (
-          <ul className="gc-pin-list">
-            {pins.map((pin) => (
-              <li key={pin.key} className="gc-pin">
-                <code className="gc-pin-key">{pin.key}</code>
-                {pin.kind === 'version' ? (
-                  <span className="dash-context-chip">version {pin.detail}</span>
-                ) : pin.kind === 'content' ? (
-                  <span className="dash-context-chip">inline content</span>
-                ) : (
-                  <span className="dash-context-chip">empty pin</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="glass-panel gc-section" aria-label="Limits">
-        <h3 className="gc-section-title">Limits</h3>
-        <dl className="gc-kv">
-          {limits.map((limit) => (
-            <div key={limit.key} className="gc-kv-row">
-              <dt>{limit.label}</dt>
-              <dd>
-                {limit.value}
-                {!limit.pinned && <span className="gc-muted"> (default)</span>}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-
-      <details className="glass-panel gc-section gc-section--wide gc-raw" data-testid="gc-raw-json">
-        <summary>Raw configurable JSON</summary>
-        <pre className="gc-raw-pre">{JSON.stringify(configurable, null, 2)}</pre>
-      </details>
-    </div>
-  )
-}
 
 function EditPanel({
   entry,
@@ -258,10 +116,8 @@ function EditPanel({
 }
 
 function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
-  const navigate = useNavigate()
   const consumer = useConsumer()
   const canEdit = isGlobalAdmin(consumer)
-  const canStartRun = canLaunchPipelines(consumer)
   const query = useGoldenConfig(assistantId)
   const writeCount = usePendingMutationCount(goldenConfigWriteMutationKey(assistantId))
   const writePending = writeCount > 0
@@ -284,68 +140,33 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
   }
 
   const entry = query.data
+  const preset = organizationPreset(entry)
 
   return (
-    <section className="gc-page animate-enter">
-      <Link to="/test-presets">All test presets</Link>
-      {query.isError && (
-        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
-      )}
-      <header className="gc-detail-header glass-panel">
-        <div className="gc-detail-title-block">
-          <h2 className="gc-page-title">{entry.name}</h2>
-          <div className="gc-card-chips">
-            {entry.isSystemDefault && (
-              <span className="topbar-meta-chip info" data-testid="gc-system-chip">
-                system default
-              </span>
-            )}
-            <span className="dash-context-chip">v{entry.version}</span>
-            <span className="dash-context-chip" title={entry.updatedAt}>
-              updated {formatRelative(entry.updatedAt)}
-            </span>
-          </div>
-          {entry.description && <p className="gc-card-description">{entry.description}</p>}
-        </div>
-        <div className="gc-actions-row">
+    <>
+      {query.isError && <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />}
+      <PresetDetail
+        preset={preset}
+        extraActions={<>
           {writePending && <span className="topbar-meta-chip warning">saving…</span>}
-          {!canEdit && <span className="gc-muted">Editing presets requires an unscoped admin key.</span>}
-          {!editing && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={writePending || !canEdit}
-              onClick={() => {
-                if (!writePending && canEdit) setEditing(true)
-              }}
-            >
-              Edit preset
+          {entry.isSystemDefault && <span className="topbar-meta-chip info" data-testid="gc-system-chip">system default</span>}
+          {canEdit && !editing && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={writePending} onClick={() => setEditing(true)}>
+              Edit JSON (advanced)
             </button>
           )}
-          {canStartRun && (
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={writePending}
-              onClick={() =>
-                void navigate(`/runs/new?step=config&golden=${encodeURIComponent(entry.assistantId)}`)
-              }
-            >
-              New test from this preset
-            </button>
+          {!canEdit && <span className="gc-muted">Organization presets are maintained by platform administrators.</span>}
+        </>}
+        advanced={editing
+          ? <EditPanel entry={entry} onClose={() => setEditing(false)} />
+          : (
+            <details className="glass-panel preset-detail-section preset-detail-section--wide gc-raw" data-testid="gc-raw-json">
+              <summary>Raw configurable JSON</summary>
+              <pre className="gc-raw-pre">{JSON.stringify(entry.configurable, null, 2)}</pre>
+            </details>
           )}
-        </div>
-      </header>
-
-      {editing ? (
-        <EditPanel
-          entry={entry}
-          onClose={() => setEditing(false)}
-        />
-      ) : (
-        <ReadSections entry={entry} />
-      )}
-    </section>
+      />
+    </>
   )
 }
 

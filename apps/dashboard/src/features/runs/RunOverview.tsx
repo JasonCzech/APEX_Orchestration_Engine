@@ -23,6 +23,7 @@ import {
 } from './runDisplay'
 import { runReviewPath } from './reviewPath'
 import { CopyTestSetupButton } from './CopyTestSetupButton'
+import { RunPresetLine } from './RunPreset'
 import { KpiComparison } from './KpiComparison'
 import { RequireRole } from '@/auth/RequireRole'
 
@@ -136,6 +137,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
         </article>
         <article className="glass-panel ux-card">
           <h3>Run context</h3>
+          <RunPresetLine threadId={detail.thread_id} />
           <dl>
             <dt>Project</dt>
             <dd>{detail.project_id ?? 'Not recorded'}</dd>

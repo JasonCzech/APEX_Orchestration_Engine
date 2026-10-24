@@ -1,6 +1,6 @@
 /**
  * Draft round-trip: ?draft=<id> restores the stored WizardDraft on mount, and
- * the first-visit "Resume draft" picker loads a stored draft + sets the URL.
+ * the Start step's "Resume a draft" list loads a stored draft + sets the URL.
  */
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -33,6 +33,10 @@ const STORED: Record<string, unknown> = {
   },
 }
 
+async function openDrafts(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('radio', { name: /Resume a draft/ }))
+}
+
 describe('wizard draft resume', () => {
   it('restores state from the ?draft= URL on mount', async () => {
     installWizardHandlers([
@@ -52,26 +56,25 @@ describe('wizard draft resume', () => {
     expect(screen.getByRole('radio', { name: 'Traffic entry' })).toBeChecked()
     expect(screen.queryByRole('button', { name: 'Add backend' })).not.toBeInTheDocument()
     expect(screen.queryByText('Exactly one backend is required.')).not.toBeInTheDocument()
-    // No resume picker when the URL already names a draft.
-    expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    // No Start step when the URL already names a draft.
+    expect(screen.queryByRole('heading', { name: 'Start a new test' })).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 
-  it('offers Resume draft on first visit and loads the picked draft + URL', async () => {
+  it('offers saved drafts on Start and loads the picked draft + URL', async () => {
     installWizardHandlers([
       draftRead({ id: 'draft-9', title: 'Black Friday soak', payload: STORED }),
     ])
     const user = userEvent.setup()
-    const rendered = renderWizard()
+    const rendered = renderWizard('/runs/new')
     const { router } = rendered
 
-    const select = await screen.findByLabelText('Resume draft')
-    await user.selectOptions(select, 'draft-9')
+    await openDrafts(user)
+    await user.click(await screen.findByRole('button', { name: 'Resume Black Friday soak' }))
 
     await waitFor(() => expect(screen.getByLabelText('Title')).toHaveValue('Resumed soak'))
     await waitFor(() => expect(router.state.location.search).toContain('draft=draft-9'))
-    // Picker disappears once a draft is active.
-    expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Start a new test' })).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 
@@ -91,18 +94,16 @@ describe('wizard draft resume', () => {
       ),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard()
+    const rendered = renderWizard('/runs/new')
 
-    const panel = await screen.findByTestId('resume-draft-panel')
-    const alert = within(panel).getByRole('alert')
+    await openDrafts(user)
+    const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Saved drafts unavailable')
-    expect(screen.queryByLabelText('Resume draft')).not.toBeInTheDocument()
 
     draftsFail = false
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))
 
-    const select = await screen.findByLabelText('Resume draft')
-    expect(within(select).getByRole('option', { name: /Retryable draft/ })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Resume Retryable draft' })).toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 
@@ -122,11 +123,11 @@ describe('wizard draft resume', () => {
       ),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard()
+    const rendered = renderWizard('/runs/new')
     const { queryClient } = rendered
 
-    const select = await screen.findByLabelText('Resume draft')
-    expect(within(select).getByRole('option', { name: /Cached draft/ })).toBeInTheDocument()
+    await openDrafts(user)
+    expect(await screen.findByRole('button', { name: 'Resume Cached draft' })).toBeInTheDocument()
 
     draftsFail = true
     await act(async () => {
@@ -138,8 +139,7 @@ describe('wizard draft resume', () => {
 
     const alert = await screen.findByText(/Showing cached data/)
     expect(alert).toHaveTextContent('draft refresh failed')
-    expect(screen.getByLabelText('Resume draft')).toBe(select)
-    expect(within(select).getByRole('option', { name: /Cached draft/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Resume Cached draft' })).toBeInTheDocument()
 
     draftsFail = false
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))
@@ -147,7 +147,7 @@ describe('wizard draft resume', () => {
     await flushAndUnmountWizard(rendered)
   })
 
-  it('disables the resume picker while the selected draft is loading', async () => {
+  it('disables the Start choices while the selected draft is loading', async () => {
     const stored = draftRead({
       id: 'draft-slow',
       title: 'Slow draft',
@@ -165,11 +165,12 @@ describe('wizard draft resume', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard()
+    const rendered = renderWizard('/runs/new')
 
-    const select = await screen.findByLabelText('Resume draft')
-    await user.selectOptions(select, 'draft-slow')
-    await waitFor(() => expect(select).toBeDisabled())
+    await openDrafts(user)
+    const resume = await screen.findByRole('button', { name: 'Resume Slow draft' })
+    await user.click(resume)
+    await waitFor(() => expect(resume).toBeDisabled())
     expect(screen.getByText('Loading draft…')).toBeInTheDocument()
 
     release()
@@ -177,7 +178,7 @@ describe('wizard draft resume', () => {
     await flushAndUnmountWizard(rendered)
   })
 
-  it('blocks URL and picker draft switches while a work-item lookup targets the current draft', async () => {
+  it('blocks URL draft switches while a work-item lookup targets the current draft', async () => {
     const stored = draftRead({
       id: 'draft-blocked',
       title: 'Blocked switch target',
@@ -216,11 +217,9 @@ describe('wizard draft resume', () => {
     const rendered = renderWizard('/runs/new?step=work-items')
     const { router } = rendered
 
-    const select = await screen.findByLabelText('Resume draft')
-    await user.type(screen.getByLabelText('Add by key'), 'PHX-241')
+    await user.type(await screen.findByLabelText('Add by key'), 'PHX-241')
     await user.click(screen.getByRole('button', { name: 'Add' }))
     await lookupStarted
-    expect(select).toBeDisabled()
 
     await act(async () => {
       await router.navigate('/runs/new?step=work-items&draft=draft-blocked')

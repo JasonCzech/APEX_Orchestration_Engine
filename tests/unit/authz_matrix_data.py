@@ -52,6 +52,7 @@ MIN_ROLE: dict[str, str] = {
     "listPipelines": "viewer",
     "getPipeline": "viewer",
     "getPipelineActors": "viewer",
+    "getPipelinePreset": "viewer",
     "getPipelineSetup": "viewer",
     "listAnalysisConnections": "viewer",
     # Metadata-only POST; does not launch or contact a provider.
@@ -105,6 +106,15 @@ MIN_ROLE: dict[str, str] = {
     "getDraft": "viewer",
     "updateDraft": "operator",
     "deleteDraft": "operator",
+    "listTestPresets": "viewer",
+    "listTestPresetUsage": "viewer",
+    "createTestPreset": "operator",
+    "getTestPreset": "viewer",
+    "listTestPresetVersions": "viewer",
+    "updateTestPreset": "operator",
+    "archiveTestPreset": "operator",
+    "unarchiveTestPreset": "operator",
+    "deleteTestPreset": "operator",
     # ── engines ─────────────────────────────────────────────────────────────
     "listEngineRuns": "viewer",
     "getEngineRuns": "viewer",
@@ -238,6 +248,7 @@ SCOPE: dict[str, str] = {
     "listPipelines": "project",
     "getPipeline": "project",
     "getPipelineActors": "project_app",
+    "getPipelinePreset": "project_app",
     "getPipelineSetup": "project_app",
     "listAnalysisConnections": "project",
     "getPipelineExecutionReadiness": "project_app",
@@ -287,6 +298,15 @@ SCOPE: dict[str, str] = {
     "getDraft": "project",
     "updateDraft": "project",
     "deleteDraft": "project",
+    "listTestPresets": "project",
+    "listTestPresetUsage": "project_app",
+    "createTestPreset": "project",
+    "getTestPreset": "project_app",
+    "listTestPresetVersions": "project_app",
+    "updateTestPreset": "project_app",
+    "archiveTestPreset": "project_app",
+    "unarchiveTestPreset": "project_app",
+    "deleteTestPreset": "project_app",
     # ── engines ─────────────────────────────────────────────────────────────
     "listEngineRuns": "project",
     "getEngineRuns": "project",
@@ -408,6 +428,16 @@ BODY_OVERRIDES: dict[str, Any] = {
     # createPipelineRun requires a non-empty title; provide one so operator/admin
     # reach the handler (the exploding loopback stub then 5xxs — fine post-authz).
     "createPipelineRun": {"title": "matrix-run"},
+    "createTestPreset": {
+        "name": "matrix-preset",
+        "project_id": "proj-matrix",
+        "payload": {"schema_version": 1, "sections": {"text": {"title": "t"}}},
+    },
+    "updateTestPreset": {
+        "name": "matrix-preset",
+        "payload": {"schema_version": 1, "sections": {"text": {"title": "t"}}},
+    },
+    "listTestPresetUsage": {},
     "createApexLoadScenario": {"payload": {}},
     "validateApexLoadScenario": {"payload": {}},
     "sizeApexLoadScenario": {"payload": {}},
@@ -441,6 +471,14 @@ SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
         "files": {"file": ("matrix.txt", b"scope matrix", "text/plain")},
     },
     "listDrafts": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "listTestPresets": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createTestPreset": {
+        "json": {
+            "name": "matrix-preset",
+            "project_id": OUT_OF_SCOPE_PROJECT,
+            "payload": {"schema_version": 1, "sections": {"text": {"title": "t"}}},
+        }
+    },
     "createDraft": {"json": {"title": "matrix-draft", "project_id": OUT_OF_SCOPE_PROJECT}},
     "getWorkTrackingBinding": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "searchLogs": {"json": {"query": {"filters": {"project_id": OUT_OF_SCOPE_PROJECT}}}},

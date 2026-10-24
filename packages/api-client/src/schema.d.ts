@@ -1768,6 +1768,26 @@ export interface paths {
         patch: operations["patchPhasePromptReview"];
         trace?: never;
     };
+    "/v1/pipelines/{thread_id}/preset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pipeline Preset
+         * @description The preset this test started from, if any (authorized like the test itself).
+         */
+        get: operations["getPipelinePreset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/pipelines/{thread_id}/rerun": {
         parameters: {
             query?: never;
@@ -1992,6 +2012,114 @@ export interface paths {
         };
         /** Get System Info */
         get: operations["getSystemInfo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Test Presets */
+        get: operations["listTestPresets"];
+        put?: never;
+        /** Create Test Preset */
+        post: operations["createTestPreset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Test Preset Usage
+         * @description Tests started from these presets, counted over the tests the caller may see.
+         */
+        get: operations["listTestPresetUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets/{preset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Test Preset */
+        get: operations["getTestPreset"];
+        /** Update Test Preset */
+        put: operations["updateTestPreset"];
+        post?: never;
+        /** Delete Test Preset */
+        delete: operations["deleteTestPreset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets/{preset_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Test Preset */
+        post: operations["archiveTestPreset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets/{preset_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive Test Preset */
+        post: operations["unarchiveTestPreset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-presets/{preset_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Test Preset Versions */
+        get: operations["listTestPresetVersions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5000,6 +5128,21 @@ export interface components {
              */
             partial: boolean;
         };
+        /** PipelinePresetLink */
+        PipelinePresetLink: {
+            /** Kind */
+            kind: string;
+            /** Modified */
+            modified: boolean;
+            /** Name */
+            name: string | null;
+            /** Preset Id */
+            preset_id: string;
+            /** Recorded At */
+            recorded_at: string | null;
+            /** Version */
+            version: number | null;
+        };
         /** PipelineSetupConfiguration */
         PipelineSetupConfiguration: {
             /** App Id */
@@ -5234,6 +5377,42 @@ export interface components {
             readiness_version_id?: string | null;
             /** Script Version Id */
             script_version_id: string;
+        };
+        /**
+         * PresetProvenance
+         * @description The preset a launch started from, as the wizard reports it.
+         */
+        PresetProvenance: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "team" | "organization";
+            /**
+             * Modified
+             * @default false
+             */
+            modified: boolean;
+            /** Name */
+            name?: string | null;
+            /** Version */
+            version?: number | null;
+        };
+        /** PresetUsage */
+        PresetUsage: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "team" | "organization";
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Preset Id */
+            preset_id: string;
+            /** Tests */
+            tests: number;
         };
         /** PriceGenerationResponse */
         PriceGenerationResponse: {
@@ -6134,6 +6313,8 @@ export interface components {
             } | null;
             /** Phases */
             phases?: string[] | null;
+            /** @description The preset this test started from (provenance only). */
+            preset?: components["schemas"]["PresetProvenance"] | null;
             /** Project Id */
             project_id?: string | null;
             /**
@@ -6204,6 +6385,107 @@ export interface components {
             layer: "frontend" | "middle" | "backend";
             /** Project Id */
             project_id: string;
+        };
+        /** TestPresetCreate */
+        TestPresetCreate: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Project Id */
+            project_id: string;
+            /**
+             * Visibility
+             * @default project
+             * @enum {string}
+             */
+            visibility: "personal" | "project";
+        };
+        /** TestPresetRead */
+        TestPresetRead: {
+            /** Application Id */
+            application_id: string | null;
+            /** Archived At */
+            archived_at: string | null;
+            /** Created At */
+            created_at: string | null;
+            /** Created By */
+            created_by: string | null;
+            /** Description */
+            description: string | null;
+            /** Editable */
+            editable: boolean;
+            /** Id */
+            id: string;
+            /** Mine */
+            mine: boolean;
+            /** Name */
+            name: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Project Id */
+            project_id: string;
+            /** Updated At */
+            updated_at: string | null;
+            /** Updated By */
+            updated_by: string | null;
+            /** Version */
+            version: number;
+            /**
+             * Visibility
+             * @enum {string}
+             */
+            visibility: "personal" | "project";
+        };
+        /**
+         * TestPresetUpdate
+         * @description Replaces name, description and payload. ``application_id`` and
+         *     ``visibility`` change only when sent. ``expected_version`` guards lost updates.
+         */
+        TestPresetUpdate: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Expected Version */
+            expected_version?: number | null;
+            /** Name */
+            name: string;
+            /** Note */
+            note?: string | null;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Visibility */
+            visibility?: ("personal" | "project") | null;
+        };
+        /** TestPresetVersionRead */
+        TestPresetVersionRead: {
+            /** Created At */
+            created_at: string | null;
+            /** Created By */
+            created_by: string | null;
+            /** Description */
+            description: string | null;
+            /** Name */
+            name: string;
+            /** Note */
+            note: string | null;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Version */
+            version: number;
         };
         /** TestPromptRequest */
         TestPromptRequest: {
@@ -10894,6 +11176,38 @@ export interface operations {
             };
         };
     };
+    getPipelinePreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelinePresetLink"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rerunPipeline: {
         parameters: {
             query?: never;
@@ -11390,6 +11704,302 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    listTestPresets: {
+        parameters: {
+            query?: {
+                /** @description Filter to one project */
+                project?: string | null;
+                /** @description Filter to one application */
+                application?: string | null;
+                include_archived?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPresetCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listTestPresetUsage: {
+        parameters: {
+            query: {
+                kind: "team" | "organization";
+                ids: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PresetUsage"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    updateTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPresetUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archiveTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchiveTestPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listTestPresetVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Test preset id */
+                preset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPresetVersionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
