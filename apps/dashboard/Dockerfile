@@ -15,6 +15,7 @@ COPY package.json package-lock.json ./
 COPY packages/api-client/package.json packages/api-client/
 COPY packages/pipeline-events/package.json packages/pipeline-events/
 COPY apps/dashboard/package.json apps/dashboard/
+COPY docs/api docs/api
 RUN npm ci
 # Sources, then build the SPA into apps/dashboard/dist.
 COPY packages packages

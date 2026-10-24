@@ -30,3 +30,7 @@
 !packages/pipeline-events/tsconfig.json
 !packages/pipeline-events/src/
 !packages/pipeline-events/src/**
+
+!docs/
+!docs/api/
+!docs/api/apex-v1.openapi.json
