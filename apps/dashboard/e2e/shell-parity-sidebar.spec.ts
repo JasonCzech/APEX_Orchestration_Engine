@@ -45,43 +45,40 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     await tests.focus()
     await expect(tests).toBeFocused()
 
-    const initialBounds = await main.boundingBox()
+    const topbar = page.locator('.main-topbar')
+    expect((await topbar.boundingBox())!.y).toBe(0)
+    await main.evaluate(element => { element.scrollTop = 300 })
+    expect((await topbar.boundingBox())!.y).toBe(0)
+    await main.evaluate(element => { element.scrollTop = 0 })
+    const initialBounds = (await main.boundingBox())!
     const expand = rail.getByRole('button', { name: 'Expand sidebar' })
     await expand.click()
-    const dialog = page.getByRole('dialog', { name: 'Navigation', exact: true })
-    await expect(dialog).toHaveCSS('width', '240px')
-    expect(await main.boundingBox()).toEqual(initialBounds)
-    const first = dialog.getByRole('link', { name: 'New test', exact: true })
-    const last = dialog.getByRole('button', { name: 'Collapse sidebar', exact: true })
-    await expect(first).toBeFocused()
-    await page.keyboard.press('Shift+Tab')
-    await expect(last).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(first).toBeFocused()
-    await page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
-    await expect(expand).toBeFocused()
+    await expect(rail).toHaveCSS('width', '240px')
+    await expect(page.getByRole('dialog', { name: 'Navigation', exact: true })).toHaveCount(0)
+    await expect(rail.getByRole('button', { name: 'Collapse sidebar' })).toBeFocused()
+    const expandedBounds = (await main.boundingBox())!
+    expect(expandedBounds.x).toBe(initialBounds.x + 176)
+    expect(expandedBounds.width).toBe(initialBounds.width - 176)
     await page.keyboard.press('Tab')
     expect(await rail.evaluate(element => element.contains(document.activeElement))).toBe(false)
 
-    // Clicking an underlying tab dismisses the overlay without activating it.
+    // The page remains interactive while navigation stays expanded.
     const connection = page.getByRole('tab', { name: 'Connection & session', exact: true })
-    const target = await connection.boundingBox()
-    expect(target).not.toBeNull()
-    await expand.click()
-    await page.mouse.click(target!.x + target!.width / 2, target!.y + target!.height / 2)
-    await expect(dialog).toHaveCount(0)
+    await connection.click()
+    await expect(connection).toHaveAttribute('aria-selected', 'true')
+    await expect(rail).toHaveCSS('width', '240px')
+    await rail.getByRole('button', { name: 'Collapse sidebar' }).click()
+    await expect(rail).toHaveCSS('width', '64px')
     await expect(expand).toBeFocused()
-    await expect(connection).toHaveAttribute('aria-selected', 'false')
     expect(await main.boundingBox()).toEqual(initialBounds)
 
-    // The blank brand area is a pointer convenience, with the same focus return.
+    // Empty rail space still expands navigation without making it modal.
     await rail.locator('.sidebar-brand').click()
-    await expect(dialog).toBeVisible()
-    await page.keyboard.press('Escape')
-    await expect(expand).toBeFocused()
-    await nav.getByRole('link', { name: 'Settings', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await expect(rail).toHaveCSS('width', '240px')
+    await nav.getByRole('link', { name: 'Home', exact: true }).click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(rail).toHaveCSS('width', '240px')
+
   })
 }
 
@@ -117,13 +114,14 @@ for (const height of [800, 900, 1000]) {
     await settings.click()
     await expect(page.getByRole('dialog', { name: 'Navigation', exact: true })).toHaveCount(0)
 
-    // Empty rail padding exposes the labelled overlay, not just the brand area.
+    // Expanded navigation shares the layout and keeps the footer clear.
     await rail.locator('.sidebar-nav-items').click({ position: { x: 2, y: 2 } })
-    const overlay = page.getByRole('dialog', { name: 'Navigation', exact: true })
-    await expect(overlay).toBeVisible()
-    await assertClearFooter(overlay)
-    await page.keyboard.press('Escape')
+    await expect(rail).toHaveCSS('width', '240px')
+    await assertClearFooter(rail)
+    await rail.getByRole('button', { name: 'Collapse sidebar' }).click()
+    await expect(rail).toHaveCSS('width', '64px')
     await expect(rail.getByRole('button', { name: 'Expand sidebar' })).toBeFocused()
+
   })
 }
 
@@ -132,14 +130,12 @@ for (const preference of ['true', 'false']) {
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.addInitScript(value => localStorage.setItem('apex.sidebarCollapsed', value), preference)
     await page.goto('/settings')
-    await expect(page.getByTestId('sidebar')).toHaveCSS('width', '64px')
-    const dialog = page.getByRole('dialog', { name: 'Navigation', exact: true })
-    await expect(dialog).toHaveCount(preference === 'false' ? 1 : 0)
-    if (preference === 'false') {
-      await page.keyboard.press('Escape')
-      await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeFocused()
-      expect(await page.evaluate(() => localStorage.getItem('apex.sidebarCollapsed'))).toBe('true')
-    }
+    const rail = page.getByTestId('sidebar')
+    await expect(rail).toHaveCSS('width', preference === 'false' ? '240px' : '64px')
+    await expect(page.getByRole('dialog', { name: 'Navigation', exact: true })).toHaveCount(0)
+    await rail.getByRole('button', { name: preference === 'false' ? 'Collapse sidebar' : 'Expand sidebar', exact: true }).click()
+    expect(await page.evaluate(() => localStorage.getItem('apex.sidebarCollapsed'))).toBe(preference === 'false' ? 'true' : 'false')
+
   })
 }
 
@@ -174,7 +170,7 @@ test('desktop navigation preserves a dirty gate through its navigation guard', a
   await editor.fill(draft)
   const expand = page.getByRole('button', { name: 'Expand sidebar', exact: true })
   await expand.click()
-  await page.getByRole('dialog', { name: 'Navigation', exact: true }).getByRole('link', { name: 'Prompts', exact: true }).click()
+  await page.getByTestId('sidebar').getByRole('link', { name: 'Prompts', exact: true }).click()
   const guard = page.getByRole('dialog', { name: 'Unsaved review edits', exact: true })
   await expect(guard).toBeVisible()
   const stay = guard.getByRole('button', { name: 'Continue reviewing', exact: true })
@@ -183,11 +179,9 @@ test('desktop navigation preserves a dirty gate through its navigation guard', a
   await expect(guard.getByRole('button', { name: 'Leave and keep draft', exact: true })).toBeFocused()
   await stay.click()
   await expect(guard).toHaveCount(0)
-  await expect(expand).toBeFocused()
+  await expect(page.getByTestId('sidebar').getByRole('link', { name: 'Prompts', exact: true })).toBeFocused()
   expect(await editor.innerText()).toBe(draft)
-
-  await expand.click()
-  await page.getByRole('dialog', { name: 'Navigation', exact: true }).getByRole('link', { name: 'Prompts', exact: true }).click()
+  await page.getByTestId('sidebar').getByRole('link', { name: 'Prompts', exact: true }).click()
   await guard.getByRole('button', { name: 'Leave and keep draft', exact: true }).click()
   await expect(page).toHaveURL(/\/prompts$/)
   await expect(guard).toHaveCount(0)

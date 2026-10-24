@@ -18,7 +18,7 @@ Every newly authored wizard test plans seven phases: Story Analysis, Test Planni
 - [APEX Load](/apex-load) connects the orchestration view to configured native load execution. The products maintain their own authentication and permissions.
 - Test cycles appears when the deployment enables the feature. [Cycles](cycles.md) group versioned engineering deliverables and execution preparation.
 
-Expand the desktop icon rail to see navigation labels. On compact screens use Open navigation. Settings and Help & documentation remain available from navigation. The Help for this page control opens the topic matching the current screen or wizard step.
+Expand the desktop icon rail to see navigation labels alongside the page. The sidebar stays docked and keeps the page interactive; use Collapse sidebar to return to icons. On compact screens use Open navigation. Settings and Help & documentation remain available from navigation. The Help for this page control opens the topic matching the current screen or wizard step.
 
 ## Roles and access
 

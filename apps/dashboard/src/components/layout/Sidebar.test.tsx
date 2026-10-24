@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -53,106 +53,59 @@ describe('Sidebar', () => {
     expect(statusIcon).not.toBe(settingsIcon)
   })
 
-  it('starts with the rail and opens an accessible overlay without replacing it', async () => {
+  it('expands the existing rail in place and leaves the page interactive', async () => {
     const user = userEvent.setup()
-    renderApp({ authState: authenticatedState() })
+    renderApp({ initialEntries: ['/settings'], authState: authenticatedState() })
 
     const sidebar = await screen.findByTestId('sidebar')
-    expect(sidebar).toHaveClass('collapsed')
     const expand = screen.getByRole('button', { name: 'Expand sidebar' })
-    expect(expand).toHaveAttribute('aria-expanded', 'false')
-
-    await user.click(expand)
-    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
     expect(sidebar).toHaveClass('collapsed')
-    expect(within(dialog).getByRole('link', { name: 'Agent analytics' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('link', { name: 'Connections' })).toBeInTheDocument()
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(expand).not.toHaveAttribute('aria-haspopup')
+    await user.click(expand)
+    expect(sidebar).not.toHaveClass('collapsed')
+    expect(screen.getAllByRole('navigation', { name: 'Primary' })).toHaveLength(1)
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+    expect(expand).toHaveFocus()
+    expect(expand).toHaveAttribute('aria-expanded', 'true')
     expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('false')
 
-    await user.click(within(dialog).getByRole('button', { name: 'Collapse sidebar' }))
-    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
-    await waitFor(() => expect(expand).toHaveFocus())
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
+    expect(screen.getByRole('tab', { name: 'Connection & session' })).toHaveAttribute('aria-selected', 'true')
+    expect(sidebar).not.toHaveClass('collapsed')
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(sidebar).toHaveClass('collapsed')
+    expect(expand).toHaveFocus()
     expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('true')
   })
 
-  it.each(['true', 'false'])('honors the stored collapsed preference %s', async stored => {
+  it.each(['true', 'false'])('honors the stored collapsed preference %s without opening a dialog', async stored => {
     window.localStorage.setItem('apex.sidebarCollapsed', stored)
-    const user = userEvent.setup()
     renderApp({ authState: authenticatedState() })
-    await screen.findByTestId('sidebar')
-    if (stored === 'false') {
-      expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
-      await user.keyboard('{Escape}')
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Expand sidebar' })).toHaveFocus())
-    } else {
-      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
-    }
+    const sidebar = await screen.findByTestId('sidebar')
+    expect(sidebar.classList.contains('collapsed')).toBe(stored === 'true')
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
   })
 
-  it('traps Tab only in the expanded overlay and restores focus after Escape', async () => {
+  it('allows keyboard focus to leave the expanded sidebar', async () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState() })
     const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
     await user.click(expand)
-    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
-    const first = within(dialog).getByRole('link', { name: 'New test' })
-    const last = within(dialog).getByRole('button', { name: 'Collapse sidebar' })
-    expect(first).toHaveFocus()
-    await user.tab({ shift: true })
-    expect(last).toHaveFocus()
-    await user.tab()
-    expect(first).toHaveFocus()
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(expand).toHaveFocus())
     await user.tab()
     expect(screen.getByTestId('sidebar')).not.toContainElement(document.activeElement as HTMLElement)
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toHaveAttribute('aria-expanded', 'true')
   })
 
-  it('does not pull focus back after the user tabs away from a dismissed overlay', async () => {
-    const frames: FrameRequestCallback[] = []
-    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
-      frames.push(callback)
-      return frames.length
-    })
-    try {
-      const user = userEvent.setup()
-      renderApp({ authState: authenticatedState() })
-      const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
-      await user.click(expand)
-      await user.keyboard('{Escape}')
-      expect(expand).toHaveFocus()
-      await user.tab()
-      const nextControl = document.activeElement
-      expect(screen.getByTestId('sidebar')).not.toContainElement(nextControl as HTMLElement)
-      act(() => { for (const frame of frames) frame(performance.now()) })
-      expect(document.activeElement).toBe(nextControl)
-    } finally {
-      request.mockRestore()
-    }
-  })
-
-  it('dismisses an outside press and returns focus to its opener', async () => {
-    const user = userEvent.setup()
-    renderApp({ authState: authenticatedState() })
-    const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
-    await user.click(expand)
-    const overlay = screen.getByRole('dialog', { name: 'Navigation' }).parentElement!
-    await user.click(overlay)
-    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
-    await waitFor(() => expect(expand).toHaveFocus())
-  })
-
-  it('opens from empty rail space while destination clicks remain direct', async () => {
+  it('opens from empty rail space and keeps navigation expanded after a destination click', async () => {
     const user = userEvent.setup()
     const { router } = renderApp({ authState: authenticatedState() })
     const sidebar = await screen.findByTestId('sidebar')
     await user.click(sidebar)
-    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Expand sidebar' })).toHaveFocus())
+    expect(sidebar).not.toHaveClass('collapsed')
     await user.click(within(sidebar).getByRole('link', { name: 'Settings' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    expect(sidebar).not.toHaveClass('collapsed')
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
   })
 
@@ -189,12 +142,14 @@ describe('Sidebar', () => {
 
     const account = await screen.findByRole('button', { name: 'Account options for Dash Ops' })
     await user.click(account)
-    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
-    expect(within(dialog).getByRole('button', { name: 'Account options for Dash Ops' })).toHaveAttribute('aria-expanded', 'true')
+    expect(account).toHaveFocus()
+    expect(screen.getByTestId('sidebar')).not.toHaveClass('collapsed')
+    expect(account).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('combobox', { name: 'Theme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(account).toHaveFocus())
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(screen.queryByRole('combobox', { name: 'Theme' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toHaveFocus()
   })
 
   it('hides the dummy-data switch outside explicit dev auth', async () => {

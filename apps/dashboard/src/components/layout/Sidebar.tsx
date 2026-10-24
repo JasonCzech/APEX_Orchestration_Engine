@@ -1,10 +1,9 @@
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link, useLocation } from 'react-router'
 
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
-import { Dialog } from '@/components/Dialog'
 import { useDevDataMode } from '@/dev-data'
 import { isDemoDataMode } from '@/config/runtimeConfig'
 import { useApprovalsInbox } from '@/features/approvals/useApprovalsInbox'
@@ -224,19 +223,7 @@ function NavSection({
 
 export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNavigate?: () => void }) {
   const [collapsed, setCollapsed] = useState(readStoredCollapsed)
-  const [openAccount, setOpenAccount] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const openerRef = useRef<HTMLElement | null>(null)
-  const restoreFallbackFocus = useRef(false)
-  useEffect(() => {
-    if (!collapsed || !restoreFallbackFocus.current) return
-    restoreFallbackFocus.current = false
-    // Dialog restores its opener synchronously. A stored-expanded first load
-    // has no opener, so repair only that lost-focus case; never schedule a
-    // second restoration that can undo the user's next Tab or click.
-    if (document.activeElement === document.body) (openerRef.current ?? triggerRef.current)?.focus()
-  }, [collapsed])
-
   const setPreference = (next: boolean) => {
     setCollapsed(next)
     try {
@@ -245,42 +232,25 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
       // Persistence is best-effort.
     }
   }
-  const expand = (account = false) => {
-    const active = document.activeElement
-    openerRef.current = active instanceof HTMLElement && active.closest('.sidebar') ? active : triggerRef.current
-    setOpenAccount(account)
-    setPreference(false)
-  }
-  const close = (restoreFocus = true) => {
-    restoreFallbackFocus.current = restoreFocus
-    setPreference(true)
-  }
   if (drawer) return <SidebarContent drawer onNavigate={onNavigate} />
 
   return (
-    <div className={collapsed ? 'sidebar-shell' : 'sidebar-shell overlay-open'}>
-      <SidebarContent collapsed onExpand={expand} onToggle={() => { triggerRef.current?.focus(); expand() }} toggleRef={triggerRef} />
-      {!collapsed && (
-        <Dialog className="sidebar-expanded-panel" overlayClassName="sidebar-overlay" ariaLabel="Navigation" onClose={() => close()}>
-          <SidebarContent initialAccountOpen={openAccount} onToggle={() => close()} expanded
-            onNavigate={() => { close(false); onNavigate?.() }} />
-        </Dialog>
-      )}
+    <div className={collapsed ? 'sidebar-shell collapsed' : 'sidebar-shell'}>
+      <SidebarContent collapsed={collapsed} onExpand={() => setPreference(false)}
+        onToggle={() => setPreference(!collapsed)} toggleRef={triggerRef} onNavigate={onNavigate} />
     </div>
   )
 }
 
-function SidebarContent({ drawer = false, collapsed = false, expanded = false, initialAccountOpen = false, onNavigate, onExpand, onToggle, toggleRef }: {
+function SidebarContent({ drawer = false, collapsed = false, onNavigate, onExpand, onToggle, toggleRef }: {
   drawer?: boolean
   collapsed?: boolean
-  expanded?: boolean
-  initialAccountOpen?: boolean
   onNavigate?: () => void
-  onExpand?: (account?: boolean) => void
+  onExpand?: () => void
   onToggle?: () => void
   toggleRef?: RefObject<HTMLButtonElement>
 }) {
-  const [accountOpen, setAccountOpen] = useState(initialAccountOpen)
+  const [accountOpen, setAccountOpen] = useState(false)
   const brandGradientId = useId()
   const location = useLocation()
   const consumer = useConsumer()
@@ -295,7 +265,7 @@ function SidebarContent({ drawer = false, collapsed = false, expanded = false, i
   ]
 
   return (
-    <aside className={drawer ? 'sidebar sidebar-drawer' : collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid={expanded ? 'sidebar-expanded' : 'sidebar'}
+    <aside className={drawer ? 'sidebar sidebar-drawer' : collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid="sidebar"
       onClick={event => {
         if (!collapsed || event.button !== 0 || !(event.target instanceof Element) || event.target.closest(RAIL_CONTROL_SELECTOR)) return
         toggleRef?.current?.focus()
@@ -349,13 +319,14 @@ function SidebarContent({ drawer = false, collapsed = false, expanded = false, i
             <button
               type="button"
               className="sidebar-identity"
-              data-testid={expanded ? 'sidebar-expanded-identity' : 'sidebar-identity'}
+              data-testid="sidebar-identity"
               aria-label={`Account options for ${consumer.name}`}
               aria-expanded={accountOpen}
               onClick={event => {
                 if (collapsed) {
                   event.currentTarget.focus()
-                  onExpand?.(true)
+                  setAccountOpen(true)
+                  onExpand?.()
                 } else setAccountOpen((open) => !open)
               }}
             >
@@ -415,8 +386,7 @@ function SidebarContent({ drawer = false, collapsed = false, expanded = false, i
               className="collapse-btn"
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-expanded={!collapsed}
-              aria-haspopup="dialog"
-              onClick={onToggle}
+              onClick={() => { setAccountOpen(false); onToggle?.() }}
             >
               <Icon d={collapsed ? 'm9 18 6-6-6-6' : 'm15 18-6-6 6-6'} />
             </button>

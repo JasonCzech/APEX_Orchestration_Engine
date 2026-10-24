@@ -25,28 +25,19 @@
   cursor: pointer;
 }
 
-/* The rail alone reserves page width. Expanded navigation uses the shared
-   dialog's focus and inert stack without moving the working surface. */
+/* Desktop navigation reserves its full width so the working surface stays
+   visible and interactive while navigation is expanded. */
 .sidebar-shell {
-  flex: 0 0 64px;
-  width: 64px;
+  flex: 0 0 240px;
+  width: 240px;
   height: 100%;
   min-height: 0;
+  transition: width 0.2s ease, flex-basis 0.2s ease;
 }
 
-.sidebar-overlay {
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-start;
-}
-
-.ux-dialog-layer .sidebar-expanded-panel {
-  width: 240px;
-  height: 100dvh;
-  max-height: 100dvh;
-  border-radius: 0;
-  overflow: hidden;
-  box-shadow: 8px 0 28px color-mix(in srgb, var(--bg-primary) 36%, transparent);
+.sidebar-shell.collapsed {
+  flex-basis: 64px;
+  width: 64px;
 }
 
 /* Brand */
@@ -321,15 +312,6 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-card);
-}
-
-.sidebar.collapsed .sidebar-account-panel {
-  position: absolute;
-  z-index: 3;
-  bottom: 8px;
-  left: calc(100% + 8px);
-  width: 220px;
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--bg-primary) 36%, transparent);
 }
 
 .sidebar-account-theme {
