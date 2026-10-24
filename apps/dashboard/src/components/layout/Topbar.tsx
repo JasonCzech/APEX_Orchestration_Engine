@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
-import { useMatches } from 'react-router'
+import { Link, useLocation, useMatches } from 'react-router'
 
 import { isRouteHandle } from '@/routes/handle'
 import { isDemoDataMode } from '@/config/runtimeConfig'
+import { contextualHelp } from '@/features/help/contextualHelp'
 
 import { useTopbarContributionSlot, useTopbarTitleOverride } from './TopbarContributionProvider'
 
@@ -12,6 +13,8 @@ import { useTopbarContributionSlot, useTopbarTitleOverride } from './TopbarContr
  */
 export function Topbar({ navigation }: { navigation?: ReactNode } = {}) {
   const matches = useMatches()
+  const location = useLocation()
+  const help = contextualHelp(location.pathname, location.search)
   const override = useTopbarTitleOverride()
   const title =
     override ??
@@ -29,7 +32,7 @@ export function Topbar({ navigation }: { navigation?: ReactNode } = {}) {
       {contribution !== null && (
         <div className="topbar-contribution-controls">{contribution}</div>
       )}
-      <div className="main-topbar-actions" />
+      {help && <div className="main-topbar-actions"><Link className="btn btn-secondary btn-sm" to={help}>Help for this page</Link></div>}
     </header>
   )
 }

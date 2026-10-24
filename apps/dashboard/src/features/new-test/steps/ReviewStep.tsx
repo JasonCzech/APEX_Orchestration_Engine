@@ -232,6 +232,7 @@ export function ReviewStep({
               {targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}
             </p>}
             <p className="wizard-caption">Launching starts the test. Selected tickets and documents are resolved into agent context at that point.</p>
+            <p className="wizard-caption"><Link to="/help/drafts-presets#launch-readiness">Understand launch readiness</Link> · <Link to="/help/troubleshooting#launch-is-blocked">Resolve blocked launches</Link></p>
           </div>
         </aside>
         <div className="wizard-review-main">

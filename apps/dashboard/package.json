@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "check:docs": "vitest run src/features/help/helpIntegrity.test.ts",
     "test:e2e:demo": "npm run build && playwright test e2e/demo-mode.spec.ts",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
