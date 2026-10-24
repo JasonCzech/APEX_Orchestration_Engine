@@ -62,11 +62,13 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     await page.keyboard.press('Tab')
     expect(await rail.evaluate(element => element.contains(document.activeElement))).toBe(false)
 
-    // The page remains interactive while navigation stays expanded.
+    // Main-area clicks collapse navigation and still activate their target.
     const connection = page.getByRole('tab', { name: 'Connection & session', exact: true })
     await connection.click()
     await expect(connection).toHaveAttribute('aria-selected', 'true')
-    await expect(rail).toHaveCSS('width', '240px')
+    await expect(rail).toHaveCSS('width', '64px')
+    await expect(connection).toBeFocused()
+    await expand.click()
     await rail.getByRole('button', { name: 'Collapse sidebar' }).click()
     await expect(rail).toHaveCSS('width', '64px')
     await expect(expand).toBeFocused()
@@ -78,6 +80,10 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     await nav.getByRole('link', { name: 'Home', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
     await expect(rail).toHaveCSS('width', '240px')
+    const mainBounds = (await main.boundingBox())!
+    await main.click({ position: { x: mainBounds.width - 10, y: mainBounds.height - 10 } })
+    await expect(rail).toHaveCSS('width', '64px')
+    expect(await page.evaluate(() => localStorage.getItem('apex.sidebarCollapsed'))).toBe('true')
 
   })
 }

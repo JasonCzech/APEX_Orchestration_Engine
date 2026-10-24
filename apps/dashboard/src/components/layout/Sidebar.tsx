@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link, useLocation } from 'react-router'
 
 import type { Role } from '@/api/apexClient'
@@ -237,20 +237,34 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
   return (
     <div className={collapsed ? 'sidebar-shell collapsed' : 'sidebar-shell'}>
       <SidebarContent collapsed={collapsed} onExpand={() => setPreference(false)}
-        onToggle={() => setPreference(!collapsed)} toggleRef={triggerRef} onNavigate={onNavigate} />
+        onCollapse={() => setPreference(true)} onToggle={() => setPreference(!collapsed)} toggleRef={triggerRef} onNavigate={onNavigate} />
     </div>
   )
 }
 
-function SidebarContent({ drawer = false, collapsed = false, onNavigate, onExpand, onToggle, toggleRef }: {
+function SidebarContent({ drawer = false, collapsed = false, onNavigate, onExpand, onCollapse, onToggle, toggleRef }: {
   drawer?: boolean
   collapsed?: boolean
   onNavigate?: () => void
   onExpand?: () => void
+  onCollapse?: () => void
   onToggle?: () => void
   toggleRef?: RefObject<HTMLButtonElement>
 }) {
   const [accountOpen, setAccountOpen] = useState(false)
+  useEffect(() => {
+    if (drawer || collapsed) return
+    const collapseFromMain = (event: MouseEvent) => {
+      if (!(event.target instanceof Node) || !document.getElementById('main-content')?.contains(event.target)) return
+      setAccountOpen(false)
+      onCollapse?.()
+    }
+    // Wait for click rather than pointerdown so resizing cannot move a control
+    // out from under the pointer before activation. Capture also covers controls
+    // that stop propagation, without preventing their action or changing focus.
+    document.addEventListener('click', collapseFromMain, true)
+    return () => document.removeEventListener('click', collapseFromMain, true)
+  }, [collapsed, drawer, onCollapse])
   const brandGradientId = useId()
   const location = useLocation()
   const consumer = useConsumer()

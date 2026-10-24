@@ -72,11 +72,33 @@ describe('Sidebar', () => {
 
     await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
     expect(screen.getByRole('tab', { name: 'Connection & session' })).toHaveAttribute('aria-selected', 'true')
-    expect(sidebar).not.toHaveClass('collapsed')
+    expect(sidebar).toHaveClass('collapsed')
+    expect(screen.getByRole('tab', { name: 'Connection & session' })).toHaveFocus()
+    expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('true')
+
+    await user.click(expand)
     await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     expect(sidebar).toHaveClass('collapsed')
     expect(expand).toHaveFocus()
     expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('true')
+  })
+
+  it('collapses from blank main space and closes account options without restoring sidebar focus', async () => {
+    const user = userEvent.setup()
+    renderApp({ initialEntries: ['/settings'], authState: authenticatedState() })
+    const account = await screen.findByRole('button', { name: 'Account options for Dash Ops' })
+    await user.click(account)
+    expect(screen.getByRole('combobox', { name: 'Theme' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('main'))
+    expect(screen.getByTestId('sidebar')).toHaveClass('collapsed')
+    expect(screen.queryByRole('combobox', { name: 'Theme' })).not.toBeInTheDocument()
+    expect(account).toHaveAttribute('aria-expanded', 'false')
+    expect(account).not.toHaveFocus()
+    expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('true')
+
+    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(screen.queryByRole('combobox', { name: 'Theme' })).not.toBeInTheDocument()
   })
 
   it.each(['true', 'false'])('honors the stored collapsed preference %s without opening a dialog', async stored => {
