@@ -2506,7 +2506,11 @@ export class DevDataStore {
     if (configurable['prompt_manifest']) throw new Error('Server-owned manifest')
     if (!selections) return undefined
     if (Object.keys((configurable['prompt_overrides'] ?? {}) as object).length) throw new Error('Mixed selection contract')
-    const phases = (configurable['phases'] ?? PHASE_NAMES) as PhaseName[]
+    const ownership = configurable['phase_execution'] as NonNullable<StartPipelineRequest['configurable']>['phase_execution']
+    // The plan includes work completed by people. Only agent-owned phases
+    // consume prompts, matching the wizard and PipelineConfigurable.agent_phases.
+    const phases = ((configurable['phases'] ?? PHASE_NAMES) as PhaseName[])
+      .filter(phase => ownership?.owners?.[phase] !== 'hitl')
     if (Object.keys(selections.phases).length !== phases.length) throw new Error('Phase coverage')
     const freeze = (selection: PromptSelections['system'] | undefined, category: string, phase?: PhaseName): DemoManifestEntry => {
       const row = this.prompts.find(item => item.id === selection?.prompt_id)
