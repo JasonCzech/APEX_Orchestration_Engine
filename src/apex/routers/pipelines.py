@@ -5,6 +5,7 @@ API key so the LangGraph @auth.on filters apply exactly as on direct calls — t
 router never re-filters threads client-side.
 """
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -85,6 +86,7 @@ from apex.services.pipeline_read import (
     RerunIdempotencyConflictError,
     TooManyActiveRunsError,
 )
+from apex.services.preset_usage import PresetProvenance, record_preset_usage
 from apex.services.run_validation import (
     MAX_GATE_STRING_CHARS_HARD,
     MAX_MODEL_NAME_CHARS,
@@ -287,6 +289,9 @@ class StartPipelineRequest(BaseModel):
     external_results: ExternalResults | None = None
     context_packets: list[ContextPacket] | None = Field(default=None, max_length=64)
     document_ids: list[DocumentIdInput] | None = Field(default=None, max_length=64)
+    preset: PresetProvenance | None = Field(
+        default=None, description="The preset this test started from (provenance only)."
+    )
 
     @field_validator("configurable")
     @classmethod
@@ -663,6 +668,10 @@ async def create_pipeline_run(
                 test_scope=topology.model_dump(mode="json"),
             )
             if recovered is not None:
+                # The first attempt may have timed out before recording provenance.
+                await record_preset_usage(
+                    recovered.get("thread_id"), body.preset, run_configurable, identity
+                )
                 return StartPipelineResponse(**recovered)
         topology.validate_admission()
         service = _pipeline_read_service_after_scope(request)
@@ -875,6 +884,7 @@ async def create_pipeline_run(
         raise launch_error
     if result is None:  # pragma: no cover - service contract invariant
         raise HTTPException(status_code=502, detail="pipeline launch returned no result")
+    await record_preset_usage(result.get("thread_id"), body.preset, run_configurable, identity)
     return StartPipelineResponse(**result)
 
 
@@ -971,6 +981,43 @@ async def get_pipeline(
     if not_found or result is None:
         raise HTTPException(status_code=404, detail="pipeline thread not found")
     return result
+
+
+class PipelinePresetLink(BaseModel):
+    kind: str
+    preset_id: str
+    version: int | None
+    name: str | None
+    modified: bool
+    recorded_at: datetime | None
+
+
+@router.get(
+    "/{thread_id}/preset",
+    operation_id="getPipelinePreset",
+    response_model=PipelinePresetLink | None,
+)
+async def get_pipeline_preset(
+    thread_id: ThreadId,
+    identity: CurrentIdentity,
+    service: PipelineService,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PipelinePresetLink | None:
+    """The preset this test started from, if any (authorized like the test itself)."""
+    from apex.persistence.models import RunPresetLink
+
+    await get_pipeline(thread_id, identity, service)
+    row = await session.get(RunPresetLink, thread_id)
+    if row is None:
+        return None
+    return PipelinePresetLink(
+        kind=row.preset_kind,
+        preset_id=row.preset_id,
+        version=row.preset_version,
+        name=row.preset_name,
+        modified=row.modified,
+        recorded_at=row.recorded_at,
+    )
 
 
 @router.get("/{thread_id}/actors", operation_id="getPipelineActors", response_model=PipelineActors)

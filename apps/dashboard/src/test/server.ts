@@ -119,6 +119,11 @@ export const handlers = [
   http.get('*/v1/catalog/projects', () => HttpResponse.json([])),
   http.get('*/v1/cycles/:cycleId/actors', () => HttpResponse.json({ names: {}, truncated: false })),
   http.get('*/v1/drafts', () => HttpResponse.json([])),
+  http.get('*/v1/test-presets', () => HttpResponse.json([])),
+  // Organization presets (LangGraph assistants); tests that need some mock the client.
+  http.post('*/assistants/search', () => HttpResponse.json([])),
+  http.get('*/v1/test-presets/usage', () => HttpResponse.json([])),
+  http.get('*/v1/pipelines/:threadId/preset', () => HttpResponse.json(null)),
   http.get('*/v1/analytics/usage', () => HttpResponse.json(EMPTY_USAGE)),
   http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS)),
 ]

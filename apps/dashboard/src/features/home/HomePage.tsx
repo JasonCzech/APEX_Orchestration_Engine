@@ -1,3 +1,4 @@
+import { HomePresets } from './HomePresets'
 import { useTimestampPreference } from '@/theme/preferences'
 import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { StateCard } from '@/components/ux/StateCard'
@@ -305,6 +306,8 @@ export function HomePage() {
           </div>
         )}
       </section>
+
+      <HomePresets />
 
       {(drafts.isError || draftItems.length > 0) && (
         <section className="glass-panel home-drafts" data-testid="home-drafts">

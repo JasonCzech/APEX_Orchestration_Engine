@@ -47,6 +47,9 @@ type ConsumerUpdate = components['schemas']['ConsumerUpdateRequest']
 type ContextSummaryRequest = components['schemas']['ContextSummaryRequest']
 type DocumentOut = components['schemas']['DocumentOut']
 type DraftRead = components['schemas']['DraftRead']
+type TestPresetRead = components['schemas']['TestPresetRead']
+type TestPresetVersionRead = components['schemas']['TestPresetVersionRead']
+type PipelinePresetLink = components['schemas']['PipelinePresetLink']
 type Environment = components['schemas']['EnvironmentOut']
 type EvidencePacket = components['schemas']['EvidencePacket']
 type HostMappingIn = components['schemas']['HostMappingIn']
@@ -160,6 +163,9 @@ interface DemoBaseline {
   consumers: Consumer[]
   documents: DocumentOut[]
   drafts: DraftRead[]
+  testPresets: TestPresetRead[]
+  presetVersions: Map<string, TestPresetVersionRead[]>
+  runPresetLinks: Map<string, PipelinePresetLink>
   workItems: WorkItem[]
   workItemProviders: Map<string, 'jira' | 'jira_align'>
   savedQueries: SavedQuery[]
@@ -457,7 +463,7 @@ function makePipelineState(
   const transcript = artifactRef('execution-transcript', 'execution-transcript.txt', 'transcript', 'text/plain', 'Execution agent transcript', anchor)
   const archive = artifactRef('results-archive', 'results.zip', 'archive', 'application/octet-stream', 'Raw engine results', anchor)
   const externalRunId = `AL-${profile.key.toUpperCase()}-${title.length}`
-  const engineHandle = { engine: 'apexload', connection_id: demoLoadConnectionId(profile.project), external_run_id: externalRunId }
+  const engineHandle = { engine: 'apex_load', connection_id: demoLoadConnectionId(profile.project), external_run_id: externalRunId }
   const statusOf = (phase: PhaseName) => demoPhaseStatus(phase, currentPhase, status)
   const timing = (phase: PhaseName) => {
     const phaseStatus = statusOf(phase)
@@ -506,13 +512,13 @@ function makePipelineState(
       execution: result('execution', profile.executionSummary, {
         ...(profile.executionWarnings.length ? { warnings: profile.executionWarnings } : {}),
         artifact_ids: executionFinished ? [report.id, archive.id, transcript.id] : [],
-        engine: 'apexload',
+        engine: 'apex_load',
         engine_started_at: isoMinutesAgo(89, anchor),
         engine_handle: engineHandle,
         ...(executionStatus !== 'pending' ? { transcript_ref: transcript } : {}),
         ...(executionFinished ? {
           test_summary: {
-            engine: 'apexload',
+            engine: 'apex_load',
             passed: profile.passed,
             kpis: profile.kpis,
             sla_breaches: profile.breaches,
@@ -572,6 +578,9 @@ export class DevDataStore {
   private consumers: Consumer[]
   private documents: DocumentOut[]
   private drafts: DraftRead[]
+  private testPresets: TestPresetRead[] = []
+  private presetVersions = new Map<string, TestPresetVersionRead[]>()
+  private runPresetLinks = new Map<string, PipelinePresetLink>()
   private evidence: EvidencePacket[]
   private workItems: WorkItem[]
   private workItemProviders = new Map<string, 'jira' | 'jira_align'>()
@@ -631,6 +640,7 @@ export class DevDataStore {
     this.consumers = []
     this.documents = []
     this.drafts = []
+    this.runPresetLinks = new Map()
     this.evidence = []
     this.workItems = []
     this.savedQueries = []
@@ -638,7 +648,10 @@ export class DevDataStore {
     this.prompts = this.makePrompts(created, updated)
     this.logs = this.makeLogs()
     this.assistants = this.makeAssistants(created, updated)
+    this.testPresets = this.makeTeamPresets(created, updated)
+    this.presetVersions = new Map(this.testPresets.map(preset => [preset.id, this.seedPresetVersions(preset, created)]))
     this.seedPipelines()
+    this.seedPresetLinks(updated)
     this.seedArtifacts()
     this.agentMetricEvents()
     this.baseline = this.captureBaseline()
@@ -668,6 +681,9 @@ export class DevDataStore {
       consumers: clone(this.consumers),
       documents: clone(this.documents),
       drafts: clone(this.drafts),
+      testPresets: clone(this.testPresets),
+      presetVersions: new Map(clone([...this.presetVersions])),
+      runPresetLinks: new Map(clone([...this.runPresetLinks])),
       workItems: clone(this.workItems),
       workItemProviders: new Map(clone([...this.workItemProviders])),
       savedQueries: clone(this.savedQueries),
@@ -692,6 +708,9 @@ export class DevDataStore {
     this.consumers = clone(this.baseline.consumers)
     this.documents = clone(this.baseline.documents)
     this.drafts = clone(this.baseline.drafts)
+    this.testPresets = clone(this.baseline.testPresets)
+    this.presetVersions = new Map(clone([...this.baseline.presetVersions]))
+    this.runPresetLinks = new Map(clone([...this.baseline.runPresetLinks]))
     this.workItems = clone(this.baseline.workItems)
     this.workItemProviders = new Map(clone([...this.baseline.workItemProviders]))
     this.savedQueries = clone(this.baseline.savedQueries)
@@ -777,7 +796,7 @@ export class DevDataStore {
         ],
         document_ids: ['doc-architecture', 'doc-sla', 'doc-traffic', 'doc-data'],
         context_summary_ids: [],
-        config: { engine: 'apexload', phases: null, prompt_focus_phase: 'story_analysis', gates_mode: 'all_gated', golden_config_id: 'asst-release', golden_configurable: null,
+        config: { engine: 'apex_load', phases: null, prompt_focus_phase: 'story_analysis', gates_mode: 'all_gated', golden_config_id: 'asst-release', golden_configurable: null,
           analysis: { schema_version: 1, selections: [{ tool: 'internal_rca', connection_id: 'conn-apex-load' }] } },
         prompt_overrides: {}, prompt_override_removals: [],
       }),
@@ -855,6 +874,7 @@ export class DevDataStore {
     else if (path.startsWith('/v1/context')) response = await this.handleContext(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/documents')) response = await this.handleDocuments(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/drafts')) response = await this.handleDrafts(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/test-presets')) response = await this.handleTestPresets(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/prompts')) response = await this.handlePrompts(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/admin/connections')) response = await this.handleConnections(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/admin/consumers')) response = await this.handleConsumers(method, path, request)
@@ -1197,7 +1217,7 @@ export class DevDataStore {
       for (const [index, sample] of samples.entries()) {
         if (options?.signal?.aborted) return
         if (sample.progress_pct <= committedProgress) continue
-        const event = emit(`engine-${index}`, { type: 'engine_poll', phase: 'execution', attempt: 1, engine: 'apexload', external_run_id: `AL-${tid}`, status: sample.status, progress_pct: sample.progress_pct, live_stats: { vusers: sample.vusers, tps: sample.tps, error_rate: sample.error_rate, p95_ms: sample.p95_ms }, mq_depth: index >= 3 ? 8_400 + index * 1_670 : 1_400, hpa_replicas: index < 3 ? 4 : index < 5 ? 6 : 8, note: index === 3 ? 'Ramp held while IDP fulfillment MQ depth drains below 10,000.' : undefined })
+        const event = emit(`engine-${index}`, { type: 'engine_poll', phase: 'execution', attempt: 1, engine: 'apex_load', external_run_id: `AL-${tid}`, status: sample.status, progress_pct: sample.progress_pct, live_stats: { vusers: sample.vusers, tps: sample.tps, error_rate: sample.error_rate, p95_ms: sample.p95_ms }, mq_depth: index >= 3 ? 8_400 + index * 1_670 : 1_400, hpa_replicas: index < 3 ? 4 : index < 5 ? 6 : 8, note: index === 3 ? 'Ramp held while IDP fulfillment MQ depth drains below 10,000.' : undefined })
         if (event) yield event
         detail.values = { ...(detail.values ?? {}), execution_progress: sample.progress_pct, live_metrics: sample }
         this.persistState()
@@ -1209,7 +1229,7 @@ export class DevDataStore {
       const execution = (detail.values as PipelineState).phase_results?.execution
       if (execution) {
         execution.test_summary = {
-          engine: 'apexload',
+          engine: 'apex_load',
           passed: false,
           kpis: { tps_avg: 82.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300 },
           sla_breaches: ['acc_submit_p95_ms', 'error_rate'],
@@ -1231,7 +1251,7 @@ export class DevDataStore {
     } else if (stage === 'engine_recovery') {
       const tool = emit('engine-reconcile', { type: 'tool_call', phase: 'execution', id: `${runId}-engine-reconcile`, tool: 'apex_load.reconcile', status: 'ok' })
       if (tool) yield tool
-      const poll = emit('engine-recovered', { type: 'engine_poll', phase: 'execution', attempt: 2, engine: 'apexload', external_run_id: `AL-${tid}`, status: 'provisioning', progress_pct: 8, live_stats: { vusers: 0, tps: 0, error_rate: 0, p95_ms: 0 }, note: 'Checkpoint reconciliation reused the original idempotency key.' })
+      const poll = emit('engine-recovered', { type: 'engine_poll', phase: 'execution', attempt: 2, engine: 'apex_load', external_run_id: `AL-${tid}`, status: 'provisioning', progress_pct: 8, live_stats: { vusers: 0, tps: 0, error_rate: 0, p95_ms: 0 }, note: 'Checkpoint reconciliation reused the original idempotency key.' })
       if (poll) yield poll
       this.setPhaseState(detail, 'execution', 'awaiting_output_review', 2, 'Provisioning reconciliation succeeded without creating a duplicate native run.')
       detail.thread_status = 'interrupted'
@@ -1300,6 +1320,12 @@ export class DevDataStore {
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
     const pathThread = decodePart(path.split('/')[3])
     if (pathThread.startsWith('hist-')) this.ensureHistoricalRun(pathThread)
+    const presetLink = method === 'GET' ? path.match(/^\/v1\/pipelines\/([^/]+)\/preset$/) : null
+    if (presetLink) {
+      const threadId = decodePart(presetLink[1])
+      if (!this.pipelineDetails.has(threadId)) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+      return jsonResponse(this.runPresetLinks.get(threadId) ?? null)
+    }
     if (method === 'GET' && path === '/v1/pipelines/analysis/connections') {
       // Mirror the API: enabled analysis connectors plus APEX Load engines
       // (internal RCA), project-owned or shared.
@@ -1362,6 +1388,12 @@ export class DevDataStore {
           stream_url: `/threads/${thread.thread_id}/runs/${run.run_id}/stream`,
         }
         if (idempotencyKey) this.pipelineLaunches.set(idempotencyKey, response)
+        if (body.preset) {
+          this.runPresetLinks.set(thread.thread_id, {
+            kind: body.preset.kind, preset_id: body.preset.id, version: body.preset.version ?? null,
+            name: body.preset.name ?? null, modified: body.preset.modified ?? false, recorded_at: nowIso(),
+          })
+        }
         this.persistState()
         return jsonResponse(response, 202)
       })
@@ -2046,6 +2078,79 @@ export class DevDataStore {
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
   }
 
+  private async handleTestPresets(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    const visible = (preset: TestPresetRead) => preset.visibility !== 'personal' || preset.mine
+    if (method === 'GET' && path === '/v1/test-presets') {
+      const application = params.get('application')
+      const project = params.get('project')
+      const archived = params.get('include_archived') === 'true'
+      return jsonResponse(this.testPresets.filter(preset => visible(preset) && (archived || !preset.archived_at) &&
+        (!application || preset.application_id === application) && (!project || preset.project_id === project))
+        .sort((a, b) => a.name.localeCompare(b.name)))
+    }
+    if (method === 'GET' && path === '/v1/test-presets/usage') {
+      const kind = params.get('kind')
+      const ids = new Set(params.getAll('ids'))
+      const stats = new Map<string, { tests: number; last: string | null }>()
+      for (const link of this.runPresetLinks.values()) {
+        if (link.kind !== kind || !ids.has(link.preset_id)) continue
+        const entry = stats.get(link.preset_id) ?? { tests: 0, last: null }
+        entry.tests += 1
+        if (link.recorded_at && (!entry.last || link.recorded_at > entry.last)) entry.last = link.recorded_at
+        stats.set(link.preset_id, entry)
+      }
+      return jsonResponse([...stats].map(([presetId, entry]) => ({ kind, preset_id: presetId, tests: entry.tests, last_used_at: entry.last })))
+    }
+    if (method === 'POST' && path === '/v1/test-presets') {
+      const body = (await request.json()) as Partial<TestPresetRead>
+      const preset: TestPresetRead = {
+        id: this.id('preset'), name: body.name ?? 'Untitled preset', description: body.description ?? null,
+        project_id: body.project_id ?? TELECOM_PROJECT_ID, application_id: body.application_id ?? null,
+        visibility: body.visibility ?? 'project', payload: body.payload ?? {}, version: 1,
+        created_by: 'Demo Presenter', updated_by: 'Demo Presenter', created_at: nowIso(), updated_at: nowIso(),
+        archived_at: null, mine: true, editable: true,
+      }
+      this.testPresets.unshift(preset)
+      this.presetVersions.set(preset.id, [this.presetVersion(preset, 'Created')])
+      return jsonResponse(preset, 201)
+    }
+    const parts = path.split('/')
+    const id = decodePart(parts[3])
+    const index = this.testPresets.findIndex(preset => preset.id === id && visible(preset))
+    if (index === -1) return problemResponse(404, 'not_found', 'test preset not found')
+    const current = this.testPresets[index]!
+    if (method === 'GET' && parts.length === 4) return jsonResponse(current)
+    if (method === 'GET' && parts[4] === 'versions') return jsonResponse(this.presetVersions.get(id) ?? [])
+    if (method === 'PUT') {
+      const body = (await request.json()) as Partial<TestPresetRead> & { expected_version?: number | null; note?: string | null }
+      if (body.expected_version && body.expected_version !== current.version) {
+        return problemResponse(409, 'conflict', 'This preset was changed by someone else; reload it and try again')
+      }
+      const next: TestPresetRead = {
+        ...current, name: body.name ?? current.name, description: body.description ?? null,
+        application_id: body.application_id ?? null, visibility: body.visibility ?? current.visibility,
+        payload: body.payload ?? current.payload, version: current.version + 1, updated_by: 'Demo Presenter', updated_at: nowIso(),
+      }
+      this.testPresets[index] = next
+      this.presetVersions.set(id, [this.presetVersion(next, body.note ?? null), ...(this.presetVersions.get(id) ?? [])])
+      return jsonResponse(next)
+    }
+    if (method === 'POST' && (parts[4] === 'archive' || parts[4] === 'unarchive')) {
+      this.testPresets[index] = { ...current, archived_at: parts[4] === 'archive' ? nowIso() : null }
+      return jsonResponse(this.testPresets[index])
+    }
+    if (method === 'DELETE') {
+      this.testPresets.splice(index, 1)
+      this.presetVersions.delete(id)
+      return emptyResponse()
+    }
+    return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
+  }
+
+  private presetVersion(preset: TestPresetRead, note: string | null): TestPresetVersionRead {
+    return { version: preset.version, name: preset.name, description: preset.description ?? null, payload: preset.payload, note, created_by: preset.updated_by ?? null, created_at: preset.updated_at ?? nowIso() }
+  }
+
   private async handlePrompts(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
     const usageMatch = method === 'GET' ? path.match(/^\/v1\/prompts\/([^/]+)\/usage$/) : null
     if (usageMatch) {
@@ -2458,11 +2563,56 @@ export class DevDataStore {
     return Array.from({ length: 40 }, (_, index) => ({ at: isoMinutesAgo(2 + index * 3, this.activationTime), ...entry(index), fields: { ...entry(index).fields, checkpoint: index + 1 } }))
   }
 
+  /** Team and personal presets (APEX /v1/test-presets): saved wizard sections. */
+  private makeTeamPresets(created: string, updated: string): TestPresetRead[] {
+    const workload = (vusers: number, duration: number, p95: number) => ({ vusers, ramp_s: 300, duration_s: duration, slas: { p95_ms: p95, error_rate: 0.01 } })
+    const preset = (id: string, name: string, description: string, applicationId: string | null, visibility: 'personal' | 'project', sections: Record<string, unknown>, version: number, owner: string, mine: boolean): TestPresetRead => ({
+      id, name, description, project_id: TELECOM_PROJECT_ID, application_id: applicationId, visibility,
+      payload: { schema_version: 1, sections }, version, created_by: owner, updated_by: owner,
+      created_at: created, updated_at: updated, archived_at: null, mine, editable: true,
+    })
+    return [
+      preset('preset-mule-soak', 'Mule API soak — 4 h', 'Steady experience-API load for connection-pool and memory stability.', demoAppId(TELECOM_PROJECT_ID, 'mule'), 'project', {
+        execution: { engine: 'sim', golden_configurable: { load_test: workload(400, 14_400, 800) }, analysis: { schema_version: 1, selections: [] } },
+        phases: { phases: null, schema_version: 2, gates_mode: 'all_auto' },
+      }, 2, 'Priya Raman', false),
+      preset('preset-acc-quick', 'ACC quick regression', 'Story analysis, execution and reporting at 50 VUsers for a post-deploy check.', FLAGSHIP_APP_ID, 'personal', {
+        execution: { engine: 'sim', golden_configurable: { load_test: workload(50, 900, 3_000) }, analysis: { schema_version: 1, selections: [] } },
+        phases: { phases: ['story_analysis', 'execution', 'reporting'], schema_version: 2, gates_mode: 'all_gated' },
+      }, 1, 'Demo Presenter', true),
+      preset('preset-release-reviews', 'Release gate reviews', 'Every agent phase pauses for prompt and output review.', null, 'project', {
+        phases: { phases: null, schema_version: 2, gates_mode: 'all_gated' },
+      }, 1, 'Jordan Lee', false),
+    ]
+  }
+
+  /** Seeded runs that started from presets, so usage and "Last used" have something to show. */
+  private seedPresetLinks(recorded: string) {
+    const link = (kind: 'team' | 'organization', presetId: string, version: number, name: string, modified: boolean): PipelinePresetLink =>
+      ({ kind, preset_id: presetId, version, name, modified, recorded_at: recorded })
+    for (const [threadId, value] of [
+      ['run-baseline-a', link('organization', 'asst-release', 4, 'ACC add-a-line Release Certification', false)],
+      ['run-baseline-b', link('organization', 'asst-release', 4, 'ACC add-a-line Release Certification', false)],
+      ['run-active', link('organization', 'asst-release', 4, 'ACC add-a-line Release Certification', true)],
+    ] as const) {
+      if (this.pipelineDetails.has(threadId)) this.runPresetLinks.set(threadId, value)
+    }
+  }
+
+  private seedPresetVersions(preset: TestPresetRead, created: string): TestPresetVersionRead[] {
+    const current = this.presetVersion(preset, preset.version > 1 ? 'Longer soak window' : 'Created')
+    if (preset.version === 1) return [current]
+    type SoakPayload = { sections: { execution: { golden_configurable: { load_test: Record<string, unknown> } } } }
+    const earlier = clone(preset.payload) as typeof preset.payload & SoakPayload
+    earlier.sections.execution.golden_configurable.load_test['duration_s'] = 7_200
+    return [current, { ...current, version: 1, payload: earlier, note: 'Created', created_at: created }]
+  }
+
   private makeAssistants(created: string, updated: string): Assistant[] {
     return [
       this.assistant('pipeline', 'pipeline', 'Performance CoE default', 'All seven phases with deterministic offline agents.', { project_id: TELECOM_PROJECT_ID }, { created_by: 'Demo Curator' }, 1, created, updated),
-      this.assistant('asst-release', 'pipeline', 'ACC add-a-line Release Certification', 'Full gated release-candidate certification on PERFHYPER2 (ACC Perf).', { project_id: TELECOM_PROJECT_ID, app_id: FLAGSHIP_APP_ID, environment_id: FLAGSHIP_ENV_ID, engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
-      this.assistant('asst-legacy-cert', 'pipeline', 'OPUS T4 Store-Peak Certification', 'Gated certification of OPUS to TLG journeys on T4 with an exclusive PERF TLG window (Legacy Perf).', { project_id: 'legacy-perf', app_id: demoAppId('legacy-perf', 'opus'), environment_id: demoEnvId('legacy-perf', 'opus', 't4'), engine: 'apexload' }, { created_by: 'Demo Curator' }, 2, created, updated),
+      this.assistant('asst-release', 'pipeline', 'ACC add-a-line Release Certification', 'Full gated release-candidate certification on PERFHYPER2 (ACC Perf).', { project_id: TELECOM_PROJECT_ID, app_id: FLAGSHIP_APP_ID, environment_id: FLAGSHIP_ENV_ID, engine: 'apex_load', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
+      this.assistant('asst-legacy-cert', 'pipeline', 'OPUS T4 Store-Peak Certification', 'Gated certification of OPUS to TLG journeys on T4 with an exclusive PERF TLG window (Legacy Perf).', { project_id: 'legacy-perf', app_id: demoAppId('legacy-perf', 'opus'), environment_id: demoEnvId('legacy-perf', 'opus', 't4'), engine: 'apex_load' }, { created_by: 'Demo Curator' }, 2, created, updated),
       this.assistant('asst-fast', 'pipeline', 'PERFHYPER Fast Smoke', 'Story analysis, execution, and reporting only, for a quick post-deploy smoke check.', { project_id: TELECOM_PROJECT_ID, phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'Demo Curator' }, 2, created, updated),
     ]
   }
@@ -2572,12 +2722,12 @@ export class DevDataStore {
       thread_status: status,
       current_phase: phase,
       phase_strip: makeStrip(),
-      engine: { engine: 'apexload', external_run_id: state.engine_handle?.external_run_id ?? `AL-${id.toUpperCase()}` },
+      engine: { engine: 'apex_load', external_run_id: state.engine_handle?.external_run_id ?? `AL-${id.toUpperCase()}` },
       created_at: isoMinutesAgo(180, this.activationTime),
       updated_at: status === 'interrupted' ? isoMinutesAgo(24, this.activationTime) : isoMinutesAgo(status === 'busy' ? 2 : 45, this.activationTime),
       pending_gate: null,
       test_scope: demoTestScope(profile) as unknown as Record<string, unknown>,
-      values: { ...state, demo_profile: profileKey, run_config: { test_scope: demoTestScope(profile), project_id: profile.project, app_id: demoAppId(profile.project, primary.app), environment_id: profile.traffic ? demoEnvIdFor(profile, profile.traffic) : null, engine: 'apexload' } } as Record<string, unknown>,
+      values: { ...state, demo_profile: profileKey, run_config: { test_scope: demoTestScope(profile), project_id: profile.project, app_id: demoAppId(profile.project, primary.app), environment_id: profile.traffic ? demoEnvIdFor(profile, profile.traffic) : null, engine: 'apex_load' } } as Record<string, unknown>,
       interrupts: [],
     }
     return this.syncSummary(detail)
@@ -2752,7 +2902,7 @@ export class DevDataStore {
 
   private seedArtifacts(): void {
     const rows: Array<[string, string, string, string]> = [
-      ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apexload', project: 'ACC Perf', environment: 'PERFHYPER2', orchestration_status: 'succeeded', release_result: 'not_certified', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 }, tiers: { acc_p95_ms: 410, mule_p95_ms: 160, idp_p95_ms: 100, bsse_create_order_p95_ms: 2980 } }, null, 2)],
+      ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apex_load', project: 'ACC Perf', environment: 'PERFHYPER2', orchestration_status: 'succeeded', release_result: 'not_certified', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 }, tiers: { acc_p95_ms: 410, mule_p95_ms: 160, idp_p95_ms: 100, bsse_create_order_p95_ms: 2980 } }, null, 2)],
       ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned 3 generators (pool perfhyper-acc)\nSmoke: 1 session, 7/7 transactions passed\nStep 100 sessions: submit p95 680ms\nStep 200 sessions: submit p95 1,820ms; IDP MQ depth 8,400\nRamp held: IDP.FULFILLMENT.Q depth 12,100 > 10,000\nResumed after drain to 1,900\nStep 300 sessions: submit p95 3,650ms; ACC HPA 4 -> 8\nBSSe create-order gate breach recorded\nDrain complete; 0 duplicate orders, 0 duplicate charges\n'],
       ['story-hierarchy', 'jira-align-hierarchy.json', 'application/json', JSON.stringify({ epic: 'epic:310', capability: 'capability:420', feature: 'feature:583', stories: ['story:9012', 'story:9013'] }, null, 2)],
       ['scope-analysis', 'story-analysis.md', 'text/markdown', `# Story analysis — ACC add-a-line (ACC Perf)\n\n${DEMO_RUN_PROFILES['acc-flagship'].stories}\n\n${ACC_DEMO_CONTEXT}`],
@@ -2804,7 +2954,7 @@ export class DevDataStore {
     ]
     const execution = state.phase_results?.execution
     if (execution?.test_summary) {
-      rows.push([`${prefix}-load-report`, 'load-report.json', 'application/json', 'report', JSON.stringify({ engine: 'apexload', project: DEMO_PROJECTS.find((item) => item.id === profile.project)?.name, environment: DEMO_ENVIRONMENTS[profile.participants.find((item) => item.id === profile.traffic)?.env ?? 'perfhyper2'].name, passed: execution.test_summary.passed, kpis: execution.test_summary.kpis, sla_breaches: execution.test_summary.sla_breaches, notes: execution.test_summary.notes }, null, 2)])
+      rows.push([`${prefix}-load-report`, 'load-report.json', 'application/json', 'report', JSON.stringify({ engine: 'apex_load', project: DEMO_PROJECTS.find((item) => item.id === profile.project)?.name, environment: DEMO_ENVIRONMENTS[profile.participants.find((item) => item.id === profile.traffic)?.env ?? 'perfhyper2'].name, passed: execution.test_summary.passed, kpis: execution.test_summary.kpis, sla_breaches: execution.test_summary.sla_breaches, notes: execution.test_summary.notes }, null, 2)])
       execution.artifact_ids = [`${prefix}-load-report`]
       delete execution.transcript_ref
     }
@@ -3202,6 +3352,9 @@ export class DevDataStore {
             consumers: arrayDelta(this.consumers, this.baseline.consumers, (item) => item.id),
             documents: arrayDelta(this.documents, this.baseline.documents, (item) => item.id),
             drafts: arrayDelta(this.drafts, this.baseline.drafts, (item) => item.id),
+            testPresets: arrayDelta(this.testPresets, this.baseline.testPresets, (item) => item.id),
+            presetVersions: mapDelta(this.presetVersions, this.baseline.presetVersions),
+            runPresetLinks: mapDelta(this.runPresetLinks, this.baseline.runPresetLinks),
             workItems: arrayDelta(this.workItems, this.baseline.workItems, (item) => item.key),
             workItemProviders: mapDelta(this.workItemProviders, this.baseline.workItemProviders),
             savedQueries: arrayDelta(this.savedQueries, this.baseline.savedQueries, (item) => item.id),
@@ -3272,6 +3425,9 @@ export class DevDataStore {
       this.consumers = applyArrayDelta(this.baseline.consumers, readArray<Consumer>('consumers', (item) => item.id), (item) => item.id)
       this.documents = applyArrayDelta(this.baseline.documents, readArray<DocumentOut>('documents', (item) => item.id), (item) => item.id)
       this.drafts = applyArrayDelta(this.baseline.drafts, readArray<DraftRead>('drafts', (item) => item.id), (item) => item.id)
+      this.testPresets = applyArrayDelta(this.baseline.testPresets, readArray<TestPresetRead>('testPresets', (item) => item.id), (item) => item.id)
+      this.presetVersions = applyMapDelta(this.baseline.presetVersions, readMap<TestPresetVersionRead[]>('presetVersions'))
+      this.runPresetLinks = applyMapDelta(this.baseline.runPresetLinks, readMap<PipelinePresetLink>('runPresetLinks'))
       this.workItems = applyArrayDelta(this.baseline.workItems, readArray<WorkItem>('workItems', (item) => item.key), (item) => item.key)
       this.workItemProviders = applyMapDelta(this.baseline.workItemProviders, readMap<'jira' | 'jira_align'>('workItemProviders'))
       this.savedQueries = applyArrayDelta(this.baseline.savedQueries, readArray<SavedQuery>('savedQueries', (item) => item.id), (item) => item.id)

@@ -4,6 +4,7 @@
  * creates the thread, while selected work items are resolved here into inline
  * packets. The full configurable bundle and selected assistant id are retained.
  */
+import { changesSincePreset } from '@/features/presets/presetModel'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { legacyLaunchIntent } from './legacyLaunchIntent'
 
@@ -143,6 +144,10 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   // reload; the actual request still includes the explicit reviewed plan.
   // Ownership is included; the redundant default plan keeps its existing intent identity.
   if (draft.config.phases === null) delete intentConfigurable.phases
+  // Provenance only: which preset this test started from, and whether it was edited.
+  const preset = draft.preset
+    ? { kind: draft.preset.kind, id: draft.preset.id, version: draft.preset.version, name: draft.preset.name, modified: changesSincePreset(draft).length > 0 }
+    : null
   const launchIntent = {
     assistant_id: preview.assistant_id,
     title: preview.input.title,
@@ -157,8 +162,10 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
     document_ids: preview.document_ids,
     work_items: draft.work_items.map((item) => ({ ...item })),
     context_summary_ids: [...draft.context_summary_ids],
+    ...(preset ? { preset } : {}),
   }
   const baseRequestPayload: WizardLaunchRequestPayload = {
+    ...(preset ? { preset } : {}),
     test_scope: draft.scope.test_scope,
     assistant_id: preview.assistant_id,
     title: preview.input.title,

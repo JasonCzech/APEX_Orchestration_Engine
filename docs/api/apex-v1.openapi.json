@@ -8024,6 +8024,66 @@
         "title": "PipelineListResponse",
         "type": "object"
       },
+      "PipelinePresetLink": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "modified": {
+            "title": "Modified",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "recorded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded At"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "kind",
+          "preset_id",
+          "version",
+          "name",
+          "modified",
+          "recorded_at"
+        ],
+        "title": "PipelinePresetLink",
+        "type": "object"
+      },
       "PipelineSetupConfiguration": {
         "properties": {
           "app_id": {
@@ -8843,6 +8903,103 @@
           "script_version_id"
         ],
         "title": "PrepareExecution",
+        "type": "object"
+      },
+      "PresetProvenance": {
+        "additionalProperties": false,
+        "description": "The preset a launch started from, as the wizard reports it.",
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "team",
+              "organization"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "modified": {
+            "default": false,
+            "title": "Modified",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "PresetProvenance",
+        "type": "object"
+      },
+      "PresetUsage": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "team",
+              "organization"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "tests": {
+            "title": "Tests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "preset_id",
+          "tests",
+          "last_used_at"
+        ],
+        "title": "PresetUsage",
         "type": "object"
       },
       "PriceGenerationResponse": {
@@ -11751,6 +11908,17 @@
             ],
             "title": "Phases"
           },
+          "preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PresetProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The preset this test started from (provenance only)."
+          },
           "project_id": {
             "anyOf": [
               {
@@ -11949,6 +12117,377 @@
           "layer"
         ],
         "title": "TestParticipant",
+        "type": "object"
+      },
+      "TestPresetCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "visibility": {
+            "default": "project",
+            "enum": [
+              "personal",
+              "project"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "project_id",
+          "payload"
+        ],
+        "title": "TestPresetCreate",
+        "type": "object"
+      },
+      "TestPresetRead": {
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "editable": {
+            "title": "Editable",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "visibility": {
+            "enum": [
+              "personal",
+              "project"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "project_id",
+          "application_id",
+          "visibility",
+          "payload",
+          "version",
+          "created_by",
+          "updated_by",
+          "created_at",
+          "updated_at",
+          "archived_at",
+          "mine",
+          "editable"
+        ],
+        "title": "TestPresetRead",
+        "type": "object"
+      },
+      "TestPresetUpdate": {
+        "additionalProperties": false,
+        "description": "Replaces name, description and payload. ``application_id`` and\n``visibility`` change only when sent. ``expected_version`` guards lost updates.",
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "enum": [
+                  "personal",
+                  "project"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visibility"
+          }
+        },
+        "required": [
+          "name",
+          "payload"
+        ],
+        "title": "TestPresetUpdate",
+        "type": "object"
+      },
+      "TestPresetVersionRead": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "name",
+          "description",
+          "payload",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "title": "TestPresetVersionRead",
         "type": "object"
       },
       "TestPromptRequest": {
@@ -21447,6 +21986,62 @@
         ]
       }
     },
+    "/v1/pipelines/{thread_id}/preset": {
+      "get": {
+        "description": "The preset this test started from, if any (authorized like the test itself).",
+        "operationId": "getPipelinePreset",
+        "parameters": [
+          {
+            "description": "Pipeline thread id",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PipelinePresetLink"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Getpipelinepreset"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Preset",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/v1/pipelines/{thread_id}/rerun": {
       "post": {
         "description": "Rerun phases using the complete server-side checkpointed configuration.",
@@ -22349,6 +22944,510 @@
         "summary": "Get System Info",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/v1/test-presets": {
+      "get": {
+        "operationId": "listTestPresets",
+        "parameters": [
+          {
+            "description": "Filter to one project",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one project",
+              "title": "Project"
+            }
+          },
+          {
+            "description": "Filter to one application",
+            "in": "query",
+            "name": "application",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one application",
+              "title": "Application"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TestPresetRead"
+                  },
+                  "title": "Response Listtestpresets",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Test Presets",
+        "tags": [
+          "test-presets"
+        ]
+      },
+      "post": {
+        "operationId": "createTestPreset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestPresetCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPresetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      }
+    },
+    "/v1/test-presets/usage": {
+      "get": {
+        "description": "Tests started from these presets, counted over the tests the caller may see.",
+        "operationId": "listTestPresetUsage",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "team",
+                "organization"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ids",
+            "required": true,
+            "schema": {
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Ids",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetUsage"
+                  },
+                  "title": "Response Listtestpresetusage",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Test Preset Usage",
+        "tags": [
+          "test-presets"
+        ]
+      }
+    },
+    "/v1/test-presets/{preset_id}": {
+      "delete": {
+        "operationId": "deleteTestPreset",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      },
+      "get": {
+        "operationId": "getTestPreset",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPresetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      },
+      "put": {
+        "operationId": "updateTestPreset",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestPresetUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPresetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      }
+    },
+    "/v1/test-presets/{preset_id}/archive": {
+      "post": {
+        "operationId": "archiveTestPreset",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPresetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      }
+    },
+    "/v1/test-presets/{preset_id}/unarchive": {
+      "post": {
+        "operationId": "unarchiveTestPreset",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPresetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unarchive Test Preset",
+        "tags": [
+          "test-presets"
+        ]
+      }
+    },
+    "/v1/test-presets/{preset_id}/versions": {
+      "get": {
+        "operationId": "listTestPresetVersions",
+        "parameters": [
+          {
+            "description": "Test preset id",
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "description": "Test preset id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TestPresetVersionRead"
+                  },
+                  "title": "Response Listtestpresetversions",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Test Preset Versions",
+        "tags": [
+          "test-presets"
         ]
       }
     },

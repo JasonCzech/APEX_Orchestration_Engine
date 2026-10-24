@@ -63,6 +63,22 @@ export function wizardStepUrl(step: WizardStepId): string {
 export const ENGINES = ['sim', 'apex_load', 'loadrunner'] as const
 export type EngineId = (typeof ENGINES)[number]
 
+export const ENGINE_CAPTIONS: Record<EngineId, { label: string; caption: string }> = {
+  sim: {
+    label: 'Simulated',
+    caption: 'Built-in simulator — no external system, instant feedback. Default.',
+  },
+  apex_load: {
+    label: 'APEX Load',
+    caption: 'Distributed load generation via the APEX Load engine.',
+  },
+  loadrunner: {
+    label: 'LoadRunner',
+    caption: 'OpenText LoadRunner enterprise suite integration.',
+  },
+}
+
+
 export type GateMode = 'gated' | 'auto'
 export interface GatePolicy {
   prompt_review: GateMode
@@ -125,6 +141,32 @@ export interface WizardDraft {
   /** Pre-migration source used only to quarantine unresolved older launches. */
   legacy_prompt_overrides?: Record<string, { content: string }>
   legacy_prompt_override_removals?: string[]
+  /** The preset this draft started from, with the values it set (for changes, Reset and Detach). */
+  preset?: DraftPresetLink | null
+}
+
+/** Where a draft's settings came from: a team or organization preset at a version. */
+export interface DraftPresetLink {
+  kind: 'team' | 'organization'
+  id: string
+  version: number | null
+  name: string
+  /** The sections the preset set, as applied (see features/presets/presetModel). */
+  baseline: Record<string, unknown>
+}
+
+function parsePresetLink(value: unknown): DraftPresetLink | null {
+  if (!isRecord(value)) return null
+  const kind = value['kind']
+  const id = value['id']
+  if ((kind !== 'team' && kind !== 'organization') || typeof id !== 'string' || !id) return null
+  return {
+    kind,
+    id,
+    version: typeof value['version'] === 'number' ? value['version'] : null,
+    name: typeof value['name'] === 'string' ? value['name'] : id,
+    baseline: isRecord(value['baseline']) ? value['baseline'] : {},
+  }
 }
 
 export function createLaunchIdempotencyKey(): string {
@@ -158,6 +200,7 @@ export function emptyDraft(): WizardDraft {
     prompt_selection_issues: ['Loading prompt catalog…'],
     prompt_overrides: {},
     prompt_override_removals: [],
+    preset: null,
   }
 }
 
@@ -318,6 +361,7 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
     prompt_overrides,
     prompt_override_removals: stringArray(payload['prompt_override_removals']),
     ...(legacyOverrides ? { legacy_prompt_overrides: legacyOverrides, legacy_prompt_override_removals: stringArray(payload['legacy_prompt_override_removals']) } : {}),
+    preset: parsePresetLink(payload['preset']),
   }
 }
 
@@ -518,7 +562,7 @@ export function issueFieldId(message: string): string | undefined {
   if (message === 'Title is required') return 'wizard-title'
   if (message === 'Request is required') return 'wizard-request'
   if (message.startsWith('Complete the system topology') || message === 'Exactly one backend is required.') return 'wizard-add-backend'
-  if (message === 'Choose a project, application, and environment for every participant.') return 'wizard-participant-missing'
+  if (message === 'Choose an application and environment for every system, and a project for the primary system.') return 'wizard-participant-missing'
   if (message === 'Select the primary system under test.' || message === 'Choose the primary system’s project') return 'wizard-primary'
   if (/environment/i.test(message)) return 'wizard-environment'
   if (/application/i.test(message)) return 'wizard-application'
@@ -753,5 +797,28 @@ export function buildLaunchPreview(draft: WizardDraft): LaunchPreview {
     configurable: buildConfigurable(draft),
     document_ids: [...draft.document_ids],
     work_item_keys: draft.work_items.map((item) => item.key),
+  }
+}
+
+/** Seed the draft's primary system from the Start step (owning project, application and tier). */
+export function withPrimarySystem(
+  draft: WizardDraft,
+  primary: { projectId: string; applicationId: string; layer: 'frontend' | 'middle' | 'backend' } | null,
+): WizardDraft {
+  if (!primary) return draft
+  const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `primary-${Date.now()}`
+  return {
+    ...draft,
+    scope: {
+      test_scope: {
+        schema_version: 1,
+        participants: [{ id, layer: primary.layer, project_id: primary.projectId, application_id: primary.applicationId, environment_id: '' }],
+        primary_participant_id: id,
+        traffic_entry_participant_id: null,
+      },
+      project_id: primary.projectId,
+      app_id: primary.applicationId,
+      environment_id: null,
+    },
   }
 }

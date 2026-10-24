@@ -24,7 +24,7 @@ test('phase ownership and analysis connectors remain explicit across engine chan
     { id: 'other-a', name: 'Metrics analysis', kind: 'analysis', provider: 'other' },
     { id: 'other-b', name: 'Trace analysis', kind: 'analysis', provider: 'other' },
   ] }))
-  await page.goto('/runs/new')
+  await page.goto('/runs/new?step=scope')
   await page.getByLabel('Title', { exact: true }).fill('Ownership acceptance')
   await page.getByLabel('Request', { exact: true }).fill('Validate a mixed workflow')
   await page.getByRole('button', { name: 'Add backend', exact: true }).click()

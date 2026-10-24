@@ -1,5 +1,5 @@
-// D7: real golden-configs screens (router lazyPage names verified:
-// GoldenConfigsPage at /golden-configs, GoldenConfigDetailPage at
-// /golden-configs/:assistantId).
-export { GoldenConfigsPage } from './GoldenConfigsPage'
+// Test preset screens (router lazyPage names): the grouped list at /test-presets,
+// organization presets at /test-presets/:assistantId and team presets at
+// /test-presets/team/:presetId.
+export { PresetsListPage as GoldenConfigsPage, TeamPresetDetailPage } from '@/features/presets/PresetsPages'
 export { GoldenConfigDetailPage } from './GoldenConfigDetailPage'

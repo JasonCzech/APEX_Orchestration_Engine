@@ -3,6 +3,7 @@
  * with an edit action per section and a sticky readiness checklist beside it.
  * Work-item keys and document ids are resolved into context packets at launch.
  */
+import { changesSincePreset } from '@/features/presets/presetModel'
 import { useId, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { PHASE_NAMES } from '@apex/pipeline-events'
@@ -181,7 +182,9 @@ export function ReviewStep({
   const engineLabel = draft.config.unsupported_engine ? `${draft.config.unsupported_engine} (unsupported)` : ENGINE_LABELS[draft.config.engine]
   const appName = applications.data?.find((item) => item.id === draft.scope.app_id)?.name
   const envName = environments.data?.find((item) => item.id === draft.scope.environment_id)?.name
-  const presetName = configurations.data?.find((item) => item.assistantId === draft.config.golden_config_id)?.name
+  const presetName = draft.preset?.name ?? configurations.data?.find((item) => item.assistantId === draft.config.golden_config_id)?.name
+  const presetChanges = changesSincePreset(draft)
+  const presetVersion = draft.preset?.version ? ` · v${draft.preset.version}` : ''
 
   return (
     <section className="wizard-step wizard-review" aria-label="Review">
@@ -242,6 +245,14 @@ export function ReviewStep({
               <div><dt>Agent phases</dt><dd>{phases.length} of {PHASE_NAMES.length}</dd></div>
               <div><dt>Review policy</dt><dd>{draft.config.gates_mode === 'all_auto' ? 'Run automatically' : draft.config.gates_mode === 'custom' ? 'Custom' : 'Review every agent phase'}</dd></div>
             </dl>
+            {draft.preset && (
+              <p className="wizard-review-preset" data-testid="review-preset">
+                Started from preset <strong>{draft.preset.name}</strong>{presetVersion}
+                {presetChanges.length
+                  ? <> · changed since: {presetChanges.map(change => change.field.label).join(', ')}</>
+                  : <> · no changes</>}
+              </p>
+            )}
           </header>
 
           <div className="glass-panel wizard-review-sections">
@@ -289,7 +300,7 @@ export function ReviewStep({
                 <dt>Review policy</dt>
                 <dd>{reviewPolicySummary(draft.config)}</dd>
                 <dt>Test preset</dt>
-                <dd><ReferenceName id={draft.config.golden_config_id} name={presetName} /></dd>
+                <dd>{draft.preset ? `${draft.preset.name}${presetVersion}` : <ReferenceName id={draft.config.golden_config_id} name={presetName} />}</dd>
               </dl>
             </ReviewSection>
 

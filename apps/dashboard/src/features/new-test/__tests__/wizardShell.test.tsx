@@ -109,13 +109,12 @@ describe('NewRunWizard shell', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add backend' })).toHaveFocus())
     await user.click(screen.getByRole('button', { name: 'Add backend' }))
     expect(screen.queryByRole('button', { name: 'Add backend' })).not.toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'Backend' })).toHaveClass('wizard-participant')
+    // The first system becomes the primary one, so only it asks for a project (F-17).
+    expect(screen.getByRole('group', { name: 'Backend · Primary system' })).toHaveClass('wizard-participant')
+    expect(screen.getByRole('radio', { name: 'Primary system under test' })).toBeChecked()
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Scope: Choose a project, application, and environment for every participant.' }))
+    await user.click(screen.getByRole('button', { name: 'Scope: Choose an application and environment for every system, and a project for the primary system.' }))
     await waitFor(() => expect(screen.getByLabelText('Project')).toHaveFocus())
-    await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Scope: Select the primary system under test.' }))
-    await waitFor(() => expect(screen.getByRole('radio', { name: 'Primary system under test' })).toHaveFocus())
     expect(screen.queryByText(/Project is required/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Retry participant verification' })).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
@@ -176,22 +175,22 @@ describe('NewRunWizard shell', () => {
     await flushAndUnmountWizard(rendered)
   })
 
-  it('shows the resume panel on first visit and hides it once a draft is chosen', async () => {
+  it('opens on Start, and resuming a draft enters the wizard on that draft', async () => {
     installWizardHandlers([
       draftRead({ id: 'draft-9', title: 'Black Friday soak', payload: { title: 'Resumed soak' } }),
     ])
     const user = userEvent.setup()
-    const rendered = renderWizard()
+    const rendered = renderWizard('/runs/new')
     const { router } = rendered
 
-    const select = await screen.findByLabelText('Resume draft')
-    expect(screen.getByTestId('resume-draft-panel')).toBeInTheDocument()
-
-    await user.selectOptions(select, 'draft-9')
+    expect(await screen.findByRole('heading', { name: 'Start a new test' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: 'New test groups' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: /Resume a draft/ }))
+    await user.click(await screen.findByRole('button', { name: 'Resume Black Friday soak' }))
 
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(router.state.location.search).toContain('draft=draft-9')
-    expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Start a new test' })).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 })

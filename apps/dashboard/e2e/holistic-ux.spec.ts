@@ -64,7 +64,7 @@ for (const theme of themes) {
     expect(surfaces.border).toBe('1px')
     expect(surfaces.background).not.toBe('rgba(0, 0, 0, 0)')
     expect(surfaces.scheme).toBe(theme.endsWith('light') ? 'light' : 'dark')
-    await page.goto('/runs/new')
+    await page.goto('/runs/new?step=scope')
     await expect(page.getByLabel('Title', { exact: true })).toBeVisible()
     const form = await page.getByLabel('Title', { exact: true }).evaluate((input) => {
       const style = getComputedStyle(input)
@@ -102,6 +102,9 @@ for (const width of [390, 768, 1440]) {
     await expect(page.getByRole('heading', { name: 'Prompts', exact: true })).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.goto('/runs/new')
+    await expect(page.getByRole('heading', { name: 'Start a new test', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.goto('/runs/new?step=scope')
     await expect(page.getByLabel('Title', { exact: true })).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   })

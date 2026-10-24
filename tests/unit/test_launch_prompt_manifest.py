@@ -245,3 +245,45 @@ async def test_create_pipeline_maps_an_invalid_manifest_to_a_prompt_refusal(monk
     assert excinfo.value.status_code == 422
     assert excinfo.value.detail == "Selected prompts could not be prepared for this test"
     assert client.runs.args == ()
+
+
+async def test_create_pipeline_records_the_preset_it_started_from(monkeypatch) -> None:
+    async def fake_prepare(configurable, who, run_input=None) -> None:
+        configurable["prompt_manifest"] = _manifest_marker(configurable)
+
+    recorded: list[Any] = []
+
+    async def fake_record(thread_id, preset, configurable, identity) -> None:
+        recorded.append((thread_id, preset, configurable["project_id"]))
+
+    monkeypatch.setattr("apex.services.prompt_selections.prepare_prompt_manifest", fake_prepare)
+    monkeypatch.setattr(pipelines, "record_preset_usage", fake_record)
+    request = _scope_request(
+        title="From preset",
+        phases=["reporting"],
+        configurable={"prompt_selections": _selections("reporting")},
+    )
+    request = request.model_copy(
+        update={
+            "preset": pipelines.PresetProvenance(
+                kind="team", id="preset-1", version=3, name="ACC soak", modified=True
+            )
+        }
+    )
+    await pipelines.create_pipeline_run(
+        request,
+        _identity(["proj-1"]),
+        cast(DocumentsRepository, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo()),
+        cast(Any, _route_request(PipelineReadService(FakeClient()))),
+    )
+
+    [(thread_id, preset, project_id)] = recorded
+    assert thread_id == "thr-1"
+    assert (preset.kind, preset.id, preset.version, preset.modified) == (
+        "team",
+        "preset-1",
+        3,
+        True,
+    )
+    assert project_id == "proj-1"

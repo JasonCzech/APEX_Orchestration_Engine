@@ -1137,6 +1137,77 @@ class Draft(Base):
     )
 
 
+class TestPreset(Base):
+    """A team or personal test preset: saved wizard settings (a partial draft).
+
+    Applying one only fills the new-test wizard; launch authorizes and validates
+    the result like any other test. Organization presets stay LangGraph
+    assistants (platform-admin only) and are not stored here.
+    """
+
+    __test__ = False  # not a pytest class
+
+    __tablename__ = "test_presets"
+    __table_args__ = (
+        Index("ix_test_presets_project_id", "project_id"),
+        Index("ix_test_presets_application_id", "application_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    # Owning project (the primary system's) and the application it is offered for.
+    project_id: Mapped[str] = mapped_column(String(255))
+    application_id: Mapped[str | None] = mapped_column(String(32))
+    visibility: Mapped[str] = mapped_column(String(16))  # "personal" | "project"
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_by_consumer_id: Mapped[str | None] = mapped_column(String(32))
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TestPresetVersion(Base):
+    """Every saved version of a team preset, so earlier versions stay viewable."""
+
+    __tablename__ = "test_preset_versions"
+
+    preset_id: Mapped[str] = mapped_column(
+        ForeignKey("test_presets.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunPresetLink(Base):
+    """Which preset (team or organization, and which version) a test started from."""
+
+    __tablename__ = "run_preset_links"
+    __table_args__ = (Index("ix_run_preset_links_preset", "preset_kind", "preset_id"),)
+
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    preset_kind: Mapped[str] = mapped_column(String(16))  # "team" | "organization"
+    preset_id: Mapped[str] = mapped_column(String(256))
+    preset_version: Mapped[int | None] = mapped_column(Integer)
+    preset_name: Mapped[str | None] = mapped_column(String(255))
+    modified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class TestCycle(Base):
     """Additive cycle aggregate; existing pipeline checkpoints remain untouched."""
 

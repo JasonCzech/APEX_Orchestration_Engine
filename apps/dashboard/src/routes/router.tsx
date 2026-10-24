@@ -121,6 +121,11 @@ export const appRoutes: RouteObject[] = [
             lazy: lazyPage(goldenConfigs, 'GoldenConfigsPage'),
           },
           {
+            path: 'test-presets/team/:presetId',
+            handle: handle('Test preset'),
+            lazy: lazyPage(goldenConfigs, 'TeamPresetDetailPage'),
+          },
+          {
             path: 'test-presets/:assistantId',
             handle: handle('Test preset'),
             lazy: lazyPage(goldenConfigs, 'GoldenConfigDetailPage'),

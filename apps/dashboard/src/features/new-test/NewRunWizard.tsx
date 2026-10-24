@@ -1,5 +1,4 @@
 import { useTimestampPreference } from '@/theme/preferences'
-import { formatTimestamp } from '@/utils/time'
 import { ScopeContext } from '@/components/ux/ScopeContext'
 import {
   useCallback,
@@ -12,7 +11,11 @@ import {
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import { isApiError } from '@/api/errors'
-import { useDraftsList } from '@/api/hooks/useDrafts'
+import { createDraftRequest } from '@/api/hooks/useDrafts'
+import { usePresets, useTeamPreset } from '@/api/hooks/useTestPresets'
+import { SavePresetDialog } from '@/features/presets/SavePresetDialog'
+import { applyPreset, applyPresetFromStart, parsePresetKey, presetKey, rebaseNormalizedPreset } from '@/features/presets/presetModel'
+import { loadRunSetupDraft } from '@/features/runs/runSetup'
 import { useOptionalAuth } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import {
@@ -21,8 +24,9 @@ import {
   RequireRole,
   roleAtLeast,
 } from '@/auth/RequireRole'
-import { CachedDataWarning } from '@/components/CachedDataWarning'
 
+import { PresetBar } from './PresetBar'
+import { StartPanel } from './StartPanel'
 import { ConfigStep } from './steps/ConfigStep'
 import { ContextStep } from './steps/ContextStep'
 import { PromptsStep } from './steps/PromptsStep'
@@ -38,6 +42,7 @@ import {
   wizardStepUrl,
   STEP_LABELS,
   WIZARD_STEPS,
+  withPrimarySystem,
   type WizardStepId,
 } from './wizardState'
 
@@ -289,10 +294,21 @@ function NewRunWizardContent({
 
   const launch = useWizardLaunch()
   const [finalizing, setFinalizing] = useState(false)
-  const draftsList = useDraftsList(undefined, { enabled: urlDraftId === null && draftId === null })
-  const resumeEligible = draftId === null && saveState === 'idle'
-  const showResumePicker = resumeEligible && (draftsList.data?.length ?? 0) > 0
-  const showResumeError = resumeEligible && draftsList.isError && !draftsList.data
+  const presets = usePresets()
+  const [savingPreset, setSavingPreset] = useState(false)
+  // ?preset=<kind>:<id> starts from a preset (?golden=<assistant> is the older form).
+  const presetParam = searchParams.get('preset') ?? (searchParams.get('golden') ? `organization:${searchParams.get('golden')}` : null)
+  const [presetLinkError, setPresetLinkError] = useState<string | null>(null)
+  // Start (F-01) opens a fresh New test; any deep link (step, draft, preset) skips it.
+  const [started, setStarted] = useState(false)
+  const showStart = !started && urlDraftId === null && draftId === null && !searchParams.has('step') &&
+    presetParam === null && saveState === 'idle' && !loading
+  // Leaving Start opens the wizard at its top, not at Start's scroll position.
+  const wasShowingStart = useRef(showStart)
+  useEffect(() => {
+    if (wasShowingStart.current && !showStart) document.getElementById('main-content')?.scrollTo?.({ top: 0 })
+    wasShowingStart.current = showStart
+  }, [showStart])
   const maxContextPackets =
     authState?.status === 'authenticated'
       ? authState.systemInfo.limits.max_context_packets
@@ -351,6 +367,12 @@ function NewRunWizardContent({
     [isDraftGenerationCurrent],
   )
 
+  // Normalizing (prompt defaults, etc.) moves an applied preset's baseline along: it isn't an edit.
+  const normalizeWithPreset = useCallback(
+    (updater: DraftUpdater) => normalizeDraft(previous => rebaseNormalizedPreset(previous, typeof updater === 'function' ? updater(previous) : updater)),
+    [normalizeDraft],
+  )
+
   const updateDraft = useCallback(
     (updater: DraftUpdater) => {
       setDraft(updater)
@@ -403,6 +425,32 @@ function NewRunWizardContent({
     }
   }, [])
 
+  // Apply a deep-linked preset once the presets load (once per link), then drop the parameter.
+  const appliedPresetParam = useRef<string | null>(null)
+  const linkTarget = presetParam ? parsePresetKey(presetParam) : null
+  const listedPreset = linkTarget ? presets.data?.find(preset => preset.key === presetKey(linkTarget.kind, linkTarget.id)) : undefined
+  // A team preset missing from the list may be archived: look it up to say so.
+  const lookUpPreset = linkTarget?.kind === 'team' && !presets.isPending && !listedPreset
+  const linkedTeamPreset = useTeamPreset(lookUpPreset ? linkTarget.id : undefined)
+  useEffect(() => {
+    if (presetParam === null) { appliedPresetParam.current = null; return }
+    if (loading || appliedPresetParam.current === presetParam) return
+    if (!listedPreset && (presets.isPending || (lookUpPreset && linkedTeamPreset.isPending))) return
+    appliedPresetParam.current = presetParam
+    const found = listedPreset ?? (lookUpPreset ? linkedTeamPreset.data : undefined)
+    if (found && !found.archived) updateDraft(previous => applyPreset(previous, found))
+    else setPresetLinkError(found
+      ? `${found.name} is archived. Unarchive it on its page to start tests from it.`
+      : 'That preset is not available to you, or it no longer exists.')
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.delete('preset')
+      next.delete('golden')
+      if (!next.has('step')) next.set('step', wizardStepUrl('scope'))
+      return next
+    }, { replace: true })
+  }, [presetParam, loading, listedPreset, presets.isPending, lookUpPreset, linkedTeamPreset.isPending, linkedTeamPreset.data, updateDraft, setSearchParams])
+
   async function handleLaunch() {
     if (finalizing || issues.length > 0 || !canOperate || pendingOperationsRef.current.size > 0) return
     setFinalizing(true)
@@ -437,17 +485,27 @@ function NewRunWizardContent({
     }
   }
 
-  async function resumeDraft(id: string) {
-    if (pendingOperationsRef.current.size > 0) return
-    if (!(await loadDraft(id))) return
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous)
-        next.set('draft', id)
-        return next
-      },
-      { replace: true },
-    )
+  function enterWizard() {
+    setStarted(true)
+    selectStep('scope')
+  }
+
+  /** Load a draft and enter the wizard on it (one URL update: draft and step together). */
+  async function openDraftFromStart(id: string) {
+    if (pendingOperationsRef.current.size > 0 || !(await loadDraft(id)) || !mountedRef.current) return
+    setStarted(true)
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.set('draft', id)
+      next.set('step', wizardStepUrl('scope'))
+      return next
+    }, { replace: true })
+  }
+
+  async function startFromRun(threadId: string) {
+    const copied = await loadRunSetupDraft(threadId)
+    const saved = await createDraftRequest({ title: copied.title, project_id: copied.scope.project_id || null, payload: copied as unknown as Record<string, unknown> })
+    if (mountedRef.current) await openDraftFromStart(saved.id)
   }
 
   function selectStep(step: WizardStepId) {
@@ -501,7 +559,7 @@ function NewRunWizardContent({
           step={step}
           draft={draft}
           onChange={updateDraft}
-          onNormalize={normalizeDraft}
+          onNormalize={normalizeWithPreset}
           onEditStep={jumpToTab}
           draftGeneration={draftGeneration}
           isDraftGenerationCurrent={isDraftGenerationCurrent}
@@ -569,6 +627,8 @@ function NewRunWizardContent({
     <div className="wizard-page animate-enter">
       {launchRefusal && <p className="tonal-card warning" role="alert">{launchRefusal}</p>}
       <ScopeContext project={draft.scope.project_id} application={draft.scope.app_id} environment={draft.scope.environment_id} />
+      {presetLinkError && <p className="tonal-card warning" role="alert">{presetLinkError}</p>}
+      {!showStart && !loading && <PresetBar draft={draft} onChange={updateDraft} disabled={finalizing || !canOperate} />}
 
       {SAVE_LABELS[saveState] && (
         <div className="wizard-status-row">
@@ -583,61 +643,22 @@ function NewRunWizardContent({
         </div>
       )}
 
-      {resumeEligible && draftsList.isError && draftsList.data && (
-        <CachedDataWarning error={draftsList.error} onRetry={() => void draftsList.refetch()} />
-      )}
-
-      {(showResumePicker || showResumeError) && (
-        <div className="glass-panel wizard-resume" data-testid="resume-draft-panel">
-          {showResumeError ? (
-            <>
-              <span className="wizard-label">Resume draft</span>
-              <div className="tonal-card danger" role="alert">
-                Saved drafts unavailable: {draftsList.error.message}{' '}
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => void draftsList.refetch()}
-                >
-                  Retry
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <label className="wizard-label" htmlFor="wizard-resume-select">
-                Resume draft
-              </label>
-              <select
-                id="wizard-resume-select"
-                className="field-select"
-                value=""
-                disabled={loading || pendingStepCount > 0}
-                onChange={(event) => {
-                  if (event.target.value) void resumeDraft(event.target.value)
-                }}
-              >
-                <option value="">Start fresh or pick a saved draft…</option>
-                {(draftsList.data ?? []).map((entry) => (
-                  <option key={entry.id} value={entry.id}>
-                    {entry.title || 'Untitled draft'} · {entry.project_id || 'No project'} · {entry.updated_at ? formatTimestamp(entry.updated_at) : entry.id}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-        </div>
-      )}
-
       {loadFailure && (
         <p className="wizard-caption wizard-caption--danger" role="alert">
           {loadFailure.message}
         </p>
       )}
 
-      {loading ? (
-        <p className="wizard-caption">Loading draft…</p>
-      ) : (
+      {loading && <p className="wizard-caption">Loading draft…</p>}
+      {showStart || (loading && !started && draftId === null && urlDraftId === null) ? (
+        <StartPanel
+          busy={loading}
+          onPreset={(preset, primary) => { updateDraft(previous => applyPresetFromStart(withPrimarySystem(previous, primary), preset, primary)); enterWizard() }}
+          onBlank={primary => { if (primary) updateDraft(previous => withPrimarySystem(previous, primary)); enterWizard() }}
+          onDraft={id => void openDraftFromStart(id)}
+          onRecent={startFromRun}
+        />
+      ) : loading ? null : (
         <fieldset className="wizard-fieldset" disabled={finalizing || !canOperate}>
           <div className="wizard-stack">
             {renderTabs()}
@@ -655,7 +676,15 @@ function NewRunWizardContent({
       </div>}
       {/* One compact row: the step, a readiness chip that discloses the issue
           list on demand, and the actions. Server-recheck caveats live on Review. */}
-      <footer className="glass-panel wizard-footer">
+      {savingPreset && (
+        <SavePresetDialog
+          draft={draft}
+          existing={draft.preset ? presets.data?.find(preset => preset.key === presetKey(draft.preset!.kind, draft.preset!.id)) ?? null : null}
+          onClose={() => setSavingPreset(false)}
+          onSaved={link => updateDraft(previous => ({ ...previous, preset: link }))}
+        />
+      )}
+      {!showStart && <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
           <strong>{activeStep === 'review' ? 'Review before launch' : `Step ${WIZARD_STEPS.indexOf(activeStep) + 1} of ${WIZARD_STEPS.length} · ${STEP_LABELS[activeStep]}`}</strong>
           {/* One always-mounted live region announces readiness changes; the
@@ -700,6 +729,11 @@ function NewRunWizardContent({
             >
               Save draft
             </button>
+            {activeStep === 'review' && (
+              <button type="button" className="btn btn-ghost" disabled={loading || finalizing} onClick={() => setSavingPreset(true)}>
+                Save as preset…
+              </button>
+            )}
             {WIZARD_STEPS.indexOf(activeStep) > 0 && <button type="button" className="btn btn-secondary" disabled={loading || finalizing || pendingStepCount > 0} onClick={() => jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) - 1]!)}>Back</button>}
             <button
               type="button"
@@ -721,7 +755,7 @@ function NewRunWizardContent({
             </button>
           </RequireRole>
         </div>
-      </footer>
+      </footer>}
     </div>
   )
 }

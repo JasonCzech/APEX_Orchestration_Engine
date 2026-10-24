@@ -17,6 +17,10 @@ export interface GoldenConfig {
   description: string | null
   /** The pinned configurable bundle ({} when the assistant pins nothing). */
   configurable: Record<string, unknown>
+  /** Assistant metadata (e.g. `application_id`, the primary application it is for). */
+  metadata: Record<string, unknown>
+  version: number
+  updatedAt: string | null
 }
 
 async function fetchGoldenConfigs(signal?: AbortSignal): Promise<GoldenConfig[]> {
@@ -28,6 +32,9 @@ async function fetchGoldenConfigs(signal?: AbortSignal): Promise<GoldenConfig[]>
       name: assistant.name,
       description: assistant.description ?? null,
       configurable: (assistant.config?.configurable ?? {}) as Record<string, unknown>,
+      metadata: (assistant.metadata ?? {}) as Record<string, unknown>,
+      version: assistant.version,
+      updatedAt: assistant.updated_at ?? null,
     }))
 }
 
@@ -95,8 +102,6 @@ export function useAssistants(): UseQueryResult<GoldenConfig[], Error> {
 export interface GoldenConfigEntry extends GoldenConfig {
   /** metadata.created_by === "system" (the auto-created `pipeline` assistant). */
   isSystemDefault: boolean
-  /** Assistant version — bumps on every assistants.update. */
-  version: number
   updatedAt: string
 }
 
@@ -106,6 +111,7 @@ function toGoldenConfigEntry(assistant: Assistant): GoldenConfigEntry {
     name: assistant.name,
     description: assistant.description ?? null,
     configurable: (assistant.config?.configurable ?? {}) as Record<string, unknown>,
+    metadata: (assistant.metadata ?? {}) as Record<string, unknown>,
     isSystemDefault: assistant.metadata?.['created_by'] === 'system',
     version: assistant.version,
     updatedAt: assistant.updated_at,

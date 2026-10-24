@@ -169,7 +169,8 @@ export function installWizardHandlers(existingDrafts: DraftRead[] = []) {
 }
 
 /** Mounts the wizard on a memory router with a probe for the post-launch route. */
-export function renderWizard(initialEntry = '/runs/new', authState?: AuthState) {
+/** Opens on Scope by default: deep links skip the Start step (tests of Start pass '/runs/new'). */
+export function renderWizard(initialEntry = '/runs/new?step=scope', authState?: AuthState) {
   const router = createMemoryRouter(
     [
       { path: '/runs/new', element: <NewRunWizardPage /> },
@@ -210,7 +211,7 @@ export async function fillScope(
   fireEvent.click(testingScreen.getByRole('button', { name: 'Add backend' }))
   await waitFor(() => expect(testingScreen.getByRole('option', { name: 'demo' })).toBeInTheDocument())
   fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'demo' } })
-  await waitFor(() => expect(testingScreen.getByRole('option', { name: /Checkout · demo/ })).toBeInTheDocument())
+  await waitFor(() => expect(testingScreen.getByRole('option', { name: 'Checkout' })).toBeInTheDocument())
   fireEvent.change(screen.getByLabelText('Application'), { target: { value: APPLICATIONS[0]!.id } })
   await waitFor(() => expect(testingScreen.getByRole('option', { name: /staging/i })).toBeInTheDocument())
   fireEvent.change(screen.getByLabelText('Environment'), { target: { value: ENVIRONMENTS[0]!.id } })

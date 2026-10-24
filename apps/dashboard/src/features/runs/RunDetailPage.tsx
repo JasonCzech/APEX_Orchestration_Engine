@@ -1,5 +1,6 @@
 import { TestScopeSummary } from '@/features/new-test/TestScopeSummary'
 import { CopyTestSetupButton } from './CopyTestSetupButton'
+import { SaveRunAsPresetButton } from './RunPreset'
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -295,6 +296,7 @@ export function RunWorkspace({
         <div className="run-detail-actions">
         {(!embedded || showEmbeddedControls) && <RequireRole role="operator">
           <CopyTestSetupButton key={threadId} threadId={threadId} />
+          <SaveRunAsPresetButton key={`preset-${threadId}`} threadId={threadId} />
           {!hitl.gate && detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
             <AbortConfirm
