@@ -41,6 +41,7 @@ const routes = [
   ['/admin/consumers', 'API consumers'],
   ['/admin/consumers/cons-admin', 'Consumer'],
   ['/admin/system', 'System status'],
+  ['/help', 'Help & API reference'],
   ['/settings', 'Settings'],
   ['/census-unknown-route', 'Not found', 'not-found'],
 ] as const

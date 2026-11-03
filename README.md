@@ -58,7 +58,7 @@ API/event contracts and runs the complete dashboard gate.
 
 ## Dashboard
 
-The dashboard includes **Help & documentation** at `/help`: searchable operator
+The dashboard includes **Help & API reference** at `/help`: searchable operator
 and administrator guides, contextual help for each major screen, and a bundled
 read-only domain API reference. Canonical articles live in [`docs/help/`](docs/help/).
 Start with [Concepts & navigation](docs/help/welcome.md) or

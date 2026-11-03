@@ -119,6 +119,7 @@ describe('dev-data route smoke', () => {
     ['/admin/consumers', 'API consumers'],
     ['/admin/consumers/cons-ci', 'Consumer'],
     ['/admin/system', 'System status'],
+    ['/help', 'Help & API reference'],
     ['/settings', 'Settings'],
   ])('mounts every production dashboard route %s', async (path, heading) => {
     renderApp({

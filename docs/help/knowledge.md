@@ -1,6 +1,6 @@
 # Knowledge & documents
 
-[Knowledge & documents](/context) manages source material used to inform agent work. Sources are inputs. [Evidence](/evidence) records outputs and execution-related material. A document being readable does not establish that its statements are verified measurements.
+[Knowledge & documents](/context) manages source material used to inform agent work. Sources are inputs; [Evidence](/evidence) records outputs and execution-related material, and [Help & API reference](/help) provides platform guides and the OpenAPI contract. A document being readable does not establish that its statements are verified measurements.
 
 You need read access to the source audience to browse it, and mutation permission to add or change scoped content. Document processing and retention depend on the deployment's configured services and storage.
 

@@ -32,7 +32,7 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     const nav = rail.getByRole('navigation', { name: 'Primary' })
     await expect(rail).toHaveCSS('width', '64px')
     for (const name of ['New test', 'Home', 'Tickets', 'Test cycles', 'Applications & environments',
-      'Knowledge & documents', 'Test presets', 'Prompts', 'Evidence', 'Agent analytics', 'Logs', 'Settings']) {
+      'Knowledge & documents', 'Test presets', 'Prompts', 'Evidence', 'Agent analytics', 'Logs', 'Help & API reference', 'Settings']) {
       await expect(nav.getByRole('link', { name, exact: true })).toBeVisible()
     }
     for (const name of ['Connections', 'API consumers', 'System status']) {

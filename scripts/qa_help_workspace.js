@@ -85,7 +85,7 @@ async (page) => {
   }
   await page.getByRole('button', {name:'Open navigation',exact:true}).click();
   const dialog = page.getByRole('dialog', {name:'Navigation',exact:true});
-  await dialog.getByRole('link', {name:'Help & documentation',exact:true}).waitFor();
+  await dialog.getByRole('link', {name:'Help & API reference',exact:true}).waitFor();
   await page.keyboard.press('Escape');
   await page.getByRole('button', {name:'Open navigation',exact:true}).waitFor();
   await page.setViewportSize({width:1440,height:1000});

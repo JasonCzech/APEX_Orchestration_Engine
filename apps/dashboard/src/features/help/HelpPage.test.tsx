@@ -12,7 +12,7 @@ describe('dashboard help', () => {
     const { router } = renderApp({ initialEntries: ['/help'], authState: authenticatedState('operator') })
     expect(await screen.findByRole('heading', { name: 'Tests, runs, reviews, and decisions' })).toBeInTheDocument()
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Help & documentation')
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Help & API reference')
     const outline = screen.getByRole('navigation', { name: 'On this page' })
     await user.click(within(outline).getByRole('link', { name: 'Roles and access' }))
     await waitFor(() => expect(router.state.location.hash).toBe('#roles-and-access'))

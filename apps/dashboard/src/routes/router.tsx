@@ -45,8 +45,8 @@ export const appRoutes: RouteObject[] = [
       {
         errorElement: <RouteErrorBoundary />,
         children: [
-          { path: 'help', handle: handle('Help & documentation'), lazy: lazyPage(() => import('@/features/help/pages'), 'HelpPage') },
-          { path: 'help/:articleId', handle: handle('Help & documentation'), lazy: lazyPage(() => import('@/features/help/pages'), 'HelpPage') },
+          { path: 'help', handle: handle('Help & API reference'), lazy: lazyPage(() => import('@/features/help/pages'), 'HelpPage') },
+          { path: 'help/:articleId', handle: handle('Help & API reference'), lazy: lazyPage(() => import('@/features/help/pages'), 'HelpPage') },
           {
             index: true,
             handle: handle('Test operations dashboard'),

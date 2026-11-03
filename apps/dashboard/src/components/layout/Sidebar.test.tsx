@@ -49,8 +49,17 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'System status' })).toBeInTheDocument()
     const statusIcon = screen.getByRole('link', { name: 'System status' }).querySelector('path')?.getAttribute('d')
     const settingsIcon = screen.getByRole('link', { name: 'Settings' }).querySelector('path')?.getAttribute('d')
+    const helpIcon = screen.getByRole('link', { name: 'Help & API reference' }).querySelector('path')?.getAttribute('d')
+    const promptsIcon = screen.getByRole('link', { name: 'Prompts' }).querySelector('path')?.getAttribute('d')
+    const knowledgeIcon = screen.getByRole('link', { name: 'Knowledge & documents' }).querySelector('path')?.getAttribute('d')
     expect(statusIcon).toBeTruthy()
     expect(statusIcon).not.toBe(settingsIcon)
+    expect(helpIcon).toBeTruthy()
+    expect(helpIcon).not.toBe(promptsIcon)
+    expect(helpIcon).not.toBe(knowledgeIcon)
+    const navLinks = within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('link')
+    const iconPaths = navLinks.map((link) => link.querySelector('path')?.getAttribute('d'))
+    expect(new Set(iconPaths).size).toBe(navLinks.length)
   })
 
   it('expands the existing rail in place and leaves the page interactive', async () => {
