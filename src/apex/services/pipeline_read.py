@@ -1626,44 +1626,17 @@ class PipelineReadService:
             start_from_zero = offset > 0 and offset + limit <= MAX_PIPELINE_TEXT_SCAN_RECORDS
             scan_offset = 0 if start_from_zero else offset
             target_items = offset + limit if start_from_zero else limit
-            scan_ceiling = (
-                MAX_PIPELINE_TEXT_SCAN_RECORDS
-                if start_from_zero
-                else offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
-            )
-            first_limit = (
+            scan_ceiling = offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
+            page_size = (
                 min(max(limit, min(target_items, PIPELINE_TEXT_SCAN_PAGE_SIZE)), scan_ceiling)
                 if start_from_zero
                 else limit
             )
-            threads = validated_native_mapping_page(
-                await self._client.threads.search(
-                    metadata=metadata,
-                    status=status,
-                    limit=first_limit,
-                    offset=scan_offset,
-                    sort_by="updated_at",
-                    sort_order="desc",
-                    select=list(PIPELINE_SUMMARY_SELECT),
-                    extract=dict(PIPELINE_SUMMARY_EXTRACT),
-                ),
-                requested_limit=first_limit,
-                label="pipeline thread search",
-            )
-            items = [
-                map_thread_summary(thread)
-                for thread in threads
-                if not _is_non_pipeline_thread(thread)
-            ]
-            scan_offset += len(threads)
+            items: list[JsonDict] = []
             partial = False
-            while (
-                len(items) < target_items
-                and len(threads) == first_limit
-                and scan_offset < scan_ceiling
-            ):
+            while scan_offset < scan_ceiling and len(items) < target_items:
                 scan_limit = min(
-                    first_limit,
+                    page_size,
                     scan_ceiling - scan_offset,
                 )
                 threads = validated_native_mapping_page(

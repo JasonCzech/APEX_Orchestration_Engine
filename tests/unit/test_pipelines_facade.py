@@ -2334,4 +2334,64 @@ async def test_list_pipelines_offset_pagination_skips_filtered_threads() -> None
     assert [item["thread_id"] for item in page_2.items] == ["t-pipeline-3"]
 
 
+async def test_list_pipelines_offset_near_scan_cap_tops_up_full_page() -> None:
+    from apex.services.pipeline_read import MAX_PIPELINE_TEXT_SCAN_RECORDS
+
+    records = [
+        {
+            "thread_id": "t-context-0",
+            "status": "idle",
+            "metadata": {
+                "project_id": "proj-alpha",
+                "kind": "context_summary",
+                "graph_id": "context",
+            },
+            "values": {"project_id": "proj-alpha", "summary": "Synthesized context"},
+        },
+        *[
+            {
+                "thread_id": f"t-pipeline-{idx}",
+                "status": "idle",
+                "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+                "values": {"project_id": "proj-alpha", "title": f"Pipeline {idx}"},
+            }
+            for idx in range(1, MAX_PIPELINE_TEXT_SCAN_RECORDS + 5)
+        ],
+    ]
+    service = PipelineReadService(FakeClient(FakeThreads(records)))
+    result = await service.list_pipelines(limit=20, offset=MAX_PIPELINE_TEXT_SCAN_RECORDS - 20)
+    assert len(result.items) == 20
+    assert result.items[0]["thread_id"] == f"t-pipeline-{MAX_PIPELINE_TEXT_SCAN_RECORDS - 19}"
+    assert result.items[-1]["thread_id"] == f"t-pipeline-{MAX_PIPELINE_TEXT_SCAN_RECORDS}"
+    assert result.partial is False
+
+
+async def test_list_pipelines_marks_partial_when_first_page_reaches_scan_ceiling() -> None:
+    from apex.services.pipeline_read import MAX_PIPELINE_TEXT_SCAN_RECORDS
+
+    records = [
+        {
+            "thread_id": "t-context-0",
+            "status": "idle",
+            "metadata": {
+                "project_id": "proj-alpha",
+                "kind": "context_summary",
+                "graph_id": "context",
+            },
+            "values": {"project_id": "proj-alpha", "summary": "Synthesized context"},
+        },
+        *[
+            {
+                "thread_id": f"t-pipeline-{idx}",
+                "status": "idle",
+                "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+                "values": {"project_id": "proj-alpha", "title": f"Pipeline {idx}"},
+            }
+            for idx in range(1, MAX_PIPELINE_TEXT_SCAN_RECORDS + 5)
+        ],
+    ]
+    service = PipelineReadService(FakeClient(FakeThreads(records)))
+    result = await service.list_pipelines(limit=MAX_PIPELINE_TEXT_SCAN_RECORDS, offset=0)
+    assert len(result.items) == MAX_PIPELINE_TEXT_SCAN_RECORDS - 1
+    assert result.partial is True
 

@@ -795,5 +795,7 @@ describe('RunDetailPage', () => {
     expect(evidenceBlock).toHaveTextContent('P95 must stay below 200ms.')
     expect(screen.queryByRole('heading', { name: 'Test acceptance' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Open Story Analysis' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Re-run selected plan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Workspace' })).not.toBeInTheDocument()
   })
 })

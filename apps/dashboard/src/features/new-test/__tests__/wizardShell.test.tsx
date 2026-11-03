@@ -206,12 +206,17 @@ describe('NewRunWizard shell', () => {
 
     expect(await screen.findByRole('tablist', { name: 'New test groups' })).toBeInTheDocument()
     expect(router.state.location.search).toContain('step=scope')
+    await user.type(screen.getByLabelText('Title'), 'Unpersisted local title')
+    expect(screen.getByLabelText('Title')).toHaveValue('Unpersisted local title')
 
     await act(async () => {
       await router.navigate('/runs/new')
     })
     expect(await screen.findByRole('heading', { name: 'Start a new test' })).toBeInTheDocument()
     expect(screen.queryByRole('tablist', { name: 'New test groups' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: /Blank test/ }))
+    await user.click(screen.getByRole('button', { name: 'Start blank test' }))
+    expect(await screen.findByLabelText('Title')).toHaveValue('')
     await flushAndUnmountWizard(rendered)
   })
 })

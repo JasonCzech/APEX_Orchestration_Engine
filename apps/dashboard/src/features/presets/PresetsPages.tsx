@@ -120,7 +120,7 @@ export function PresetsListPage() {
             Show archived presets
           </label>
         </TableToolbar>
-        {canCreate && <Link className="btn btn-primary btn-sm" to="/runs/new">New preset</Link>}
+        {canCreate && <Link className="btn btn-primary btn-sm" to="/runs/new?step=scope">New preset</Link>}
       </header>
       <p className="preset-muted preset-page-hint">
         Presets fill the new-test wizard. Create one by configuring a test and choosing <strong>Save as preset</strong> on Review, or from a test's page.
@@ -133,7 +133,7 @@ export function PresetsListPage() {
         <ProblemCard title="Test presets unavailable" message="Test presets could not be loaded. Try again, or check the system status if the problem continues." onRetry={presets.refetch} />
       ) : all.length === 0 ? (
         <StateCard kind="empty" title="No test presets yet"
-          action={canCreate ? <><Link className="btn btn-primary" to="/runs/new">Create a preset</Link> <Link className="btn btn-secondary" to="/runs">Save a recent test as a preset</Link></> : null}>
+          action={canCreate ? <><Link className="btn btn-primary" to="/runs/new?step=scope">Create a preset</Link> <Link className="btn btn-secondary" to="/runs">Save a recent test as a preset</Link></> : null}>
           <p>Configure a test in the wizard and choose Save as preset on Review, or open a test and choose Save setup as preset.</p>
         </StateCard>
       ) : rows.length === 0 ? (

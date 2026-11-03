@@ -313,11 +313,9 @@ function NewRunWizardContent({
     hadWizardParamsRef.current = hasWizardParams
     if (previouslyHadParams && !hasWizardParams) {
       setStarted(false)
-      if (draftId !== null || saveState !== 'idle') {
-        void startFresh()
-      }
+      void startFresh()
     }
-  }, [draftId, hasWizardParams, saveState, startFresh])
+  }, [hasWizardParams, startFresh])
   const showStart = !started && urlDraftId === null && draftId === null && !searchParams.has('step') &&
     presetParam === null && saveState === 'idle' && !loading
   // Leaving Start opens the wizard at its top, not at Start's scroll position.

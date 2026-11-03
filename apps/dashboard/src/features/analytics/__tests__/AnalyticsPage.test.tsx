@@ -197,7 +197,7 @@ describe('AnalyticsPage', () => {
     expect(request.get('order')).toBe('asc')
     expect(request.get('offset')).toBe('20')
 
-    expect(screen.getByRole('searchbox', { name: 'Filter by project' })).toHaveValue('proj-alpha')
+    expect(screen.getByLabelText('Filter by project')).toHaveValue('proj-alpha')
     expect(screen.getByRole('searchbox', { name: 'Filter by run' })).toHaveValue('run-succeeded')
     const groupControl = screen.getByRole('group', { name: 'Group by' })
     const measureControl = screen.getByRole('group', { name: 'Measure' })

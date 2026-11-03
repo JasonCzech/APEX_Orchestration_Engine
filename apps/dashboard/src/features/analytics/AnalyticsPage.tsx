@@ -6,6 +6,7 @@ import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { TableToolbar } from '@/components/ux/TableToolbar'
 import { Pagination, type PageSelection } from '@/components/ux/Pagination'
+import { ProjectField } from '@/components/ux/ProjectField'
 import { SortableHeader } from '@/components/ux/SortableHeader'
 import { CopyableId } from '@/components/ux/CopyableId'
 import { CHART_TOOLTIP_STYLE } from '@/utils/chartTheme'
@@ -750,13 +751,11 @@ export function AnalyticsPage() {
           disabled={{ cost: data !== undefined && !data.cost_visible }}
           onChange={setMeasure}
         />
-        <input
-          type="search"
-          className="field-input analytics-project"
-          placeholder="project..."
-          aria-label="Filter by project"
+        <ProjectField
+          label="Project"
+          ariaLabel="Filter by project"
           value={project}
-          onChange={(event) => setProject(event.target.value)}
+          onChange={setProject}
         />
         <input
           type="search"

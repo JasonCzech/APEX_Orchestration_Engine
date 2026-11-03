@@ -177,6 +177,19 @@ export function RunWorkspace({
     if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : pendingGate.kind === 'human_completion' ? 'awaiting_human_completion' : 'awaiting_output_review'
   }
   const progress = phaseProgress(phaseStrip)
+  const rawState = state as Record<string, unknown>
+  const hasNonPipelineOutput = Boolean(
+    (typeof rawState.summary === 'string' && rawState.summary.trim()) ||
+      (typeof rawState.completion === 'string' && rawState.completion.trim()) ||
+      (typeof rawState.rendered_prompt === 'string' && rawState.rendered_prompt.trim()) ||
+      (rawState.rendered_prompt && typeof rawState.rendered_prompt === 'object') ||
+      (Array.isArray(rawState.evidence) && rawState.evidence.length > 0),
+  )
+  const isNonPipelineRun =
+    !progress.planRecorded &&
+    !state.phase_results?.execution &&
+    !detail.pending_gate &&
+    hasNonPipelineOutput
 
   const overview = section === 'overview'
   const timeline = section === 'timeline'
@@ -280,8 +293,12 @@ export function RunWorkspace({
         <span className={`status-badge ${orchestrationTone(detail.thread_status, phaseStrip)}`}>
           {orchestrationStatusLabel(detail.thread_status, phaseStrip)}
         </span>
-        <span className="run-workspace-meta">Test result: <strong>{executionResultLabel(detail, state)}</strong></span>
-        <span className="run-workspace-meta">{phaseProgressLabel(progress)}</span>
+        {!isNonPipelineRun && (
+          <>
+            <span className="run-workspace-meta">Test result: <strong>{executionResultLabel(detail, state)}</strong></span>
+            <span className="run-workspace-meta">{phaseProgressLabel(progress)}</span>
+          </>
+        )}
         {waitAge && <span className="run-workspace-meta">Waiting <strong>{waitAge.endsWith(' ago') ? `for ${waitAge.slice(0, -4)}` : `since ${waitAge}`}</strong></span>}
         {stateParseFailed && (
           <span
@@ -294,7 +311,7 @@ export function RunWorkspace({
         </div>
         {/* Actions keep one position beside the summary, whatever the title length. */}
         <div className="run-detail-actions">
-        {(!embedded || showEmbeddedControls) && <RequireRole role="operator">
+        {(!embedded || showEmbeddedControls) && !isNonPipelineRun && <RequireRole role="operator">
           <CopyTestSetupButton key={threadId} threadId={threadId} />
           <SaveRunAsPresetButton key={`preset-${threadId}`} threadId={threadId} />
           {!hitl.gate && detail.thread_status === 'busy' ? (
@@ -380,14 +397,14 @@ export function RunWorkspace({
           <>
             {hitl.gate && <button type="button" className="ux-section-link" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Review</button>}
             <button type="button" className="ux-section-link" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
-            <button type="button" className="ux-section-link" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
+            {!isNonPipelineRun && <button type="button" className="ux-section-link" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>}
             <button type="button" className="ux-section-link" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
           </>
         ) : (
           <>
             {hitl.gate && isPhaseName(hitl.gate.phase) && <Link className="ux-section-link" aria-current={reviewing ? 'page' : undefined} to={`/runs/${threadId}/phases/${hitl.gate.phase}`}>Review</Link>}
             <Link className="ux-section-link" aria-current={overview ? 'page' : undefined} to={overviewPath}>Overview</Link>
-            <Link className="ux-section-link" aria-current={section === 'workspace' && !reviewing ? 'page' : undefined} to={workspacePath}>Workspace</Link>
+            {!isNonPipelineRun && <Link className="ux-section-link" aria-current={section === 'workspace' && !reviewing ? 'page' : undefined} to={workspacePath}>Workspace</Link>}
             <Link className="ux-section-link" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
           </>
         )}

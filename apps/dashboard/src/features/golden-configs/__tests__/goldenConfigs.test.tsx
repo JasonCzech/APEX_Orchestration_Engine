@@ -203,7 +203,7 @@ describe('PresetsListPage', () => {
     assistantsSearch.mockResolvedValue([])
     const { unmount } = renderApp({ initialEntries: ['/test-presets'], authState: authenticatedState('operator') })
     expect(await screen.findByText('No test presets yet')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Create a preset' })).toHaveAttribute('href', '/runs/new')
+    expect(screen.getByRole('link', { name: 'Create a preset' })).toHaveAttribute('href', '/runs/new?step=scope')
     unmount()
 
     renderApp({ initialEntries: ['/test-presets'], authState: authenticatedState('viewer') })
