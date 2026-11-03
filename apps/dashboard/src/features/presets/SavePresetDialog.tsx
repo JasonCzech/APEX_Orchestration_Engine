@@ -57,12 +57,14 @@ export function SavePresetDialog({ draft, existing, initialMode, initialName, in
   const [mode, setMode] = useState<'update' | 'new'>(initialMode === 'new' ? 'new' : canUpdate ? 'update' : 'new')
   const updating = mode === 'update' && canUpdate && existing
   const [name, setName] = useState(updating ? existing.name : initialName ?? (existing ? `${existing.name} (copy)` : draft.title.trim()))
-  const [description, setDescription] = useState(updating ? existing.description ?? '' : initialDescription ?? '')
+  const [description, setDescription] = useState(updating ? existing.description ?? '' : initialDescription ?? existing?.description ?? '')
   const [visibility, setVisibility] = useState<Visibility>(
     updating ? existing.visibility : initialName && admin ? 'organization' : canShareWithTeam ? 'project' : 'personal')
-  const [forApplication, setForApplication] = useState(updating ? existing.applicationId !== null : Boolean(appId))
+  const [forApplication, setForApplication] = useState(updating ? existing.applicationId !== null : existing ? existing.applicationId !== null : Boolean(appId))
   const [include, setInclude] = useState<SectionId[]>(
-    updating ? (Object.keys(existing.sections) as SectionId[]) : initialSections ?? DEFAULT_SAVE_SECTIONS)
+    updating
+      ? (Object.keys(existing.sections) as SectionId[])
+      : initialSections ?? (existing ? (Object.keys(existing.sections) as SectionId[]) : DEFAULT_SAVE_SECTIONS))
   const [note, setNote] = useState('')
   const createTeam = useCreateTeamPreset()
   const updateTeam = useUpdateTeamPreset()
@@ -83,6 +85,8 @@ export function SavePresetDialog({ draft, existing, initialMode, initialName, in
       setVisibility(existing.visibility)
       setForApplication(existing.applicationId !== null)
       setInclude(Object.keys(existing.sections) as SectionId[])
+    } else if (next === 'new' && existing && name === existing.name) {
+      setName(`${existing.name} (copy)`)
     }
   }
 

@@ -16,7 +16,7 @@
 .pricing-pagination, .pricing-actions { display: flex; justify-content: flex-end; gap: .75rem; align-items: center; padding: 1rem; }
 .pricing-pagination span { margin-right: auto; }
 .pricing-dialog { width: min(960px, 94vw); max-height: 90vh; overflow: auto; border-radius: 1rem; padding: 1.5rem; border: 1px solid var(--border-color, #8887); background: var(--bg-primary, #18202c); color: var(--text-primary, #eef1f5); box-shadow: 0 20px 80px #0006; }
-.pricing-dialog::backdrop { background: #0008; backdrop-filter: blur(3px); }
+.pricing-dialog-overlay { display: flex; align-items: center; justify-content: center; padding: 1rem; }
 .pricing-tabs { display: flex; gap: .5rem; padding: 1rem 0; border-bottom: 1px solid #8884; margin-bottom: 1rem; }
 .pricing-tabs [aria-pressed=true], .pricing-toolbar [aria-pressed=true] { outline: 2px solid var(--accent, #7d9ffb); outline-offset: -2px; }
 .pricing-dialog form { display: grid; gap: 1rem; }

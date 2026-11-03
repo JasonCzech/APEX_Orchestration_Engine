@@ -57,6 +57,7 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
   const [copying, setCopying] = useState<string | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
   const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
+  const [deleteDraftError, setDeleteDraftError] = useState<string | null>(null)
   const visibleApps = (applications.data ?? []).filter(app => !app.archived_at)
   const projects = reachableProjects(visibleApps, consumer)
     .sort((a, b) => names.project(a).localeCompare(names.project(b)))
@@ -95,9 +96,12 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
 
   async function deleteSavedDraft(draftId: string) {
     setDeletingDraftId(draftId)
+    setDeleteDraftError(null)
     try {
       await deleteDraftRequest(draftId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.drafts.all })
+    } catch (failure) {
+      setDeleteDraftError(failure instanceof Error ? failure.message : 'Could not delete this draft.')
     } finally {
       setDeletingDraftId(null)
     }
@@ -173,6 +177,7 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
         )}
         {chosen === 'draft' && (
           <div className="wizard-start-list">
+            {deleteDraftError && <p className="wizard-caption wizard-caption--danger" role="alert">{deleteDraftError}</p>}
             {drafts.isError && drafts.data && <CachedDataWarning error={drafts.error} onRetry={() => void drafts.refetch()} />}
             {drafts.isError && !drafts.data
               ? <p className="tonal-card danger" role="alert">Saved drafts unavailable: {drafts.error.message} <button type="button" className="btn btn-ghost btn-sm" onClick={() => void drafts.refetch()}>Retry</button></p>

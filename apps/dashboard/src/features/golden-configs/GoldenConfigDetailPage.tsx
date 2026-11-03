@@ -126,8 +126,8 @@ function EditPanel({
       {blocker.state === 'blocked' && (
         <Dialog
           ariaLabel="Unsaved preset changes"
-          className="glass-panel"
-          overlayClassName="ux-dialog-overlay"
+          className="gc-modal glass-panel"
+          overlayClassName="gc-overlay"
           onClose={() => blocker.reset()}
         >
           <h2>Leave unsaved preset changes?</h2>

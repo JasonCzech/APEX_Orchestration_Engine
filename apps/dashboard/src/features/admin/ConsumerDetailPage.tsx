@@ -169,10 +169,8 @@ function ConsumerDetailContent() {
       {deleting && (
         <DeleteConsumerModal
           consumer={data}
-          onClose={() => {
-            setDeleting(false)
-            navigate('/admin/consumers')
-          }}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => navigate('/admin/consumers')}
         />
       )}
     </section>

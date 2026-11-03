@@ -178,6 +178,8 @@ function WizardStepContent({
   switch (step) {
     case 'scope':
       return <ScopeStep draft={draft} onChange={onChange} />
+    case 'config':
+      return <ConfigStep draft={draft} onChange={onChange} />
     case 'work-items':
       return (
         <WorkItemsStep
@@ -200,8 +202,6 @@ function WizardStepContent({
           onPendingStart={() => onStepPendingStart('context', draftGeneration)}
         />
       )
-    case 'config':
-      return <ConfigStep draft={draft} onChange={onChange} />
     case 'prompts':
       return <PromptsStep draft={draft} onChange={onChange} onNormalize={onNormalize} />
     case 'review':
@@ -463,6 +463,7 @@ function NewRunWizardContent({
       const next = new URLSearchParams(previous)
       next.delete('preset')
       next.delete('golden')
+      if (!found || found.archived) next.delete('presetModal')
       if (!next.has('step')) next.set('step', wizardStepUrl('scope'))
       return next
     }, { replace: true })
@@ -693,10 +694,10 @@ function NewRunWizardContent({
       </div>}
       {/* One compact row: the step, a readiness chip that discloses the issue
           list on demand, and the actions. Server-recheck caveats live on Review. */}
-      {(savingPreset || (presetModalMode !== undefined && presetParam === null)) && (
+      {(savingPreset || (presetModalMode !== undefined && presetParam === null && !presetLinkError && draft.preset !== null)) && (
         <SavePresetDialog
           draft={draft}
-          existing={draft.preset ? presets.data?.find(preset => preset.key === presetKey(draft.preset!.kind, draft.preset!.id)) ?? null : null}
+          existing={draft.preset ? presets.data?.find(preset => preset.key === presetKey(draft.preset!.kind, draft.preset!.id)) ?? (linkedTeamPreset.data?.key === presetKey(draft.preset.kind, draft.preset.id) ? linkedTeamPreset.data : null) : null}
           initialMode={presetModalMode}
           onClose={() => {
             setSavingPreset(false)

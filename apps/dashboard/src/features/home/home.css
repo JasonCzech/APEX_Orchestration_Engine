@@ -144,6 +144,17 @@
   gap: 10px;
 }
 
+.home-draft-item-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-draft-item-wrap .home-draft-row {
+  flex: 1;
+  min-width: 0;
+}
+
 .home-approval-row,
 .home-draft-row {
   display: flex;
@@ -167,7 +178,8 @@
   font-weight: 700;
 }
 
-.home-approval-title {
+.home-approval-title,
+.home-draft-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;

@@ -2294,3 +2294,44 @@ async def test_list_pipelines_tops_up_full_page_when_non_pipeline_threads_filter
     assert search_mock.call_count == 2
 
 
+async def test_list_pipelines_offset_pagination_skips_filtered_threads() -> None:
+    fake = FakeThreads(
+        [
+            {
+                "thread_id": "t-context",
+                "status": "idle",
+                "metadata": {
+                    "project_id": "proj-alpha",
+                    "kind": "context_summary",
+                    "graph_id": "context",
+                },
+                "values": {"project_id": "proj-alpha", "summary": "Synthesized context"},
+            },
+            {
+                "thread_id": "t-pipeline-1",
+                "status": "idle",
+                "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+                "values": {"project_id": "proj-alpha", "title": "First pipeline run"},
+            },
+            {
+                "thread_id": "t-pipeline-2",
+                "status": "idle",
+                "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+                "values": {"project_id": "proj-alpha", "title": "Second pipeline run"},
+            },
+            {
+                "thread_id": "t-pipeline-3",
+                "status": "idle",
+                "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+                "values": {"project_id": "proj-alpha", "title": "Third pipeline run"},
+            },
+        ]
+    )
+    service = PipelineReadService(FakeClient(fake))
+    page_1 = await service.list_pipelines(limit=2, offset=0)
+    page_2 = await service.list_pipelines(limit=2, offset=2)
+    assert [item["thread_id"] for item in page_1.items] == ["t-pipeline-1", "t-pipeline-2"]
+    assert [item["thread_id"] for item in page_2.items] == ["t-pipeline-3"]
+
+
+

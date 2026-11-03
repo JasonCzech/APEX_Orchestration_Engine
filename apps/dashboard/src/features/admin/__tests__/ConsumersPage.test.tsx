@@ -494,6 +494,11 @@ describe('ConsumersPage', () => {
     await user.click(within(rotateDialog).getByRole('button', { name: 'Cancel' }))
 
     await user.click(screen.getByRole('button', { name: 'Delete…' }))
+    const cancelDeleteDialog = await screen.findByRole('dialog', { name: `Delete consumer ${CONSUMER_CI.name}` })
+    await user.click(within(cancelDeleteDialog).getByRole('button', { name: 'Cancel' }))
+    expect(router.state.location.pathname).toBe(`/admin/consumers/${CONSUMER_CI.id}`)
+
+    await user.click(screen.getByRole('button', { name: 'Delete…' }))
     const deleteDialog = await screen.findByRole('dialog', { name: `Delete consumer ${CONSUMER_CI.name}` })
     await user.type(within(deleteDialog).getByRole('textbox', { name: `Type ${CONSUMER_CI.name} to confirm` }), CONSUMER_CI.name)
     await user.click(within(deleteDialog).getByRole('button', { name: 'Delete consumer' }))

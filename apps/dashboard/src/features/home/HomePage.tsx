@@ -152,6 +152,7 @@ export function HomePage() {
     id
   const [showAllDrafts, setShowAllDrafts] = useState(false)
   const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
+  const [deleteDraftError, setDeleteDraftError] = useState<string | null>(null)
   const fleet = usePipelines(HOME_FLEET_FILTER)
   const inbox = useApprovalsInbox()
   const drafts = useDraftsList()
@@ -213,9 +214,12 @@ export function HomePage() {
 
   async function handleDeleteDraft(draftId: string) {
     setDeletingDraftId(draftId)
+    setDeleteDraftError(null)
     try {
       await deleteDraftRequest(draftId)
       await queryClient.invalidateQueries({ queryKey: queryKeys.drafts.all })
+    } catch (failure) {
+      setDeleteDraftError(errorMessage(failure))
     } finally {
       setDeletingDraftId(null)
     }
@@ -354,6 +358,11 @@ export function HomePage() {
             />
           ) : (
             <>
+              {deleteDraftError && (
+                <p className="tonal-card danger" role="alert">
+                  {deleteDraftError}
+                </p>
+              )}
               {drafts.isError && drafts.data && (
                 <CachedDataWarning
                   error={drafts.error}

@@ -773,7 +773,7 @@ def _is_non_pipeline_thread(thread: JsonDict) -> bool:
     if not isinstance(raw_metadata, dict):
         return False
     return (
-        raw_metadata.get("kind") == "context_summary"
+        raw_metadata.get("kind") in {"context_summary", "prompt_test"}
         or raw_metadata.get("purpose") == "prompt_test"
         or raw_metadata.get("graph_id") in {"context", "playground"}
     )
@@ -1623,18 +1623,31 @@ class PipelineReadService:
         """
         metadata = None
         if not q and not project:
+            start_from_zero = offset > 0 and offset + limit <= MAX_PIPELINE_TEXT_SCAN_RECORDS
+            scan_offset = 0 if start_from_zero else offset
+            target_items = offset + limit if start_from_zero else limit
+            scan_ceiling = (
+                MAX_PIPELINE_TEXT_SCAN_RECORDS
+                if start_from_zero
+                else offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
+            )
+            first_limit = (
+                min(max(limit, min(target_items, PIPELINE_TEXT_SCAN_PAGE_SIZE)), scan_ceiling)
+                if start_from_zero
+                else limit
+            )
             threads = validated_native_mapping_page(
                 await self._client.threads.search(
                     metadata=metadata,
                     status=status,
-                    limit=limit,
-                    offset=offset,
+                    limit=first_limit,
+                    offset=scan_offset,
                     sort_by="updated_at",
                     sort_order="desc",
                     select=list(PIPELINE_SUMMARY_SELECT),
                     extract=dict(PIPELINE_SUMMARY_EXTRACT),
                 ),
-                requested_limit=limit,
+                requested_limit=first_limit,
                 label="pipeline thread search",
             )
             items = [
@@ -1642,16 +1655,16 @@ class PipelineReadService:
                 for thread in threads
                 if not _is_non_pipeline_thread(thread)
             ]
-            scan_offset = offset + len(threads)
+            scan_offset += len(threads)
             partial = False
             while (
-                len(items) < limit
-                and len(threads) == limit
-                and scan_offset < offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
+                len(items) < target_items
+                and len(threads) == first_limit
+                and scan_offset < scan_ceiling
             ):
                 scan_limit = min(
-                    limit,
-                    (offset + MAX_PIPELINE_TEXT_SCAN_RECORDS) - scan_offset,
+                    first_limit,
+                    scan_ceiling - scan_offset,
                 )
                 threads = validated_native_mapping_page(
                     await self._client.threads.search(
@@ -1670,17 +1683,15 @@ class PipelineReadService:
                 for thread in threads:
                     if not _is_non_pipeline_thread(thread):
                         items.append(map_thread_summary(thread))
-                        if len(items) >= limit:
+                        if len(items) >= target_items:
                             break
                 scan_offset += len(threads)
                 if len(threads) < scan_limit:
                     break
-                if (
-                    scan_offset >= offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
-                    and len(items) < limit
-                ):
+                if scan_offset >= scan_ceiling and len(items) < target_items:
                     partial = True
-            return PipelineListResult(items=items[:limit], partial=partial)
+            page_slice = items[offset : offset + limit] if start_from_zero else items[:limit]
+            return PipelineListResult(items=page_slice, partial=partial)
 
         # LangGraph has no free-text search. Scan a fixed, recent prefix before
         # applying the dashboard offset. The hard aggregate cap prevents one

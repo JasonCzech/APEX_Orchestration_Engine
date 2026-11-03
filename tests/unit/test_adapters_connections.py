@@ -78,3 +78,12 @@ async def test_resolver_builds_secretful_connection(monkeypatch: pytest.MonkeyPa
 
 def test_get_connection_resolver_is_singleton() -> None:
     assert get_connection_resolver() is get_connection_resolver()
+
+
+def test_seed_catalog_connections_matches_dev_connections() -> None:
+    from scripts.seed_catalog import _seed_connections
+
+    rows = _seed_connections()
+    assert {row.kind for row in rows} == {kind.value for kind in DEV_CONNECTIONS}
+    assert PortKind.ANALYSIS.value not in {row.kind for row in rows}
+

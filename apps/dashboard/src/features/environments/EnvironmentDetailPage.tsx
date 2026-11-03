@@ -270,8 +270,8 @@ function EditEnvironmentForm({
       {blocker.state === 'blocked' && (
         <Dialog
           ariaLabel="Unsaved environment changes"
-          className="glass-panel"
-          overlayClassName="ux-dialog-overlay"
+          className="env-modal glass-panel"
+          overlayClassName="env-overlay"
           onClose={() => blocker.reset()}
         >
           <h2>Leave unsaved environment changes?</h2>

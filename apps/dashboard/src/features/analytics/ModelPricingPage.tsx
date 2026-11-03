@@ -167,7 +167,7 @@ function ModelPanel({ model, onClose, archiveIntent }: { model: Model; onClose: 
     }
     if (action !== 'preview') { setPreview(null); setKey(crypto.randomUUID()); await cache.invalidateQueries({ queryKey: ['model-pricing'] }); await cache.invalidateQueries({ queryKey: ['analytics'] }) }
   } })
-  return <Dialog className="pricing-dialog" overlayClassName="ux-dialog-overlay" labelledBy="model-title" onClose={onClose}>
+  return <Dialog className="pricing-dialog" overlayClassName="pricing-dialog-overlay" labelledBy="model-title" onClose={onClose}>
     <header className="pricing-heading"><div><small>{model.provider}</small><h2 id="model-title">{model.model_key}</h2><span className="pricing-badge">{current.availability.replace('_', ' ')}</span></div><button type="button" className="btn btn-secondary btn-sm" onClick={onClose} aria-label="Close model details">Close</button></header>
     <TabList id="model-pricing" label="Model details" items={[...MODEL_PANEL_TABS]} value={tab} onChange={setTab} />
     {detail.error && <ProblemCard title="Model details could not be refreshed" message={detail.error.message} onRetry={() => void detail.refetch()} />}

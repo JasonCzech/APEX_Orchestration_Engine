@@ -431,7 +431,15 @@ export function RotateConsumerModal({
 }
 
 /** Delete confirm — a 409 means self-delete and renders the friendly line inline. */
-export function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
+export function DeleteConsumerModal({
+  consumer,
+  onClose,
+  onDeleted,
+}: {
+  consumer: Consumer
+  onClose: () => void
+  onDeleted?: () => void
+}) {
   const [confirmation, setConfirmation] = useState('')
   const remove = useDeleteConsumer(consumer.id)
   const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
@@ -476,7 +484,14 @@ export function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer;
           type="button"
           className="btn btn-danger btn-sm"
           disabled={writeCount > 0 || selfDelete || confirmation !== consumer.name}
-          onClick={() => remove.mutate(consumer.id, { onSuccess: onClose })}
+          onClick={() =>
+            remove.mutate(consumer.id, {
+              onSuccess: () => {
+                onClose()
+                onDeleted?.()
+              },
+            })
+          }
         >
           {remove.isPending ? 'Deleting…' : 'Delete consumer'}
         </button>

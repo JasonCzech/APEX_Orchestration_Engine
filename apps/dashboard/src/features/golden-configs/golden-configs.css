@@ -284,3 +284,19 @@
   font-size: var(--font-size-sm);
   color: var(--danger-text, var(--danger));
 }
+
+.gc-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.gc-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(440px, 100%);
+  padding: 16px;
+}
+

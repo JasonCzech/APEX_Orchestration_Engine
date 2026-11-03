@@ -47,15 +47,14 @@ MINIO_SECRET_REF = "env:APEX_INTEGRATION_MINIO_SECRET_KEY"
 
 
 def _seed_connections() -> list[Connection]:
-    """One global connection per port kind, named for discoverability."""
+    """One global connection per dev-seeded port kind, named for discoverability."""
     rows: list[Connection] = []
-    for kind in PortKind:
-        provider = DEV_CONNECTIONS[kind].provider
+    for kind, dev_conn in DEV_CONNECTIONS.items():
         name = "sim-engine" if kind is PortKind.EXECUTION_ENGINE else f"stub-{kind.value}"
         rows.append(
             Connection(
                 kind=kind.value,
-                provider=provider,
+                provider=dev_conn.provider,
                 name=name,
                 project_id=None,  # global
                 options={},

@@ -330,11 +330,11 @@ export function ContextStep({
         <p className="wizard-caption">
           Attach prior <Link to="/context?tab=summaries">context summaries</Link> by summary ID or from this session.
         </p>
-        <div className="wizard-inline-row">
+        <div className="wizard-row">
           <input
             id="wizard-summary-id-draft"
             type="text"
-            className="field-input"
+            className="field-input wizard-grow"
             aria-label="Context summary ID"
             placeholder="thread-summary-id"
             disabled={disabled}
