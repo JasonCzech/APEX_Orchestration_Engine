@@ -6,7 +6,11 @@ async (page) => {
   page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:1440,height:1000});
   await page.goto(base + '/help/welcome');
+  await page.getByRole('heading', {name:'Help & API reference', exact:true, level:1}).waitFor();
   await page.getByRole('heading', {name:'Tests, runs, reviews, and decisions'}).waitFor();
+  const helpIcon = await page.getByRole('navigation', {name:'Primary',exact:true}).getByRole('link', {name:'Help & API reference',exact:true}).locator('path').getAttribute('d');
+  const promptsIcon = await page.getByRole('navigation', {name:'Primary',exact:true}).getByRole('link', {name:'Prompts',exact:true}).locator('path').getAttribute('d');
+  if (!helpIcon || helpIcon === promptsIcon) throw new Error('Help & API reference must not share an icon with Prompts');
   const search = page.getByRole('searchbox', {name:'Search documentation', exact:true});
   await search.fill('human completion');
   const results = page.getByRole('region', {name:'Search results', exact:true});

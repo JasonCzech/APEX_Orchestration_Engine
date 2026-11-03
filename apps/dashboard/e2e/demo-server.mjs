@@ -23,6 +23,7 @@ createServer(async (request, response) => {
   let file = requested.startsWith(`${dist}${sep}`) ? requested : resolve(dist, 'index.html')
   try {
     if ((await stat(file)).isDirectory()) file = resolve(file, 'index.html')
+    if (!(await stat(file)).isFile()) file = resolve(dist, 'index.html')
   } catch {
     file = resolve(dist, 'index.html')
   }

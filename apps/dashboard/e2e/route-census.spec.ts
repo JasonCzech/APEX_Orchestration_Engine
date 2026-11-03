@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test'
  * This is a route/DOM contract census; workflow specs exercise actions deeply. */
 const routes = [
   ['/', 'Test operations dashboard'],
-  ['/approvals', 'Review', 'review-selection'],
+  ['/approvals', 'Tests', 'review-selection'],
   ['/approvals/run-prompt-review/int-prompt', 'Review', 'review-redirect'],
   ['/cycles', 'Test cycles', 'unconfigured'],
   ['/cycles/census-cycle', 'Cycle workspace', 'unconfigured'],
@@ -34,6 +34,7 @@ const routes = [
   ['/context', 'Knowledge & documents'],
   ['/evidence', 'Evidence'],
   ['/analytics', 'Agent analytics'],
+  ['/analytics/models', 'Model pricing'],
   ['/logs', 'Logs'],
   ['/apex-load', 'APEX Load'],
   ['/admin/connections', 'Connections'],
@@ -42,6 +43,7 @@ const routes = [
   ['/admin/consumers/cons-admin', 'Consumer'],
   ['/admin/system', 'System status'],
   ['/help', 'Help & API reference'],
+  ['/help/welcome', 'Help & API reference'],
   ['/settings', 'Settings'],
   ['/census-unknown-route', 'Not found', 'not-found'],
 ] as const
@@ -55,7 +57,7 @@ test('all declared routes expose heading, tab-panel and compact-target contracts
     await test.step(`${path} (${disposition})`, async () => {
       await page.goto(path)
       if (disposition === 'review-selection') await expect(page).toHaveURL(/\/runs\/[^/]+\/reviews\/[^/?]+\?source=queue$/)
-      if (disposition === 'review-redirect') await expect(page).toHaveURL(/\/runs\/run-prompt-review\/reviews\/int-prompt\?source=queue$/)
+      if (disposition === 'review-redirect') await expect(page).toHaveURL(/\/runs\/run-prompt-review\/reviews\/int-prompt$/)
       await expect(page.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible()
       await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1)
       // These route-level toolbar titles duplicated the shell heading. Nested

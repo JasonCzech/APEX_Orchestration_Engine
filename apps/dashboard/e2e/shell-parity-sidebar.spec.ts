@@ -57,8 +57,7 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     await expect(page.getByRole('dialog', { name: 'Navigation', exact: true })).toHaveCount(0)
     await expect(rail.getByRole('button', { name: 'Collapse sidebar' })).toBeFocused()
     const expandedBounds = (await main.boundingBox())!
-    expect(expandedBounds.x).toBe(initialBounds.x + 176)
-    expect(expandedBounds.width).toBe(initialBounds.width - 176)
+    expect(expandedBounds).toEqual(initialBounds)
     await page.keyboard.press('Tab')
     expect(await rail.evaluate(element => element.contains(document.activeElement))).toBe(false)
 
@@ -98,6 +97,8 @@ for (const height of [800, 900, 1000]) {
     await expect(settings).toBeVisible()
     const assertClearFooter = async (container: ReturnType<Page['locator']>) => {
       const link = container.getByRole('link', { name: 'Settings', exact: true })
+      const help = container.getByRole('link', { name: 'Help & API reference', exact: true })
+      const prompts = container.getByRole('link', { name: 'Prompts', exact: true })
       const bounds = await link.boundingBox()
       const footer = await container.locator('.sidebar-footer').boundingBox()
       expect(bounds).not.toBeNull()
@@ -115,6 +116,8 @@ for (const height of [800, 900, 1000]) {
       await status.focus()
       await expect(status).toBeInViewport()
       expect(await status.locator('path').getAttribute('d')).not.toBe(await link.locator('path').getAttribute('d'))
+      expect(await help.locator('path').getAttribute('d')).not.toBe(await prompts.locator('path').getAttribute('d'))
+      expect(await help.locator('path').getAttribute('d')).not.toBe(await link.locator('path').getAttribute('d'))
     }
     await assertClearFooter(rail)
     await settings.click()

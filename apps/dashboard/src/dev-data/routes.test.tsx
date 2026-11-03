@@ -112,6 +112,7 @@ describe('dev-data route smoke', () => {
     ['/context', 'Knowledge & documents'],
     ['/evidence', 'Evidence'],
     ['/analytics', 'Agent analytics'],
+    ['/analytics/models', 'Model pricing'],
     ['/logs', 'Logs'],
     ['/apex-load', 'APEX Load'],
     ['/admin/connections', 'Connections'],
@@ -120,6 +121,7 @@ describe('dev-data route smoke', () => {
     ['/admin/consumers/cons-ci', 'Consumer'],
     ['/admin/system', 'System status'],
     ['/help', 'Help & API reference'],
+    ['/help/welcome', 'Help & API reference'],
     ['/settings', 'Settings'],
   ])('mounts every production dashboard route %s', async (path, heading) => {
     renderApp({
