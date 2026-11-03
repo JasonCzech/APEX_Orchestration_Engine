@@ -170,3 +170,27 @@ it('renders legacy transcript prompts as readable blocks while preserving the fu
     expect(screen.getAllByTestId('codemirror')[0]?.textContent).toBe('First line\nSecond line')
     expect(screen.getByRole('figure', { name: 'Transcript record' })).toHaveTextContent('Evidence based reasoning')
   })
+
+it('resolves an artifact when opened via a context packet id whose ref points to /v1/artifacts/...', async () => {
+  server.use(
+    pipelineDetailHandler({
+      ...PIPELINE_DETAIL,
+      values: {
+        ...PIPELINE_DETAIL.values,
+        context_packets: [
+          {
+            id: 'apex-load-artifact-1',
+            source: 'apex_load',
+            title: 'Load report packet',
+            ref: '/v1/artifacts/reports/thread-1/load-report.json',
+          },
+        ],
+      },
+    }),
+    ...artifactHandlers,
+  )
+  renderRunRoutes([`/runs/${THREAD_ID}/artifacts/apex-load-artifact-1`])
+  const viewer = await screen.findByTestId('codemirror')
+  expect(viewer).toHaveTextContent('"tps_avg": 42.5')
+  expect(screen.getByText('load-report.json')).toBeInTheDocument()
+})

@@ -17,7 +17,7 @@ export function SearchableSelect({ label, value, options, onChange }: { label: s
   function choose(option: SearchOption) { onChange(option.value); setOpen(false); setQuery('') }
   return <div className="ux-searchable-select">
     <label htmlFor={id}>{label}</label>
-    <input id={id} role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={`${id}-choices`}
+    <input id={id} className="field-input" role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={`${id}-choices`}
       aria-activedescendant={open && matches.length ? `${id}-option-${activeIndex}` : undefined}
       aria-describedby={selected?.description ? `${id}-selected-description` : undefined}
       value={open ? query : selected?.label ?? value} placeholder="Search by title or ID"

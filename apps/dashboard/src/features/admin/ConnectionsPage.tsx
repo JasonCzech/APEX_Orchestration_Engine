@@ -11,7 +11,7 @@ import { StateCard } from '@/components/ux/StateCard'
  * ("unknown provider 'x' for kind 'y'; registered providers: a, b") — the
  * panel surfaces that message verbatim as an inline error, never a toast.
  */
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useMemo, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
@@ -24,6 +24,7 @@ import {
   type PortKind,
 } from '@/api/hooks/useConnections'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { useConsumer } from '@/auth/AuthProvider'
 import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
@@ -58,9 +59,10 @@ function isApexLoadConnection(connection: Connection): boolean {
   return connection.kind === 'execution_engine' && connection.provider === APEX_LOAD_PROVIDER
 }
 
-function ConnectionRow({ connection }: { connection: Connection }) {
+function ConnectionRow({ connection, projectNames }: { connection: Connection; projectNames: ReadonlyMap<string, string> }) {
   const setEnabled = useSetConnectionEnabled(connection.id)
   const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
+  const projectLabel = connection.project_id ? projectNames.get(connection.project_id) ?? connection.project_id : 'global'
 
   return (
     <tr data-testid={`conn-row-${connection.id}`}>
@@ -77,8 +79,8 @@ function ConnectionRow({ connection }: { connection: Connection }) {
         <span className="dash-context-chip">{connection.provider}</span>
       </td>
       <td>
-        <span className="dash-context-chip adm-chip-muted">
-          {connection.project_id ?? 'global'}
+        <span className="dash-context-chip adm-chip-muted" title={connection.project_id ?? undefined}>
+          {projectLabel}
         </span>
       </td>
       <td>
@@ -99,7 +101,7 @@ function ConnectionRow({ connection }: { connection: Connection }) {
 }
 
 /** Inline create panel — kind, provider, name, project, base_url, options, secret_ref. */
-function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
+function CreateConnectionPanel({ onClose, projectNames }: { onClose: () => void; projectNames: ReadonlyMap<string, string> }) {
   const navigate = useNavigate()
   const consumer = useConsumer()
   const globalAdmin = isGlobalAdmin(consumer)
@@ -229,7 +231,11 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             onChange={(event) => setProject(event.target.value)}
           >
             <option value="">Select a project…</option>
-            {projectScopes.map((projectId) => <option key={projectId} value={projectId}>{projectId}</option>)}
+            {projectScopes.map((projectId) => (
+              <option key={projectId} value={projectId}>
+                {projectNames.get(projectId) ? `${projectNames.get(projectId)} (${projectId})` : projectId}
+              </option>
+            ))}
           </select>}
         </label>
         {!ownsBaseUrl && <label className="adm-field">
@@ -298,6 +304,11 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
 function ConnectionsContent() {
   const tabsId = useId()
   const connections = useConnectionsIndex()
+  const projectLabels = useProjectLabels()
+  const projectNames = useMemo(
+    () => new Map((projectLabels.data ?? []).map((p) => [p.project_id, p.name])),
+    [projectLabels.data],
+  )
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
   const [searchParams, setSearchParams] = useSearchParams()
@@ -305,7 +316,13 @@ function ConnectionsContent() {
   const view: RegistryView = isRegistryView(rawView) ? rawView : 'connections'
   const normalizedQuery = query.trim().toLowerCase()
   const filteredConnections = (connections.data ?? []).filter((connection) =>
-    [connection.name, connection.kind, connection.provider, connection.project_id ?? 'global']
+    [
+      connection.name,
+      connection.kind,
+      connection.provider,
+      connection.project_id ?? 'global',
+      connection.project_id ? projectNames.get(connection.project_id) ?? '' : '',
+    ]
       .some((value) => value.toLowerCase().includes(normalizedQuery)),
   )
   const apexLoadConnections = (connections.data ?? []).filter(isApexLoadConnection)
@@ -337,7 +354,7 @@ function ConnectionsContent() {
       <TabList id={tabsId} label="Connection views" value={view} onChange={selectView}
         items={[{ id: 'connections', label: 'All connections' }, { id: 'apex-load', label: 'APEX Load' }]} />
 
-      {creating && <CreateConnectionPanel onClose={() => setCreating(false)} />}
+      {creating && <CreateConnectionPanel onClose={() => setCreating(false)} projectNames={projectNames} />}
 
       <TabPanels id={tabsId} items={['connections', 'apex-load']} value={view}>
       {view === 'connections' && !connections.isPending && !!connections.data?.length && (
@@ -398,7 +415,7 @@ function ConnectionsContent() {
                 {apexLoadConnections.map((connection) => (
                   <tr key={connection.id} data-testid={`apex-load-connection-${connection.id}`}>
                     <td><Link className="adm-card-link strong" to={`/admin/connections/${connection.id}`}>{connection.name}</Link></td>
-                    <td><span className="dash-context-chip adm-chip-muted">{connection.project_id ?? 'global'}</span></td>
+                    <td><span className="dash-context-chip adm-chip-muted" title={connection.project_id ?? undefined}>{connection.project_id ? projectNames.get(connection.project_id) ?? connection.project_id : 'global'}</span></td>
                     <td>
                       <span className={connection.enabled ? 'status-badge success' : 'status-badge danger'}>
                         {connection.enabled ? 'Enabled' : 'Disabled'}
@@ -434,7 +451,7 @@ function ConnectionsContent() {
             </thead>
             <tbody>
               {filteredConnections.map((connection) => (
-                <ConnectionRow key={connection.id} connection={connection} />
+                <ConnectionRow key={connection.id} connection={connection} projectNames={projectNames} />
               ))}
             </tbody>
           </table>

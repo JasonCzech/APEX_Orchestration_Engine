@@ -268,6 +268,19 @@ function ArtifactCards({
   )
 }
 
+const PROVENANCE_LABELS: Record<string, string> = {
+  stub: 'Stub — demonstration output',
+  llm: 'AI-generated',
+  simulator: 'Simulator — synthetic execution',
+  live_provider: 'Live execution provider',
+  imported: 'Imported evidence',
+}
+
+function provenanceLabel(provenance: string | undefined, incomplete: boolean): string {
+  if (provenance) return PROVENANCE_LABELS[provenance] ?? provenance.replaceAll('_', ' ')
+  return incomplete ? 'Unavailable in this preview' : 'Not recorded'
+}
+
 function PhaseDetailsTab({
   threadId,
   entry,
@@ -287,7 +300,7 @@ function PhaseDetailsTab({
   return (
     <div aria-label="Phase details">
       <p className="workspace-caption">
-        Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : incomplete ? 'Unavailable in this preview' : 'Not recorded'}
+        Output source: {provenanceLabel(entry.provenance, incomplete)}
       </p>
       {entry.status === 'succeeded' && entry.test_summary && <KpiPills summary={entry.test_summary} result={executionResultLabel({}, { phase_results: { execution: entry } })} />}
 
@@ -341,7 +354,7 @@ function PhaseOperatorSummary({ entry, status, pending = false, pendingArtifactC
       )}
       <h3>What happened</h3>
       {pending && <p className="workspace-caption">Pending review evidence; this output has not been accepted.</p>}
-      <p className="workspace-caption">Output source: {entry.provenance === 'llm' ? 'AI-generated' : entry.provenance === 'stub' ? 'Stub — demonstration output' : entry.provenance?.replaceAll('_', ' ') ?? (incomplete ? 'Unavailable in this preview' : 'Not recorded')}</p>
+      <p className="workspace-caption">Output source: {provenanceLabel(entry.provenance, incomplete)}</p>
       {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>{incomplete ? 'The phase summary is unavailable in this preview.' : 'No operator-readable summary has been recorded for this phase.'}</p>}
     </section>
   )

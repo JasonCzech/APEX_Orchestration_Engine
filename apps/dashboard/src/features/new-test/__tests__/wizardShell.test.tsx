@@ -2,7 +2,7 @@
  * Wizard shell: horizontal tab layout, footer launch gating, and draft resume
  * entry points.
  */
-import { screen, within, waitFor } from '@testing-library/react'
+import { act, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
@@ -191,6 +191,27 @@ describe('NewRunWizard shell', () => {
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(router.state.location.search).toContain('draft=draft-9')
     expect(screen.queryByRole('heading', { name: 'Start a new test' })).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
+  })
+
+  it('returns to StartPanel when navigating back to bare /runs/new while the wizard remains mounted', async () => {
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard('/runs/new')
+    const { router } = rendered
+
+    expect(await screen.findByRole('heading', { name: 'Start a new test' })).toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: /Blank test/ }))
+    await user.click(screen.getByRole('button', { name: 'Start blank test' }))
+
+    expect(await screen.findByRole('tablist', { name: 'New test groups' })).toBeInTheDocument()
+    expect(router.state.location.search).toContain('step=scope')
+
+    await act(async () => {
+      await router.navigate('/runs/new')
+    })
+    expect(await screen.findByRole('heading', { name: 'Start a new test' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: 'New test groups' })).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 })

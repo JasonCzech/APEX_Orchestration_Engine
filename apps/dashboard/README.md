@@ -128,7 +128,7 @@ on the dashboard container (or `dashboard.config.dataMode=demo` in Helm), keep
 normal production image. The dashboard auto-authenticates a project-wide admin
 presenter and routes domain APIs, LangGraph operations, artifacts, context
 summaries, and APEX Load traffic to the bundled transport. “Reset Demo” clears
-the versioned `apex.demo.state.v1` browser journal and idempotency records.
+the versioned `apex.demo.dataset.v4` browser journal and idempotency records.
 
 ## Architecture map
 
@@ -255,7 +255,7 @@ caddy/nginx container) with:
 4. Optional `config.json` beside `index.html` when the APIs live on another
    origin (see Runtime configuration).
 
-### Telecom performance demo (v3.0)
+### Telecom performance demo (v4.0)
 
 The offline demo models a telecom performance-engineering organization with five
 projects: **ACC Perf**, **Digital Perf**, **Legacy Perf**, **NPI**, and **HRP**.
@@ -303,7 +303,7 @@ employee sessions, not completed line additions per second. Timestamps are relat
 to activation. The simulated release result keeps a BSSe create-order latency
 breach to demonstrate review, remediation, and Jira defect creation.
 
-Dataset v3.0 invalidates earlier browser mutation journals on load; **Reset demo**
+Dataset v4.0 invalidates earlier browser mutation journals on load; **Reset demo**
 restores the canonical data. The connected development catalog seed
 (`scripts/seed_catalog.py` at the repository root) still creates only ACC and
 PERFHYPER2 in a `demo` project with placeholder dependency hosts. Existing catalog

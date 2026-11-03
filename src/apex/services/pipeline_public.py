@@ -908,6 +908,28 @@ def public_pipeline_state(value: Any) -> JsonDict:
         if len(projected_packets) == len(packets):
             result["context_packets"] = projected_packets
 
+    summary = _text(value.get("summary"), 20_000)
+    if summary is not None:
+        result["summary"] = summary
+    evidence = value.get("evidence")
+    if type(evidence) is list and len(evidence) <= 64:
+        projected_evidence = [
+            item for raw in evidence if (item := _public_context_preview(raw)) is not None
+        ]
+        if len(projected_evidence) == len(evidence):
+            result["evidence"] = projected_evidence
+    completion = _text(value.get("completion"), 20_000)
+    if completion is not None:
+        result["completion"] = completion
+    raw_rendered_prompt = value.get("rendered_prompt")
+    rendered_prompt = (
+        _text(raw_rendered_prompt, 100_000)
+        if type(raw_rendered_prompt) is str
+        else _public_prompt(raw_rendered_prompt)
+    )
+    if rendered_prompt is not None:
+        result["rendered_prompt"] = rendered_prompt
+
     handle = public_engine_handle_summary(value.get("engine_handle"))
     if handle is not None:
         result["engine_handle"] = handle

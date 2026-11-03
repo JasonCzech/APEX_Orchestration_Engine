@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useId } from 'react'
-import type { Blocker } from 'react-router'
+import type { Blocker, Location } from 'react-router'
 
 const unblocked: Blocker = {
   state: 'unblocked',
@@ -7,9 +7,15 @@ const unblocked: Blocker = {
   proceed: undefined,
   reset: undefined,
 }
+export type NavigationBlockPredicate = (args: {
+  currentLocation: Location
+  nextLocation: Location
+}) => boolean
+
 export interface Guard {
   id: string
   priority: number
+  shouldBlock?: NavigationBlockPredicate
 }
 export const NavigationGuardContext = createContext<{
   register: (guard: Guard) => () => void
@@ -17,13 +23,18 @@ export const NavigationGuardContext = createContext<{
   owner?: string
 } | null>(null)
 
-export function useNavigationBlocker(active: boolean, priority = 0): Blocker {
+export function useNavigationBlocker(
+  active: boolean,
+  priority = 0,
+  shouldBlock?: NavigationBlockPredicate,
+): Blocker {
   const context = useContext(NavigationGuardContext)
-  if (!context) throw new Error('Navigation guard requires the app shell')
   const id = useId()
-  const { register } = context
+  const register = context?.register
   useEffect(() => {
-    if (active) return register({ id, priority })
-  }, [active, id, priority, register])
+    if (active && register) return register({ id, priority, shouldBlock })
+  }, [active, id, priority, register, shouldBlock])
+  if (!context) return unblocked
   return context.owner === id ? context.blocker : unblocked
 }
+

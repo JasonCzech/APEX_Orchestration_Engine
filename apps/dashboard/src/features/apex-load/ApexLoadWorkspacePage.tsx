@@ -1,9 +1,13 @@
 import { TabList, TabPanels } from '@/components/ux/TabList'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { StateCard } from '@/components/ux/StateCard'
-import { useId, useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
-import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { CopyableId } from '@/components/ux/CopyableId'
+import { useCallback, useId, useEffect, useMemo, useState } from 'react'
+import { Link, useBeforeUnload, useSearchParams } from 'react-router'
+import { RequireRole } from '@/auth/RequireRole'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
+import { Dialog } from '@/components/Dialog'
+import { useNavigationBlocker, type NavigationBlockPredicate } from '@/components/useNavigationBlocker'
 import { executionLink } from './executionLink'
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -24,6 +28,8 @@ type NativeMirroredRun = components['schemas']['NativeMirroredRunProjection']
 
 const SCENARIO_IDEMPOTENCY_STORAGE_KEY = 'apex.idempotency.apex-load-scenario.v1'
 const SCHEDULE_IDEMPOTENCY_STORAGE_KEY = 'apex.idempotency.apex-load-schedule.v1'
+const DEFAULT_SCENARIO_DRAFT = '{\n  "name": "New scenario"\n}'
+const DEFAULT_SCHEDULE_DRAFT = '{\n  "name": "Scheduled run"\n}'
 
 interface NativeConnection {
   id: string
@@ -188,8 +194,11 @@ export function ApexLoadWorkspacePage() {
   const [workspaceView, setWorkspaceView] = useState<'executions' | 'authoring'>('executions')
   const [approvalId, setApprovalId] = useState('')
   const [evidenceSignature, setEvidenceSignature] = useState('')
-  const [scenarioDraft, setScenarioDraft] = useState('{\n  "name": "New scenario"\n}')
-  const [scheduleDraft, setScheduleDraft] = useState('{\n  "name": "Scheduled run"\n}')
+  const [scenarioDraft, setScenarioDraft] = useState(DEFAULT_SCENARIO_DRAFT)
+  const [scheduleDraft, setScheduleDraft] = useState(DEFAULT_SCHEDULE_DRAFT)
+  const labels = useProjectLabels()
+  const projectName = (projectId: string) =>
+    (!labels.isError && labels.data?.find((row) => row.project_id === projectId)?.name) || projectId
 
   useEffect(() => {
     const availableConnections = connections.data?.items
@@ -474,6 +483,24 @@ export function ApexLoadWorkspacePage() {
     resetApproval()
   }, [approvalId, connectionId, resetApproval, scenarioId, scheduleId])
 
+  const scenarioDirty =
+    scenarioDraft !== DEFAULT_SCENARIO_DRAFT &&
+    !createScenario.isPending &&
+    !createScenario.isSuccess
+  const scheduleDirty =
+    scheduleDraft !== DEFAULT_SCHEDULE_DRAFT &&
+    !createSchedule.isPending &&
+    !createSchedule.isSuccess
+  const isDirty = scenarioDirty || scheduleDirty
+  const shouldBlock = useCallback<NavigationBlockPredicate>(
+    ({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname,
+    [],
+  )
+  const blocker = useNavigationBlocker(isDirty, 0, shouldBlock)
+  useBeforeUnload((event) => {
+    if (isDirty) event.preventDefault()
+  })
+
   const activeConnection = useMemo(
     () => connections.data?.items.find((connection) => connection.id === connectionId),
     [connectionId, connections.data],
@@ -492,7 +519,7 @@ export function ApexLoadWorkspacePage() {
   if (!connections.data?.items.length) {
     return (
       <StateCard kind="unconfigured" title="Connect APEX Load" action={<>
-        <RequireGlobalAdmin><Link className="btn btn-primary" to="/admin/connections">Manage connections</Link></RequireGlobalAdmin>
+        <RequireRole role="admin"><Link className="btn btn-primary" to="/admin/connections">Manage connections</Link></RequireRole>
         <button className="btn btn-secondary" onClick={() => void connections.refetch()}>Refresh connections</button>
       </>}>
         <p>No enabled, project-scoped APEX Load connection is available to your account.</p>
@@ -512,6 +539,7 @@ export function ApexLoadWorkspacePage() {
         <label className="adm-field">
           <span className="adm-field-label">Connection</span>
           <select
+            className="field-select"
             value={connectionId}
             onChange={(event) => {
               setConnectionId(event.target.value)
@@ -526,7 +554,7 @@ export function ApexLoadWorkspacePage() {
             <option value="">Choose a connection</option>
             {connections.data.items.map((connection) => (
               <option key={connection.id} value={connection.id}>
-                {connection.name} · {connection.project_id}
+                {connection.name} · {projectName(connection.project_id)}
               </option>
             ))}
           </select>
@@ -536,16 +564,19 @@ export function ApexLoadWorkspacePage() {
         <h3>{activeConnection ? 'Project connection selected' : 'Choose a project connection'}</h3>
         <p>
           {activeConnection
-            ? `${activeConnection.name} · Project ${activeConnection.project_id}`
+            ? <>
+                {activeConnection.name} · Project {projectName(activeConnection.project_id)}{' '}
+                <CopyableId value={activeConnection.project_id} label="Project ID" />
+              </>
             : 'Select the connection mapped to your project. No connection is selected automatically when the requested context is unavailable or ambiguous.'}
         </p>
         <p>
           APEX Load executes workloads and owns schedules. Orchestration collects evidence and runs
           analysis.
         </p>
-        <RequireGlobalAdmin>
+        <RequireRole role="admin">
           <Link to="/admin/connections">Manage connections and mappings</Link>
-        </RequireGlobalAdmin>
+        </RequireRole>
       </section>
       {connections.data.truncated && (
         <p className="adm-field-help" role="status">
@@ -594,6 +625,15 @@ export function ApexLoadWorkspacePage() {
               onChange={(event) => setScenarioDraft(event.target.value)}
             />
             <div className="adm-panel-actions">
+              {scenarioDraft !== DEFAULT_SCENARIO_DRAFT && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  type="button"
+                  onClick={() => setScenarioDraft(DEFAULT_SCENARIO_DRAFT)}
+                >
+                  Reset scenario draft
+                </button>
+              )}
               <button
                 className="btn btn-secondary btn-sm"
                 type="button"
@@ -688,6 +728,15 @@ export function ApexLoadWorkspacePage() {
               onChange={(event) => setScheduleDraft(event.target.value)}
             />
             <div className="adm-panel-actions">
+              {scheduleDraft !== DEFAULT_SCHEDULE_DRAFT && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  type="button"
+                  onClick={() => setScheduleDraft(DEFAULT_SCHEDULE_DRAFT)}
+                >
+                  Reset schedule draft
+                </button>
+              )}
               <button
                 className="btn btn-primary btn-sm"
                 type="button"
@@ -750,6 +799,7 @@ export function ApexLoadWorkspacePage() {
             )}
             <div className="adm-panel-actions">
               <input
+                className="field-input"
                 aria-label="Provider schedule approval ID"
                 placeholder="Provider schedule approval ID"
                 value={approvalId}
@@ -877,6 +927,7 @@ export function ApexLoadWorkspacePage() {
             {selectedRun && (
               <div className="adm-panel-actions">
                 <input
+                  className="field-input"
                   aria-label="Error evidence signature"
                   placeholder="Error signature for root-cause evidence"
                   value={evidenceSignature}
@@ -896,6 +947,25 @@ export function ApexLoadWorkspacePage() {
           </section>}
           </TabPanels>
         </>
+      )}
+      {blocker.state === 'blocked' && (
+        <Dialog
+          overlayClassName="adm-overlay"
+          className="adm-modal glass-panel"
+          ariaLabel="Unsaved APEX Load drafts"
+          onClose={() => blocker.reset()}
+        >
+          <h2 className="adm-panel-title">Leave unsaved APEX Load drafts?</h2>
+          <p className="adm-modal-caption">Your scenario or schedule JSON draft edits have not been submitted.</p>
+          <div className="adm-panel-actions">
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
       )}
     </div>
   )

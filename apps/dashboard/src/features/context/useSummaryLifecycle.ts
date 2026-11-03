@@ -15,12 +15,19 @@ export interface SummaryLifecycle {
   project: string
   keys: string[]
   keyDraft: string
+  documentIds: string[]
+  docIdDraft: string
+  workTrackingConnectionId: string
   history: ContextSummaryRun[]
   setSubject: (value: string) => void
   setProject: (value: string) => void
   setKeyDraft: (value: string) => void
   addKey: () => void
   removeKey: (key: string) => void
+  setDocIdDraft: (value: string) => void
+  addDocumentId: (explicitId?: string) => void
+  removeDocumentId: (id: string) => void
+  setWorkTrackingConnectionId: (value: string) => void
   submit: (event: FormEvent) => void
 }
 
@@ -37,6 +44,9 @@ export function useSummaryLifecycle(): SummaryLifecycle {
   const [project, setProject] = useState('')
   const [keys, setKeys] = useState<string[]>([])
   const [keyDraft, setKeyDraft] = useState('')
+  const [documentIds, setDocumentIds] = useState<string[]>([])
+  const [docIdDraft, setDocIdDraft] = useState('')
+  const [workTrackingConnectionId, setWorkTrackingConnectionId] = useState('')
   const submittingRef = useRef(false)
   const isSubmitting = pendingCount > 0
 
@@ -51,16 +61,30 @@ export function useSummaryLifecycle(): SummaryLifecycle {
     setKeys((prev) => prev.filter((existing) => existing !== key))
   }
 
+  function addDocumentId(explicitId?: string) {
+    const id = (explicitId ?? docIdDraft).trim()
+    if (!id) return
+    setDocumentIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    if (explicitId === undefined) setDocIdDraft('')
+  }
+
+  function removeDocumentId(id: string) {
+    setDocumentIds((prev) => prev.filter((existing) => existing !== id))
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault()
     const trimmed = subject.trim()
     if (!trimmed || submittingRef.current || isSubmitting) return
     submittingRef.current = true
+    const trimmedConnection = workTrackingConnectionId.trim()
     createSummary.mutate(
       {
         subject: trimmed,
         work_item_keys: keys,
         project_id: project.trim() || null,
+        ...(documentIds.length > 0 ? { document_ids: documentIds } : {}),
+        ...(trimmedConnection ? { work_tracking_connection_id: trimmedConnection } : {}),
       },
       {
         onSettled: () => {
@@ -77,12 +101,19 @@ export function useSummaryLifecycle(): SummaryLifecycle {
     project,
     keys,
     keyDraft,
+    documentIds,
+    docIdDraft,
+    workTrackingConnectionId,
     history: historyQuery.data ?? [],
     setSubject,
     setProject,
     setKeyDraft,
     addKey,
     removeKey,
+    setDocIdDraft,
+    addDocumentId,
+    removeDocumentId,
+    setWorkTrackingConnectionId,
     submit,
   }
 }

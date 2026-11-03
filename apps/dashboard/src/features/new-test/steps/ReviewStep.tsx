@@ -11,6 +11,7 @@ import { CopyableId } from '@/components/ux/CopyableId'
 import { useAnalysisConnections } from '@/api/hooks/useAnalysisConnections'
 import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { useAssistants } from '@/api/hooks/useAssistants'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { usePromptList, usePromptVersion } from '@/api/hooks/usePrompts'
 import { useWorkItem } from '@/api/hooks/useWorkTracking'
 import type { PromptSelection } from '@/features/prompts/promptCategories'
@@ -74,12 +75,14 @@ function ReferenceName({ name, id }: { name?: string; id: string | null | undefi
 function ParticipantRow({ p, primary, traffic }: { p: TestParticipant; primary: boolean; traffic: boolean }) {
   const apps = useApplications(p.project_id)
   const envs = useEnvironments(p.application_id)
+  const projectLabels = useProjectLabels()
+  const projectName = (!projectLabels.isError && projectLabels.data?.find(row => row.project_id === p.project_id)?.name) || p.project_id
   return (
     <li className="wizard-review-row">
       <span className="wizard-review-layer">{LAYER_LABELS[p.layer]}</span>
       <span className="wizard-review-row-main">
         <strong>{apps.data?.find(a => a.id === p.application_id)?.name ?? p.application_id}</strong>
-        <span className="wizard-caption">{envs.data?.find(e => e.id === p.environment_id)?.name ?? p.environment_id} · {p.project_id}</span>
+        <span className="wizard-caption">{envs.data?.find(e => e.id === p.environment_id)?.name ?? p.environment_id} · {projectName}</span>
       </span>
       <span className="wizard-review-tags">
         {primary && <span className="wizard-review-tag">Primary system</span>}
@@ -178,6 +181,9 @@ export function ReviewStep({
     if (optional && !items) return { tone: 'muted', text: 'Optional' }
     return { tone: 'ok', text: optional ? `${items} linked` : 'Complete' }
   }
+  const projectLabels = useProjectLabels()
+  const rawProjectId = draft.scope.project_id.trim()
+  const projectName = (!projectLabels.isError && projectLabels.data?.find(row => row.project_id === rawProjectId)?.name) || rawProjectId
   const openPrompt = (slot: Parameters<typeof promptSlotTarget>[0]) => () => onEditStep('prompts', promptSlotTarget(slot))
   const engineLabel = draft.config.unsupported_engine ? `${draft.config.unsupported_engine} (unsupported)` : ENGINE_LABELS[draft.config.engine]
   const appName = applications.data?.find((item) => item.id === draft.scope.app_id)?.name
@@ -242,7 +248,21 @@ export function ReviewStep({
             <RequestText text={draft.request.trim()} />
             <dl className="wizard-review-facts">
               <div><dt>Engine</dt><dd>{engineLabel}</dd></div>
-              <div><dt>Project</dt><dd>{draft.scope.project_id.trim() || '—'}</dd></div>
+              <div>
+                <dt>Project</dt>
+                <dd>
+                  {rawProjectId ? (
+                    <>
+                      {projectName}
+                      {projectName !== rawProjectId && (
+                        <small className="review-reference-id">
+                          <CopyableId value={rawProjectId} label="Project ID" />
+                        </small>
+                      )}
+                    </>
+                  ) : '—'}
+                </dd>
+              </div>
               <div><dt>Agent phases</dt><dd>{phases.length} of {PHASE_NAMES.length}</dd></div>
               <div><dt>Review policy</dt><dd>{draft.config.gates_mode === 'all_auto' ? 'Run automatically' : draft.config.gates_mode === 'custom' ? 'Custom' : 'Review every agent phase'}</dd></div>
             </dl>
@@ -316,7 +336,7 @@ export function ReviewStep({
                 : <ul className="wizard-review-list">{draft.work_items.map((item) => <WorkItemRow key={`${item.connection_id}:${item.key}`} item={item} project={draft.scope.project_id} />)}</ul>}
             </ReviewSection>
 
-            <ReviewSection title="Knowledge" step="context" status={statusFor('context', { optional: true, items: draft.document_ids.length, extra: thresholdMismatches.length ? 1 : 0 })} onEdit={onEditStep}>
+            <ReviewSection title="Knowledge" step="context" status={statusFor('context', { optional: true, items: draft.document_ids.length + draft.context_summary_ids.length, extra: thresholdMismatches.length ? 1 : 0 })} onEdit={onEditStep}>
               {thresholdMismatches.length > 0 && <div className="tonal-card warning" data-testid="document-threshold-mismatches">
                 <p>Attached documents mention figures that differ from the acceptance thresholds in Config. Check which is the target:</p>
                 <ul className="wizard-review-list">{thresholdMismatches.map(item => <li className="wizard-review-row" key={`${item.document}:${item.key}`}>{item.document} mentions {item.label} {item.documented}; Config requires ≤ {item.configured}.</li>)}</ul>
@@ -335,6 +355,19 @@ export function ReviewStep({
                     </li>
                   )
                 })}</ul>}
+              {draft.context_summary_ids.length > 0 && (
+                <div className="wizard-field" data-testid="review-context-summaries">
+                  <span className="wizard-label">Context summaries ({draft.context_summary_ids.length})</span>
+                  <ul className="wizard-review-list">
+                    {draft.context_summary_ids.map((id) => (
+                      <li key={id} className="wizard-review-row">
+                        <span className="wizard-review-row-main"><CopyableId value={id} label="Summary ID" /></span>
+                        <span className="wizard-review-tag">Context summary</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {contextSummary.includedCount > 0 && (
                 <p className="wizard-caption">
                   {contextSummary.includedCount} parsed · ~{contextSummary.totalChars.toLocaleString()} characters included as context

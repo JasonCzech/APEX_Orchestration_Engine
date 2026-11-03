@@ -470,4 +470,35 @@ describe('ConsumersPage', () => {
     expect(within(panel).queryByRole('alert')).not.toBeInTheDocument()
     expect(within(panel).getByRole('button', { name: 'Create consumer' })).toBeEnabled()
   })
+
+  it('supports direct Edit access, Rotate key, and Delete modals on ConsumerDetailPage', async () => {
+    const rotate = rotateConsumerHandler(CONSUMER_CI, 'apex_key_detail_rotated')
+    const del = deleteConsumerHandler()
+    server.use(...consumersReadHandlers(), rotate.handler, del.handler)
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: [`/admin/consumers/${CONSUMER_CI.id}`],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    expect(await screen.findByRole('heading', { name: CONSUMER_CI.name })).toBeInTheDocument()
+    const editBtn = await screen.findByRole('button', { name: 'Edit access' })
+    await waitFor(() => expect(editBtn).toBeEnabled())
+
+    await user.click(editBtn)
+    const editDialog = await screen.findByRole('dialog', { name: `Edit consumer ${CONSUMER_CI.name}` })
+    await user.click(within(editDialog).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(screen.getByRole('button', { name: 'Rotate key…' }))
+    const rotateDialog = await screen.findByRole('dialog', { name: `Rotate key for ${CONSUMER_CI.name}` })
+    await user.click(within(rotateDialog).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(screen.getByRole('button', { name: 'Delete…' }))
+    const deleteDialog = await screen.findByRole('dialog', { name: `Delete consumer ${CONSUMER_CI.name}` })
+    await user.type(within(deleteDialog).getByRole('textbox', { name: `Type ${CONSUMER_CI.name} to confirm` }), CONSUMER_CI.name)
+    await user.click(within(deleteDialog).getByRole('button', { name: 'Delete consumer' }))
+
+    await waitFor(() => expect(del.captured).toEqual([CONSUMER_CI.id]))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/admin/consumers'))
+  })
 })

@@ -8,6 +8,7 @@ import { formatBytes } from '@/features/context/contextLogic'
  */
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 
+import { useContextSummaryHistory } from '@/api/hooks/useContextApi'
 import { useTestScopeDocuments, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
@@ -37,12 +38,14 @@ export function ContextStep({
 }: StepProps) {
   const upload = useUploadDocument()
   const documents = useTestScopeDocuments(draft.scope)
+  const summaryHistory = useContextSummaryHistory()
   const inputRef = useRef<HTMLInputElement | null>(null)
   // Documents uploaded in this session (the list query may lag behind).
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
+  const [summaryDraft, setSummaryDraft] = useState('')
   const projectRef = useRef(draft.scope.project_id.trim())
   const appRef = useRef(draft.scope.app_id)
   const generationRef = useRef(0)
@@ -77,6 +80,24 @@ export function ContextStep({
     onChange((prev) => ({
       ...prev,
       document_ids: prev.document_ids.filter((existing) => existing !== id),
+    }))
+  }
+
+  function addSummary(rawId: string) {
+    const id = rawId.trim()
+    if (!id) return
+    onChange((prev) =>
+      prev.context_summary_ids.includes(id)
+        ? prev
+        : { ...prev, context_summary_ids: [...prev.context_summary_ids, id] },
+    )
+    setSummaryDraft('')
+  }
+
+  function removeSummary(id: string) {
+    onChange((prev) => ({
+      ...prev,
+      context_summary_ids: prev.context_summary_ids.filter((existing) => existing !== id),
     }))
   }
 
@@ -298,6 +319,88 @@ export function ContextStep({
                 </button>
               </li>
             ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="wizard-field" data-testid="context-summaries-field">
+        <label className="wizard-label" htmlFor="wizard-summary-id-draft">
+          Context summaries (optional)
+        </label>
+        <p className="wizard-caption">
+          Attach prior <Link to="/context?tab=summaries">context summaries</Link> by summary ID or from this session.
+        </p>
+        <div className="wizard-inline-row">
+          <input
+            id="wizard-summary-id-draft"
+            type="text"
+            className="field-input"
+            aria-label="Context summary ID"
+            placeholder="thread-summary-id"
+            disabled={disabled}
+            value={summaryDraft}
+            onChange={(event) => setSummaryDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                addSummary(summaryDraft)
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={disabled || summaryDraft.trim() === ''}
+            onClick={() => addSummary(summaryDraft)}
+          >
+            Add summary
+          </button>
+        </div>
+        {draft.context_summary_ids.length > 0 && (
+          <div className="wizard-chip-row" data-testid="attached-summaries">
+            {draft.context_summary_ids.map((id) => (
+              <span key={id} className="wizard-chip">
+                {id}
+                <button
+                  type="button"
+                  className="wizard-chip-remove"
+                  aria-label={`Remove summary ${id}`}
+                  disabled={disabled}
+                  onClick={() => removeSummary(id)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {(summaryHistory.data ?? []).filter((entry) => {
+          const id = entry.threadId ?? entry.runId
+          return !draft.context_summary_ids.includes(id)
+        }).length > 0 && (
+          <ul className="wizard-doc-list" data-testid="session-summaries">
+            {(summaryHistory.data ?? [])
+              .filter((entry) => {
+                const id = entry.threadId ?? entry.runId
+                return !draft.context_summary_ids.includes(id)
+              })
+              .map((entry) => {
+                const id = entry.threadId ?? entry.runId
+                return (
+                  <li key={entry.runId} className="wizard-doc-row">
+                    <span className="wizard-doc-name">{entry.subject}</span>
+                    <span className="wizard-caption">{id}</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      disabled={disabled}
+                      onClick={() => addSummary(id)}
+                    >
+                      Attach summary
+                    </button>
+                  </li>
+                )
+              })}
           </ul>
         )}
       </div>

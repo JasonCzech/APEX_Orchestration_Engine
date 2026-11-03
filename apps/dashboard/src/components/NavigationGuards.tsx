@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useBlocker, type Blocker } from 'react-router'
+import { useBlocker, useLocation, type Blocker } from 'react-router'
 import {
   NavigationGuardContext as Context,
   type Guard,
@@ -13,12 +13,24 @@ import {
 
 /** React Router supports one blocker. Serialize independent safeguards before navigating. */
 export function NavigationGuards({ children }: { children: ReactNode }) {
+  const currentLocation = useLocation()
   const [guards, setGuards] = useState<Guard[]>([])
   const [waived, setWaived] = useState<string[]>([])
-  const blocker = useBlocker(guards.length > 0)
+  const shouldBlock = useCallback(
+    (args: { currentLocation: Parameters< NonNullable<Guard['shouldBlock']> >[0]['currentLocation']; nextLocation: Parameters< NonNullable<Guard['shouldBlock']> >[0]['nextLocation'] }) =>
+      guards.some((guard) => !guard.shouldBlock || guard.shouldBlock(args)),
+    [guards],
+  )
+  const blocker = useBlocker(guards.length > 0 ? shouldBlock : false)
   const owner = [...guards]
     .sort((a, b) => b.priority - a.priority)
-    .find((guard) => !waived.includes(guard.id))?.id
+    .find(
+      (guard) =>
+        !waived.includes(guard.id) &&
+        (!guard.shouldBlock ||
+          !blocker.location ||
+          guard.shouldBlock({ currentLocation, nextLocation: blocker.location })),
+    )?.id
   const register = useCallback((guard: Guard) => {
     setGuards((previous) => [
       ...previous.filter((item) => item.id !== guard.id),

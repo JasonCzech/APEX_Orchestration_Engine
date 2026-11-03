@@ -15,8 +15,8 @@ import { useTopbarTitle } from '@/components/layout/TopbarContributionProvider'
  * message — they render as an inline danger card with a retry (probe-style;
  * deliberately NOT a toast).
  */
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link, useBeforeUnload, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import {
   environmentWriteMutationKey,
@@ -36,7 +36,9 @@ import {
 import { useConsumer } from '@/auth/AuthProvider'
 import { canMutateAudience, isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useNavigationBlocker, type NavigationBlockPredicate } from '@/components/useNavigationBlocker'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
 
@@ -131,6 +133,24 @@ function EditEnvironmentForm({
 
   const optionsParse = parseOptionsJson(optionsText)
   const optionsChanged = optionsText !== JSON.stringify(environment.options, null, 2)
+  const nextHosts = hostsToPayload(hosts)
+  const currentHosts = (environment.hosts ?? []).map(({ hostname, role }) => ({ hostname, role }))
+  const isDirty =
+    (name.trim() !== environment.name ||
+      (baseUrl.trim() || null) !== (environment.base_url ?? null) ||
+      (kind || null) !== environment.kind ||
+      JSON.stringify(nextHosts) !== JSON.stringify(currentHosts) ||
+      optionsChanged) &&
+    writeCount === 0 &&
+    !update.isSuccess
+  const shouldBlock = useCallback<NavigationBlockPredicate>(
+    ({ nextLocation }) => !/^\/environments\/[^/]+$/.test(nextLocation.pathname),
+    [],
+  )
+  const blocker = useNavigationBlocker(isDirty, 0, shouldBlock)
+  useBeforeUnload((event) => {
+    if (isDirty) event.preventDefault()
+  })
   const hasReservedOptions =
     optionsParse.ok && [...Object.keys(optionsParse.value), ...Object.keys(environment.options)]
       .some((key) => key.startsWith('_apex_'))
@@ -150,8 +170,6 @@ function EditEnvironmentForm({
           if (name.trim() !== environment.name) body.name = name.trim()
           if ((baseUrl.trim() || null) !== (environment.base_url ?? null)) body.base_url = baseUrl.trim() || null
           if ((kind || null) !== environment.kind) body.kind = kind || null
-          const nextHosts = hostsToPayload(hosts)
-          const currentHosts = (environment.hosts ?? []).map(({ hostname, role }) => ({ hostname, role }))
           if (JSON.stringify(nextHosts) !== JSON.stringify(currentHosts)) body.hosts = nextHosts
           if (optionsText !== JSON.stringify(environment.options, null, 2)) body.options = optionsParse.value
           return body
@@ -249,6 +267,25 @@ function EditEnvironmentForm({
           {update.isPending ? 'Saving…' : 'Save changes'}
         </button>
       </div>
+      {blocker.state === 'blocked' && (
+        <Dialog
+          ariaLabel="Unsaved environment changes"
+          className="glass-panel"
+          overlayClassName="ux-dialog-overlay"
+          onClose={() => blocker.reset()}
+        >
+          <h2>Leave unsaved environment changes?</h2>
+          <p>Your environment configuration edits have not been saved.</p>
+          <div className="ux-dialog-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
+      )}
     </form>
   )
 }

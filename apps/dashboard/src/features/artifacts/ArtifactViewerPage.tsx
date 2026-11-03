@@ -20,17 +20,58 @@ import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { artifactProxyUrl, fetchArtifactBytes } from './artifactUrl'
 import './artifact-viewer.css'
 
+function matchesProxyRef(uri: string | undefined, refOrKey: string): boolean {
+  if (!uri || !refOrKey) return false
+  const proxy = artifactProxyUrl(uri)
+  if (!proxy) return false
+  const normalizedTarget = refOrKey.startsWith('/v1/artifacts/')
+    ? refOrKey
+    : `/v1/artifacts/${refOrKey.replace(/^\/+/, '')}`
+  try {
+    return proxy.endsWith(normalizedTarget) || decodeURIComponent(proxy).endsWith(normalizedTarget)
+  } catch {
+    return proxy.endsWith(normalizedTarget)
+  }
+}
+
 /**
  * Find an ArtifactRef by id: the run-level artifacts index first, then each
  * phase's transcript_ref (transcripts are also appended to the index by
- * finalize, but tolerate states where only the entry carries the ref).
+ * finalize, but tolerate states where only the entry carries the ref), and
+ * finally by matching `/v1/artifacts/...` proxy path or evidence packet ref.
  */
-export function findArtifact(state: PipelineState, artifactId: string): ArtifactRef | undefined {
+export function findArtifact(
+  state: PipelineState,
+  artifactId: string,
+  artifactRef?: string,
+): ArtifactRef | undefined {
   const indexed = state.artifacts?.find((artifact) => artifact.id === artifactId)
   if (indexed) return indexed
   for (const phase of PHASE_NAMES) {
     const transcript = state.phase_results?.[phase]?.transcript_ref
     if (transcript && transcript.id === artifactId) return transcript
+  }
+  const packetRef =
+    artifactRef ??
+    state.context_packets?.find((packet) => packet.id === artifactId)?.ref ??
+    undefined
+  const byProxyOrName = state.artifacts?.find(
+    (artifact) =>
+      artifact.name === artifactId ||
+      matchesProxyRef(artifact.uri, artifactId) ||
+      (typeof packetRef === 'string' && matchesProxyRef(artifact.uri, packetRef)),
+  )
+  if (byProxyOrName) return byProxyOrName
+  for (const phase of PHASE_NAMES) {
+    const transcript = state.phase_results?.[phase]?.transcript_ref
+    if (
+      transcript &&
+      (transcript.name === artifactId ||
+        matchesProxyRef(transcript.uri, artifactId) ||
+        (typeof packetRef === 'string' && matchesProxyRef(transcript.uri, packetRef)))
+    ) {
+      return transcript
+    }
   }
   return undefined
 }
@@ -86,19 +127,23 @@ export function ArtifactViewerPage() {
   const { threadId = '', name = '' } = useParams()
   const location = useLocation()
   const returnPath = artifactReturnPath(location.state?.artifactReturnTo, threadId)
+  const requestedArtifactRef =
+    typeof location.state?.artifactRef === 'string' ? location.state.artifactRef : undefined
   const returnLabel = returnPath.includes('/reviews/')
     ? 'Back to review'
     : returnPath.startsWith('/approvals')
       ? 'Back to review'
       : returnPath.includes('/phases/')
         ? 'Back to phase'
-        : 'Back to run'
+        : returnPath.startsWith('/evidence')
+          ? 'Back to evidence'
+          : 'Back to run'
   const [sourceFor, setSourceFor] = useState<string | null>(null)
   const showingSource = sourceFor === name
   const threadQuery = useThreadState(threadId)
 
   const pendingTranscript = threadQuery.data?.interrupts.map(interrupt => parseGateInterrupt(interrupt.payload)).find(payload => payload?.kind === 'phase_review' && payload.evidence?.transcript_ref?.id === name)
-  const ref = (threadQuery.data ? findArtifact(threadQuery.data.state, name) : undefined) ?? (pendingTranscript?.kind === 'phase_review' ? pendingTranscript.evidence?.transcript_ref ?? undefined : undefined)
+  const ref = (threadQuery.data ? findArtifact(threadQuery.data.state, name, requestedArtifactRef) : undefined) ?? (pendingTranscript?.kind === 'phase_review' ? pendingTranscript.evidence?.transcript_ref ?? undefined : undefined)
   const url = ref ? artifactProxyUrl(ref.uri) : null
 
   const artifactQuery = useQuery({
@@ -162,6 +207,13 @@ export function ArtifactViewerPage() {
           onRetry={() => void threadQuery.refetch()}
         />
       )}
+      <nav className="ux-breadcrumbs" aria-label="Breadcrumb">
+        <Link to="/runs">Tests</Link>
+        <span aria-hidden="true">/</span>
+        <Link to={`/runs/${encodeURIComponent(threadId)}`}>{threadQuery.data?.detail.title ?? threadId}</Link>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Artifacts</span>
+      </nav>
       <header className="artifact-viewer-header glass-panel">
         <span className="artifact-viewer-name">{ref.name ?? ref.id}</span>
         <span className="kind-chip">{ref.kind ?? 'artifact'}</span>

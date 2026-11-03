@@ -95,11 +95,11 @@ export function PresetDetail({ preset, advanced, extraActions }: {
         <div className="gc-actions-row">
           {canLaunch && !preset.archived && <Link className="btn btn-primary btn-sm" to={startHref}>Start a test from this preset</Link>}
           {canLaunch && preset.editable && !preset.archived && (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void navigate(`${startHref}&step=review`)}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void navigate(`${startHref}&step=review&presetModal=update`)}
               title="Opens the wizard with this preset; on Review choose Save as preset → Update">Edit in the wizard</button>
           )}
           {canLaunch && (
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void navigate(`${startHref}&step=review`)}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void navigate(`${startHref}&step=review&presetModal=new`)}
               title="Opens the wizard with this preset; on Review choose Save as preset → Save as a new preset">Duplicate</button>
           )}
           {preset.kind === 'team' && preset.editable && (

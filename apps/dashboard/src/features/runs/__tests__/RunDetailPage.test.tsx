@@ -763,4 +763,37 @@ describe('RunDetailPage', () => {
     )
     expect(graphAbortCalls).toBe(0)
   })
+
+  it('renders context summary output and gathered evidence on non-pipeline threads without misleading 6-phase pipeline cards', async () => {
+    server.use(
+      pipelineDetailHandler({
+        ...PIPELINE_DETAIL,
+        title: 'Checkout context synthesis',
+        current_phase: null,
+        phase_strip: [],
+        values: {
+          title: 'Checkout context synthesis',
+          summary: 'Synthesized checkout latency context.',
+          evidence: [
+            {
+              id: 'ev-doc-1',
+              source: 'document',
+              title: 'Checkout SLO Runbook',
+              summary: 'P95 must stay below 200ms.',
+            },
+          ],
+        },
+      }),
+    )
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+
+    const summaryCard = await screen.findByTestId('context-summary-output')
+    expect(summaryCard).toHaveTextContent('Synthesized checkout latency context.')
+    const evidenceBlock = within(summaryCard).getByTestId('context-summary-evidence')
+    expect(evidenceBlock).toHaveTextContent('Gathered evidence (1)')
+    expect(evidenceBlock).toHaveTextContent('Checkout SLO Runbook')
+    expect(evidenceBlock).toHaveTextContent('P95 must stay below 200ms.')
+    expect(screen.queryByRole('heading', { name: 'Test acceptance' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open Story Analysis' })).not.toBeInTheDocument()
+  })
 })

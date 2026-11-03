@@ -284,6 +284,8 @@ function NewRunWizardContent({
     isLoadFailureCurrent,
     loadDraft,
     saveNow,
+    startFresh,
+    discardDraft,
     deleteCurrentDraft,
     deleteDraftById,
   } = useDraft({
@@ -296,11 +298,26 @@ function NewRunWizardContent({
   const [finalizing, setFinalizing] = useState(false)
   const presets = usePresets()
   const [savingPreset, setSavingPreset] = useState(false)
+  const rawPresetModal = searchParams.get('presetModal')
+  const presetModalMode: 'update' | 'new' | undefined =
+    rawPresetModal === 'update' || rawPresetModal === 'new' ? rawPresetModal : undefined
   // ?preset=<kind>:<id> starts from a preset (?golden=<assistant> is the older form).
   const presetParam = searchParams.get('preset') ?? (searchParams.get('golden') ? `organization:${searchParams.get('golden')}` : null)
   const [presetLinkError, setPresetLinkError] = useState<string | null>(null)
   // Start (F-01) opens a fresh New test; any deep link (step, draft, preset) skips it.
   const [started, setStarted] = useState(false)
+  const hasWizardParams = urlDraftId !== null || searchParams.has('step') || presetParam !== null
+  const hadWizardParamsRef = useRef(hasWizardParams)
+  useEffect(() => {
+    const previouslyHadParams = hadWizardParamsRef.current
+    hadWizardParamsRef.current = hasWizardParams
+    if (previouslyHadParams && !hasWizardParams) {
+      setStarted(false)
+      if (draftId !== null || saveState !== 'idle') {
+        void startFresh()
+      }
+    }
+  }, [draftId, hasWizardParams, saveState, startFresh])
   const showStart = !started && urlDraftId === null && draftId === null && !searchParams.has('step') &&
     presetParam === null && saveState === 'idle' && !loading
   // Leaving Start opens the wizard at its top, not at Start's scroll position.
@@ -676,11 +693,21 @@ function NewRunWizardContent({
       </div>}
       {/* One compact row: the step, a readiness chip that discloses the issue
           list on demand, and the actions. Server-recheck caveats live on Review. */}
-      {savingPreset && (
+      {(savingPreset || (presetModalMode !== undefined && presetParam === null)) && (
         <SavePresetDialog
           draft={draft}
           existing={draft.preset ? presets.data?.find(preset => preset.key === presetKey(draft.preset!.kind, draft.preset!.id)) ?? null : null}
-          onClose={() => setSavingPreset(false)}
+          initialMode={presetModalMode}
+          onClose={() => {
+            setSavingPreset(false)
+            if (presetModalMode !== undefined) {
+              setSearchParams(previous => {
+                const next = new URLSearchParams(previous)
+                next.delete('presetModal')
+                return next
+              }, { replace: true })
+            }
+          }}
           onSaved={link => updateDraft(previous => ({ ...previous, preset: link }))}
         />
       )}
@@ -717,7 +744,36 @@ function NewRunWizardContent({
         </div>
 
         <div className="wizard-footer-actions">
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={loading || finalizing || pendingStepCount > 0}
+            onClick={() => {
+              void startFresh().then((ok) => {
+                if (!ok) return
+                setStarted(false)
+                setSearchParams(new URLSearchParams(), { replace: true })
+              })
+            }}
+          >
+            Start over
+          </button>
           <RequireRole role="operator">
+            {draftId !== null && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={loading || finalizing || pendingStepCount > 0}
+                onClick={() => {
+                  void discardDraft().then(() => {
+                    setStarted(false)
+                    setSearchParams(new URLSearchParams(), { replace: true })
+                  })
+                }}
+              >
+                Discard draft
+              </button>
+            )}
             {saveDraftNote && <span id="wizard-save-note" className="wizard-caption">{saveDraftNote}</span>}
             <span id="wizard-save-hint" className="sr-only">Saving does not launch a test.</span>
             <button

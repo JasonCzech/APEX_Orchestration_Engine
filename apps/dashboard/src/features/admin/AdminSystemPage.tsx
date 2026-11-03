@@ -10,7 +10,7 @@ import { useTimestampPreference } from '@/theme/preferences'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 
-import { fetchSystemInfo } from '@/api/apexClient'
+import { fetchSystemInfo, type Role } from '@/api/apexClient'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 import { useAuth } from '@/auth/AuthProvider'
 import { useConnectivity } from '@/health/ConnectivityProvider'
@@ -27,6 +27,12 @@ const STATUS_BADGE: Record<string, string> = {
   degraded: 'warning',
   unreachable: 'danger',
   unknown: 'neutral',
+}
+
+const ROLE_BADGE: Record<Role, string> = {
+  viewer: 'neutral',
+  operator: 'info',
+  admin: 'accent',
 }
 
 function AdminSystemContent() {
@@ -74,7 +80,7 @@ function AdminSystemContent() {
             <dd>{consumer?.name ?? EM_DASH}</dd>
             <dt>Role</dt>
             <dd>
-              {consumer ? <span className="status-badge accent">{consumer.role}</span> : EM_DASH}
+              {consumer ? <span className={`status-badge ${ROLE_BADGE[consumer.role]}`}>{consumer.role}</span> : EM_DASH}
             </dd>
             <dt>Scopes</dt>
             <dd>
@@ -136,8 +142,11 @@ function AdminSystemContent() {
             <li>
               <Link to="/admin/consumers">API consumers</Link>
             </li>
+            <li>
+              <Link to="/help/troubleshooting">Troubleshooting</Link>
+            </li>
           </ul>
-          <p className="adm-muted">Operational runbooks: see docs/runbooks in the repo.</p>
+          <p className="adm-muted">Operational runbooks: see docs/runbooks in the repo or open <Link to="/help/troubleshooting">in-app troubleshooting</Link>.</p>
         </div>
       </div>
     </section>

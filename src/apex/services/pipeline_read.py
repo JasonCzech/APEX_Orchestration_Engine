@@ -767,6 +767,18 @@ def public_run_failure(thread: JsonDict) -> JsonDict | None:
     }
 
 
+def _is_non_pipeline_thread(thread: JsonDict) -> bool:
+    """Return True for threads created by the context or playground graphs."""
+    raw_metadata = thread.get("metadata") if isinstance(thread, dict) else None
+    if not isinstance(raw_metadata, dict):
+        return False
+    return (
+        raw_metadata.get("kind") == "context_summary"
+        or raw_metadata.get("purpose") == "prompt_test"
+        or raw_metadata.get("graph_id") in {"context", "playground"}
+    )
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     raw_values = thread.get("values")
@@ -1625,7 +1637,50 @@ class PipelineReadService:
                 requested_limit=limit,
                 label="pipeline thread search",
             )
-            return PipelineListResult(items=[map_thread_summary(thread) for thread in threads])
+            items = [
+                map_thread_summary(thread)
+                for thread in threads
+                if not _is_non_pipeline_thread(thread)
+            ]
+            scan_offset = offset + len(threads)
+            partial = False
+            while (
+                len(items) < limit
+                and len(threads) == limit
+                and scan_offset < offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
+            ):
+                scan_limit = min(
+                    limit,
+                    (offset + MAX_PIPELINE_TEXT_SCAN_RECORDS) - scan_offset,
+                )
+                threads = validated_native_mapping_page(
+                    await self._client.threads.search(
+                        metadata=metadata,
+                        status=status,
+                        limit=scan_limit,
+                        offset=scan_offset,
+                        sort_by="updated_at",
+                        sort_order="desc",
+                        select=list(PIPELINE_SUMMARY_SELECT),
+                        extract=dict(PIPELINE_SUMMARY_EXTRACT),
+                    ),
+                    requested_limit=scan_limit,
+                    label="pipeline thread search",
+                )
+                for thread in threads:
+                    if not _is_non_pipeline_thread(thread):
+                        items.append(map_thread_summary(thread))
+                        if len(items) >= limit:
+                            break
+                scan_offset += len(threads)
+                if len(threads) < scan_limit:
+                    break
+                if (
+                    scan_offset >= offset + MAX_PIPELINE_TEXT_SCAN_RECORDS
+                    and len(items) < limit
+                ):
+                    partial = True
+            return PipelineListResult(items=items[:limit], partial=partial)
 
         # LangGraph has no free-text search. Scan a fixed, recent prefix before
         # applying the dashboard offset. The hard aggregate cap prevents one
@@ -1657,7 +1712,11 @@ class PipelineReadService:
                 requested_limit=scan_limit,
                 label="pipeline text-search thread page",
             )
-            page = [map_thread_summary(thread) for thread in threads]
+            page = [
+                map_thread_summary(thread)
+                for thread in threads
+                if not _is_non_pipeline_thread(thread)
+            ]
             matches.extend(
                 item
                 for item in page
@@ -1676,7 +1735,7 @@ class PipelineReadService:
             )
             if len(matches) >= offset + limit:
                 break
-            if len(page) < scan_limit:
+            if len(threads) < scan_limit:
                 break
             scan_offset += scan_limit
             if scan_offset >= MAX_PIPELINE_TEXT_SCAN_RECORDS:

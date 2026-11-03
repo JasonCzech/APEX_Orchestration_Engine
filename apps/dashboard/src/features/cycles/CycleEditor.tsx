@@ -337,15 +337,15 @@ export function CycleEditor({
             />
           </label>
           <div className="cycle-actions">
-            <button className="btn btn-primary" type="submit">
-              {save.isPending ? 'Saving…' : 'Save draft version'}
-            </button>
             <button
               className="btn btn-secondary"
               type="button"
               onClick={() => dirty ? setCancelRequested(true) : onCancel()}
             >
               Cancel editing
+            </button>
+            <button className="btn btn-primary" type="submit">
+              {save.isPending ? 'Saving…' : 'Save draft version'}
             </button>
           </div>
         </fieldset>

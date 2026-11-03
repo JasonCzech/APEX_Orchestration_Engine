@@ -1,6 +1,7 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
+import { useTopbarTitle } from '@/components/layout/TopbarContributionProvider'
 /**
  * Keyboard-first cross-run gate queue and full Review Workspace. /approvals
  * selects the oldest gate; /runs/:threadId/reviews/:interruptId is canonical.
@@ -250,8 +251,9 @@ export function ApprovalsInboxPage() {
   // Preserve old bookmarks while making the gate-specific review URL canonical.
   useEffect(() => {
     if (!selection || !location.pathname.startsWith('/approvals/')) return
-    setSelection(selection, true)
-  }, [location.pathname, selection, setSelection])
+    requestedSelectionRef.current = selection
+    void navigate(runReviewPath(selection.threadId, selection.interruptId), { replace: true })
+  }, [location.pathname, navigate, selection])
 
   // Retain the last queue ordering that actually contained this selected
   // interrupt. Reopening can settle one render after its replacement row
@@ -406,6 +408,7 @@ export function ApprovalsInboxPage() {
     (selection.interruptId === null || row.pending_gate.interrupt_id === selection.interruptId))
   const reviewSearch = new URLSearchParams(location.search)
   const requestedSource = reviewSearch.get('source')
+  useTopbarTitle(requestedSource === 'queue' ? 'Tests' : null)
   const reviewSource = requestedSource === 'history' || requestedSource === 'home' || requestedSource === 'overview'
     ? requestedSource
     : 'queue'

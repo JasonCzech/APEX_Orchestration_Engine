@@ -7,7 +7,7 @@ export function Pagination({ label, offset, limit, hasNext, pending, options = [
 }) {
   const sizes = [...new Set([...options, limit])].filter(value => Number.isInteger(value) && value > 0).sort((a, b) => a - b)
   return <nav className="ux-actions ux-pagination" aria-label={`${label} pages`}>
-    <label>Rows <select aria-label={`${label} rows per page`} value={limit} disabled={pending}
+    <label>Rows <select className="field-select" aria-label={`${label} rows per page`} value={limit} disabled={pending}
       onChange={(event) => onChange({ offset: 0, limit: Number(event.target.value) })}>
       {sizes.map((value) => <option key={value} value={value}>{value}</option>)}
     </select></label>

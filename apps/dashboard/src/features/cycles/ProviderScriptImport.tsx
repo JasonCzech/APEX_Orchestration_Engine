@@ -41,7 +41,13 @@ export function ProviderScriptImport({
   )
   const importer = useProviderImport(cycle.id)
   const key = useRef<{ signature: string; value: string } | null>(null)
-  const dirty = Boolean(parameters || coverage || title || plan) && !importer.isSuccess
+  const defaultTitle =
+    catalog.data?.scripts.find((s) => s.id === remoteId)?.name ?? ''
+  const dirty =
+    canEdit &&
+    Boolean(remoteId) &&
+    Boolean(parameters || coverage || plan || title !== defaultTitle) &&
+    !importer.isSuccess
   const blocker = useNavigationBlocker(dirty && !importer.isPending)
   useBeforeUnload((event) => {
     if (dirty) event.preventDefault()
@@ -63,7 +69,7 @@ export function ProviderScriptImport({
         {catalog.error && (
           <p role="alert">
             {catalog.error.message}{' '}
-            <button onClick={() => void catalog.refetch()}>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void catalog.refetch()}>
               Retry library
             </button>
           </p>
@@ -136,7 +142,7 @@ export function ProviderScriptImport({
             {preview.error && (
               <p role="alert">
                 {preview.error.message}{' '}
-                <button onClick={() => void preview.refetch()}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => void preview.refetch()}>
                   Refresh preview
                 </button>
               </p>
@@ -251,6 +257,21 @@ export function ProviderScriptImport({
                           }}
                         />
                       </label>
+                      {dirty && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => {
+                            setPlan('')
+                            setTitle(defaultTitle)
+                            setParameters('')
+                            setCoverage('')
+                            importer.reset()
+                          }}
+                        >
+                          Reset import draft
+                        </button>
+                      )}
                       <button
                         className="btn btn-primary"
                         disabled={preview.isFetching}

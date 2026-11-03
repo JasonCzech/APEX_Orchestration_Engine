@@ -20,11 +20,11 @@ export function ProjectField({ value, onChange, required = false, label = 'Proje
   return (
     <label className="ux-field">
       {label}
-      {scoped ? <select aria-label={ariaLabel} disabled={disabled} value={value} required={required} onChange={(event) => onChange(event.target.value)}>
+      {scoped ? <select className="field-select" aria-label={ariaLabel} disabled={disabled} value={value} required={required} onChange={(event) => onChange(event.target.value)}>
         <option value="">{required ? 'Select a project' : 'All authorized projects'}</option>
         {projects.map((project) => <option key={project} value={project}>{caption(project)}</option>)}
       </select> : <>
-        <input aria-label={ariaLabel} disabled={disabled} list={id} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+        <input className="field-input" aria-label={ariaLabel} disabled={disabled} list={id} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
         <datalist id={id}>{projects.map((project) => <option key={project} value={project}>{caption(project)}</option>)}</datalist>
       </>}
     </label>

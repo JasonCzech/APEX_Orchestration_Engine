@@ -573,7 +573,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
       <p className="cycle-next">
         Next action: {cycleNextAction(cycle)}
       </p>
-      <nav className="cycle-nav" aria-label="Cycle workspace">
+      <nav className="cycle-nav ux-section-navigation" aria-label="Cycle workspace">
         {steps.map(([key, label]) => (
           <button
             key={key}

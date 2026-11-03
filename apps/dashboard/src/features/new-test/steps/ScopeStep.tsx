@@ -146,7 +146,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
   return <section className="wizard-step wizard-scope" aria-label="Scope">
     {pending && <Dialog className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" ariaLabel="Change test scope" onClose={() => setPending(null)}>
       <h2>Change test scope?</h2><p>Context tied to removed systems must be revalidated. Changing the owning project clears tickets, context summaries, and the selected preset.</p>
-      <button type="button" onClick={() => setPending(null)}>Cancel</button><button type="button" onClick={() => apply(pending)}>Change scope</button>
+      <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={() => setPending(null)}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => apply(pending)}>Change scope</button></div>
     </Dialog>}
     <label className="wizard-field">Title<input id="wizard-title" className="field-input" required value={draft.title} onChange={e => onChange(p => ({ ...p, title: e.target.value }))} /></label>
     <label className="wizard-field">Request<textarea id="wizard-request" className="field-input" required rows={4} value={draft.request} onChange={e => onChange(p => ({ ...p, request: e.target.value }))} /></label>

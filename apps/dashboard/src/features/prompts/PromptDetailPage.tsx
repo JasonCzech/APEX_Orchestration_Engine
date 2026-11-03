@@ -13,8 +13,8 @@ import { OverflowMenu } from '@/components/ux/OverflowMenu'
  * [Save and activate vN+1]. Versions tab: newest-first timeline with per-version
  * [View] and [Set active] (rollback behind a confirm modal).
  */
-import { useId, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { useCallback, useId, useMemo, useRef, useState } from 'react'
+import { Link, useBeforeUnload, useSearchParams } from 'react-router'
 
 import {
   promptWriteMutationKey,
@@ -27,11 +27,13 @@ import {
   type PromptDetail,
   type PromptVersionInfo,
 } from '@/api/hooks/usePrompts'
+import { useApplicationsIndex, useEnvironmentsIndex } from '@/api/hooks/useEnvironments'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { isApiError } from '@/api/errors'
 import { RequireGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useNavigationBlocker, type NavigationBlockPredicate } from '@/components/useNavigationBlocker'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
 
@@ -265,6 +267,8 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   const makeDefault = useMakeDefaultPrompt()
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
+  const applications = useApplicationsIndex()
+  const environments = useEnvironmentsIndex()
   const activePromptIdRef = useRef<string | null>(detail?.id ?? null)
   activePromptIdRef.current = detail?.id ?? null
   const setArchived = useSetArchived(ns, name, detail?.id)
@@ -272,6 +276,21 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   const saveVersion = useSaveVersion(detail?.id)
   const writeCount = usePendingMutationCount(promptWriteMutationKey(detail?.id))
   const writePending = writeCount > 0
+  const activeContent = detail?.content ?? ''
+  const isDirty =
+    editing &&
+    Boolean(detail) &&
+    (versionContent !== activeContent || versionNote.trim() !== '') &&
+    !saveVersion.isSuccess &&
+    !writePending
+  const shouldBlock = useCallback<NavigationBlockPredicate>(
+    ({ nextLocation }) => !/^\/prompts\/[^/]+\/[^/]+$/.test(nextLocation.pathname),
+    [],
+  )
+  const blocker = useNavigationBlocker(isDirty, 0, shouldBlock)
+  useBeforeUnload((event) => {
+    if (isDirty) event.preventDefault()
+  })
 
   function selectTab(next: Tab) {
     if (writePending) return
@@ -303,6 +322,12 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   }
 
   const archived = Boolean(detail.archived_at)
+  const applicationName = detail.application_id
+    ? applications.data?.find((item) => item.id === detail.application_id)?.name ?? detail.application_id
+    : null
+  const environmentName = detail.environment_id
+    ? environments.data?.find((item) => item.id === detail.environment_id)?.name ?? detail.environment_id
+    : null
 
   return (
     <section className="prompts-page animate-enter">
@@ -327,8 +352,16 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
             {!detail.selection_enabled && <span className="dash-context-chip">Compatibility only</span>}
             {detail.phase && <span>{detail.phase.replaceAll('_', ' ')}</span>}
             {detail.is_shared && <span>Shared application context</span>}
-            {detail.application_id && <span>Application: {detail.application_id}</span>}
-            {detail.environment_id && <span>Environment: {detail.environment_id}</span>}
+            {detail.application_id && (
+              <span title={detail.application_id}>
+                Application: {applicationName && applicationName !== detail.application_id ? `${applicationName} (${detail.application_id})` : detail.application_id}
+              </span>
+            )}
+            {detail.environment_id && (
+              <span title={detail.environment_id}>
+                Environment: {environmentName && environmentName !== detail.environment_id ? `${environmentName} (${detail.environment_id})` : detail.environment_id}
+              </span>
+            )}
             {archived && <span className="topbar-meta-chip prompts-archived-chip">archived</span>}
           </div>
         </div>
@@ -420,6 +453,25 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
         <VersionsTimeline key={detail.id} ns={ns} name={name} detail={detail} />
       )}
       </TabPanels>
+      {blocker.state === 'blocked' && (
+        <Dialog
+          className="prompt-modal glass-panel"
+          overlayClassName="prompt-modal-overlay"
+          ariaLabel="Unsaved prompt version"
+          onClose={() => blocker.reset()}
+        >
+          <h2>Leave unsaved prompt version?</h2>
+          <p>Your new prompt version edits have not been saved.</p>
+          <div className="ux-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
+      )}
     </section>
   )
 }

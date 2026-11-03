@@ -24,10 +24,14 @@ import { isApiError } from '@/api/errors'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
+import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { formatRelative } from '@/utils/time'
 
+import { PROMPT_LABELS } from './promptCategories'
 import { PromptEditor } from './PromptEditor'
 import { promptPath, usePromptRouteParams } from './promptPaths'
 import './prompts.css'
@@ -69,6 +73,16 @@ export function PromptPlaygroundPage() {
 
 function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
   const consumer = useConsumer()
+  const projectLabels = useProjectLabels()
+  const projectNames = useMemo(
+    () => Object.fromEntries((projectLabels.data ?? []).map((row) => [row.project_id, row.name])),
+    [projectLabels.data],
+  )
+  const applicationsQuery = useApplicationsIndex()
+  const appNames = useMemo(
+    () => Object.fromEntries((applicationsQuery.data ?? []).map((app) => [app.id, app.name])),
+    [applicationsQuery.data],
+  )
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
   const versionsQuery = usePromptVersions(ns, name, detail?.id)
@@ -226,11 +240,11 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
       )}
       <header className="prompt-detail-header glass-panel">
         <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
-          <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{ns}</Link>
+          <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{PROMPT_LABELS[ns] ?? ns}</Link>
           <span aria-hidden="true"> / </span>
           <Link to={promptPath(ns, name)}>{detail.key}</Link>
           <span aria-hidden="true"> / </span>
-          <span className="strong">playground</span>
+          <span className="strong">Playground</span>
         </nav>
       </header>
 
@@ -293,7 +307,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
                 <option value="">Select a project…</option>
                 {scopedProjects.map((scopedProjectId) => (
                   <option key={scopedProjectId} value={scopedProjectId}>
-                    {scopedProjectId}
+                    {projectNames[scopedProjectId] ?? scopedProjectId}
                   </option>
                 ))}
               </select>
@@ -315,7 +329,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
                 <option value="">Select an application…</option>
                 {scopedApps.map((scopedAppId) => (
                   <option key={scopedAppId} value={scopedAppId}>
-                    {scopedAppId}
+                    {appNames[scopedAppId] ?? scopedAppId}
                   </option>
                 ))}
               </select>
@@ -366,8 +380,8 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
           {latest ? (
             <div className="tonal-card success prompt-run-card" data-testid="playground-accepted">
               <span className="strong">Template check accepted</span>
-              <span>Execution ID: <code className="prompt-run-id">{latest.runId}</code></span>
-              {latest.threadId && <span>Run ID: <code className="prompt-run-id">{latest.threadId}</code></span>}
+              <span>Execution ID: <CopyableId value={latest.runId} label="Execution ID" /></span>
+              {latest.threadId && <span>Run ID: <CopyableId value={latest.threadId} label="Run ID" /></span>}
               {latest.threadId ? (
                 <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
                   Open run
@@ -388,8 +402,8 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
               <ul className="prompt-run-history" data-testid="playground-history">
                 {history.map((entry) => (
                   <li key={entry.runId} className="prompt-run-history-item">
-                    <span>Execution ID: <code className="prompt-run-id">{entry.runId}</code></span>
-                    {entry.threadId && <span>Run ID: <code className="prompt-run-id">{entry.threadId}</code></span>}
+                    <span>Execution ID: <CopyableId value={entry.runId} label="Execution ID" /></span>
+                    {entry.threadId && <span>Run ID: <CopyableId value={entry.threadId} label="Run ID" /></span>}
                     <span className="prompts-muted">
                       {entry.label} · {formatRelative(entry.at)}
                     </span>

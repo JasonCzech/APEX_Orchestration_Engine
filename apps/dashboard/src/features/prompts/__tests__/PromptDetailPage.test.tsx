@@ -252,4 +252,29 @@ describe('PromptDetailPage', () => {
     await user.click(screen.getByRole('button', { name: 'New version' }))
     expect(screen.getByLabelText('New version content')).toHaveValue('Run the plan.')
   })
+
+  it('blocks leaving the prompt detail page with an unsaved version even after switching to the Versions tab', async () => {
+    server.use(...promptCatalog().handlers)
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: [DETAIL_URL],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    await screen.findByText('active v2')
+    await user.click(screen.getByRole('button', { name: 'New version' }))
+    await user.type(screen.getByLabelText('New version content'), '\nUnsaved draft across tabs')
+
+    await user.click(screen.getByRole('tab', { name: 'Versions' }))
+    await screen.findByTestId('prompt-version-v-1')
+
+    await act(async () => {
+      void router.navigate('/prompts')
+    })
+
+    const dialog = await screen.findByRole('dialog', { name: 'Unsaved prompt version' })
+    expect(dialog).toHaveTextContent('Leave unsaved prompt version?')
+    await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+    expect(router.state.location.pathname).toBe(DETAIL_URL)
+  })
 })

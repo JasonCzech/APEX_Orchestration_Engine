@@ -11,7 +11,7 @@ import { TabList, TabPanels } from '@/components/ux/TabList'
  * tab PUTs the FULL mapping list on save.
  */
 import { useId, useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useBeforeUnload, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import { useMutationState } from '@tanstack/react-query'
 
@@ -29,11 +29,13 @@ import {
   type HostMappingOut,
 } from '@/api/hooks/useConnections'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { useConsumer } from '@/auth/AuthProvider'
 import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useNavigationBlocker } from '@/components/useNavigationBlocker'
 
 import { kindLabel, parseJsonObject } from './adminLogic'
 import { AdminGate, TogglePill } from './adminShared'
@@ -97,6 +99,11 @@ function ProbePanel({ probe }: { probe: ReturnType<typeof useTestConnection> }) 
 function ConfigTab({ connection }: { connection: Connection }) {
   const consumer = useConsumer()
   const globalAdmin = isGlobalAdmin(consumer)
+  const labels = useProjectLabels()
+  const projectLabel = (projectId: string) => {
+    const found = !labels.isError ? labels.data?.find((row) => row.project_id === projectId)?.name : undefined
+    return found && found !== projectId ? `${found} (${projectId})` : projectId
+  }
   const projectScopes = Array.from(
     new Set(
       (consumer?.scopes ?? [])
@@ -113,14 +120,15 @@ function ConfigTab({ connection }: { connection: Connection }) {
   const [project, setProject] = useState(connection.project_id ?? '')
   const [baseUrl, setBaseUrl] = useState(connection.base_url ?? '')
   const [secretRef, setSecretRef] = useState(connection.secret_ref ?? '')
-  const [draft, setDraft] = useState<OptionsDraft>(() => ({
+  const initialDraft = (): OptionsDraft => ({
     ...emptyDraft(),
     ...(initialSpec === null
       ? { extras: connection.options }
       : splitOptions(initialSpec, connection.options)),
     mode: initialSpec === null ? 'raw' : 'guided',
     rawText: JSON.stringify(connection.options, null, 2),
-  }))
+  })
+  const [draft, setDraft] = useState<OptionsDraft>(initialDraft)
 
   const runtimeIdentity = isRuntimeIdentityKind(connection.kind)
   const spec = customProvider ? null : providerSpec(connection.kind, provider)
@@ -130,6 +138,20 @@ function ConfigTab({ connection }: { connection: Connection }) {
   const missingField = guided ? guidedIssue(spec, draft) : null
   const mirroredBaseUrl = guided ? guidedBaseUrl(spec, draft) : null
   const ownsBaseUrl = guided && spec.optionFields.some((field) => field.mirrorsBaseUrl)
+  const effectiveBaseUrl = (ownsBaseUrl ? mirroredBaseUrl : baseUrl.trim() || null) ?? null
+  const isDirty =
+    writeCount === 0 &&
+    (name.trim() !== connection.name ||
+      (!runtimeIdentity &&
+        (provider.trim() !== connection.provider ||
+          (project.trim() || null) !== (connection.project_id ?? null) ||
+          effectiveBaseUrl !== (connection.base_url ?? null) ||
+          (globalAdmin && (secretRef.trim() || null) !== (connection.secret_ref ?? null)) ||
+          JSON.stringify(options ?? draft.rawText) !== JSON.stringify(connection.options))))
+  const blocker = useNavigationBlocker(isDirty)
+  useBeforeUnload((event) => {
+    if (isDirty) event.preventDefault()
+  })
   const policyIssue =
     !globalAdmin && !runtimeIdentity && options !== null
       ? scopedConnectionPolicyIssue(connection.kind, provider, options)
@@ -144,6 +166,17 @@ function ConfigTab({ connection }: { connection: Connection }) {
         projectAllowed &&
         (globalAdmin || policyIssue === null))) &&
     writeCount === 0
+
+  function resetDraft() {
+    setName(connection.name)
+    setProvider(connection.provider)
+    setCustomProvider(initialSpec === null)
+    setProject(connection.project_id ?? '')
+    setBaseUrl(connection.base_url ?? '')
+    setSecretRef(connection.secret_ref ?? '')
+    setDraft(initialDraft())
+    update.reset()
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -207,7 +240,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             type="text"
             className="field-input"
             aria-label="Project"
-            value={project || 'global'}
+            value={project ? projectLabel(project) : 'global'}
             readOnly
           /> : globalAdmin ? <input
             type="text"
@@ -223,7 +256,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             onChange={(event) => setProject(event.target.value)}
           >
             {projectScopes.map((projectId) => (
-              <option key={projectId} value={projectId}>{projectId}</option>
+              <option key={projectId} value={projectId}>{projectLabel(projectId)}</option>
             ))}
           </select>}
         </label>
@@ -294,10 +327,34 @@ function ConfigTab({ connection }: { connection: Connection }) {
         </div>
       )}
       <div className="adm-panel-actions">
+        {isDirty && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={resetDraft} disabled={writeCount > 0}>
+            Reset changes
+          </button>
+        )}
         <button type="submit" className="btn btn-primary btn-sm" disabled={!canSave}>
           {update.isPending ? 'Saving…' : 'Save changes'}
         </button>
       </div>
+      {blocker.state === 'blocked' && (
+        <Dialog
+          overlayClassName="adm-overlay"
+          className="adm-modal glass-panel"
+          ariaLabel="Unsaved connection configuration"
+          onClose={() => blocker.reset()}
+        >
+          <h2 className="adm-panel-title">Leave unsaved connection changes?</h2>
+          <p className="adm-modal-caption">Your connection configuration edits have not been saved.</p>
+          <div className="adm-panel-actions">
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
+      )}
     </form>
   )
 }
@@ -324,6 +381,10 @@ function HostMappingsEditor({
     initial.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })),
   )
   const [isDirty, setIsDirty] = useState(false)
+  const blocker = useNavigationBlocker(isDirty && !writePending)
+  useBeforeUnload((event) => {
+    if (isDirty && !writePending) event.preventDefault()
+  })
 
   useEffect(
     () => () => {
@@ -423,6 +484,20 @@ function HostMappingsEditor({
         </div>
       )}
       <div className="adm-panel-actions adm-mappings-actions">
+        {isDirty && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={writePending}
+            onClick={() => {
+              setRows(initial.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })))
+              setIsDirty(false)
+              put.reset()
+            }}
+          >
+            Reset mappings
+          </button>
+        )}
         <button
           type="button"
           className="btn btn-secondary btn-sm"
@@ -460,6 +535,25 @@ function HostMappingsEditor({
           {put.isPending ? 'Saving…' : 'Save mappings'}
         </button>
       </div>
+      {blocker.state === 'blocked' && (
+        <Dialog
+          overlayClassName="adm-overlay"
+          className="adm-modal glass-panel"
+          ariaLabel="Unsaved host mappings"
+          onClose={() => blocker.reset()}
+        >
+          <h2 className="adm-panel-title">Leave unsaved host mappings?</h2>
+          <p className="adm-modal-caption">Your host mapping changes have not been saved.</p>
+          <div className="adm-panel-actions">
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
+      )}
     </div>
   )
 }

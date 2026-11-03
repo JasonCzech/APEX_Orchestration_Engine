@@ -249,7 +249,7 @@ function CreateConsumerPanel({ onClose }: { onClose: () => void }) {
 }
 
 /** Edit modal: role / scopes / enabled PATCH. */
-function EditConsumerModal({
+export function EditConsumerModal({
   consumer,
   isCurrentConsumer,
   onClose,
@@ -284,19 +284,25 @@ function EditConsumerModal({
       <h2 className="adm-panel-title">Edit {consumer.name}</h2>
       <div className="adm-field">
         <span className="adm-field-label">Role</span>
-        <div className="adm-segmented" role="group" aria-label="Role">
-          {!isCurrentConsumer && ROLES.map((option) => (
-            <button
-              key={option}
-              type="button"
-              className={`adm-segment${role === option ? ' active' : ''}`}
-              aria-pressed={role === option}
-              onClick={() => setRole(option)}
-            >
-              {option}
-            </button>
-          ))}
-        </div>
+        {isCurrentConsumer ? (
+          <span className="adm-field-help">
+            Current role: <span className={`status-badge ${ROLE_BADGE[consumer.role]}`}>{consumer.role}</span> (your own role cannot be changed)
+          </span>
+        ) : (
+          <div className="adm-segmented" role="group" aria-label="Role">
+            {ROLES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={`adm-segment${role === option ? ' active' : ''}`}
+                aria-pressed={role === option}
+                onClick={() => setRole(option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {grantIssue && (
         <p className="adm-form-error" role="alert">
@@ -338,7 +344,7 @@ function EditConsumerModal({
         <button
           type="button"
           className="btn btn-primary btn-sm"
-          disabled={writeCount > 0 || grantIssue !== null}
+          disabled={isCurrentConsumer || writeCount > 0 || grantIssue !== null}
           onClick={() =>
             update.mutate(
               {
@@ -359,7 +365,7 @@ function EditConsumerModal({
 }
 
 /** Rotate confirm — the mutation hook hands the one-time payload to the shell lifecycle. */
-function RotateConsumerModal({
+export function RotateConsumerModal({
   consumer,
   isCurrentConsumer,
   onClose,
@@ -425,7 +431,7 @@ function RotateConsumerModal({
 }
 
 /** Delete confirm — a 409 means self-delete and renders the friendly line inline. */
-function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
+export function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
   const [confirmation, setConfirmation] = useState('')
   const remove = useDeleteConsumer(consumer.id)
   const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
@@ -449,7 +455,7 @@ function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClos
       </p>
       <label className="adm-field">
         <span>Type {consumer.name} to confirm</span>
-        <input value={confirmation} onChange={event => setConfirmation(event.target.value)}
+        <input className="field-input" value={confirmation} onChange={event => setConfirmation(event.target.value)}
           autoComplete="off" disabled={writeCount > 0} />
       </label>
       {remove.isError && (
@@ -554,10 +560,10 @@ function ConsumersContent() {
   const requestedEditId = searchParams.get('edit')
 
   useEffect(() => {
-    if (!requestedEditId || !consumers.data) return
+    if (!requestedEditId || !consumers.data || !principal.isSuccess) return
     const consumer = consumers.data.find((candidate) => candidate.id === requestedEditId)
     if (consumer) setEditing(consumer)
-  }, [consumers.data, requestedEditId])
+  }, [consumers.data, principal.isSuccess, requestedEditId])
 
   const closeEditing = () => {
     setEditing(null)

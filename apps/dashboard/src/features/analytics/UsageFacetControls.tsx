@@ -17,7 +17,7 @@ export function UsageFacetControls({ filters, isAdmin, onChange }: { filters: An
   return <>
     <SearchableSelect label="Application" value={selectedApp} options={[{ value: '', label: 'All applications' }, ...(facets.data?.applications ?? []).map(a => ({ value: a.value, label: a.label, description: a.project_id ?? undefined })), ...(selectedApp && !facets.data?.applications.some(a => a.value === selectedApp) ? [{ value: selectedApp, label: filters.app! }] : [])]} onChange={value => { const option = facets.data?.applications.find(a => a.value === value); onChange({ app: option?.app_id ?? undefined, ...(option?.project_id ? { project: option.project_id } : {}), offset: undefined }) }} />
     {isAdmin && query.view === 'authorized' && <SearchableSelect label="User" value={filters.consumer_id ?? ''} options={[{ value: '', label: 'All authorized users' }, ...(facets.data?.users ?? []), ...(filters.consumer_id && !facets.data?.users.some(u => u.value === filters.consumer_id) ? [{ value: filters.consumer_id, label: filters.consumer_id }] : [])]} onChange={value => onChange({ consumer_id: value || undefined, offset: undefined })} />}
-    {(facets.data?.truncated || search) && <label>Search more choices<input type="search" value={search} onChange={e => setSearch(e.target.value)} /></label>}
-    {facets.error && <small role="status">{facets.error.message} <button onClick={() => void facets.refetch()}>Retry</button></small>}
+    {(facets.data?.truncated || search) && <label>Search more choices<input type="search" className="field-input" value={search} onChange={e => setSearch(e.target.value)} /></label>}
+    {facets.error && <small role="status">{facets.error.message} <button type="button" className="btn btn-ghost btn-sm" onClick={() => void facets.refetch()}>Retry</button></small>}
   </>
 }

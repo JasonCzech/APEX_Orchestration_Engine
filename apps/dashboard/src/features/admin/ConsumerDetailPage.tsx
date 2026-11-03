@@ -1,26 +1,52 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 /**
- * /admin/consumers/:id — read view for one consumer (plan Part 2 route table,
- * D7). Admin-gated. Mutations (edit / rotate / delete) live on the list's row
- * actions; this page is the deep-linkable identity card.
+ * /admin/consumers/:id — detail view for one consumer (plan Part 2 route table,
+ * D7). Admin-gated. Supports inline Edit, Rotate key, and Delete modals as well
+ * as deep-linkable identity inspection.
  */
-import { Link, useParams } from 'react-router'
+import { useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
 
-import { useConsumerDetail } from '@/api/hooks/useConsumers'
+import type { Role } from '@/api/apexClient'
+import {
+  consumerWriteMutationKey,
+  useConsumerDetail,
+  useCurrentPrincipal,
+} from '@/api/hooks/useConsumers'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { formatRelative } from '@/utils/time'
 
 import { scopeLabel } from './adminLogic'
 import { AdminGate } from './adminShared'
+import {
+  DeleteConsumerModal,
+  EditConsumerModal,
+  RotateConsumerModal,
+} from './ConsumersPage'
 import './admin.css'
 
 const EM_DASH = '—'
 
+const ROLE_BADGE: Record<Role, string> = {
+  viewer: 'neutral',
+  operator: 'info',
+  admin: 'accent',
+}
+
 function ConsumerDetailContent() {
   const { id = '' } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const consumer = useConsumerDetail(id)
+  const principal = useCurrentPrincipal()
+  const writeCount = usePendingMutationCount(consumerWriteMutationKey(id))
+  const writePending = writeCount > 0
+  const [editing, setEditing] = useState(false)
+  const [rotating, setRotating] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   if (consumer.isPending) {
     return (
@@ -39,6 +65,8 @@ function ConsumerDetailContent() {
   }
 
   const data = consumer.data
+  const isCurrentConsumer = principal.data?.principal_id === data.id
+  const actionsReady = principal.isSuccess && !writePending
 
   return (
     <section className="adm-page animate-enter">
@@ -48,12 +76,12 @@ function ConsumerDetailContent() {
       <header className="adm-detail-header glass-panel">
         <div className="adm-detail-heading">
           <nav className="adm-breadcrumb" aria-label="Breadcrumb">
-            <Link to="/admin/consumers">Consumers</Link>
+            <Link to="/admin/consumers">API consumers</Link>
           </nav>
           <div className="adm-detail-title-row">
             <h2 className="adm-detail-title">{data.name}</h2>
             <span className="dash-context-chip">{data.consumer_type}</span>
-            <span className="status-badge accent">{data.role}</span>
+            <span className={`status-badge ${ROLE_BADGE[data.role]}`}>{data.role}</span>
             {data.enabled ? (
               <span className="status-badge success">enabled</span>
             ) : (
@@ -62,14 +90,39 @@ function ConsumerDetailContent() {
           </div>
         </div>
         <div className="adm-detail-actions">
-          <Link className="btn btn-secondary btn-sm" to={`/admin/consumers?edit=${encodeURIComponent(data.id)}`}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={!actionsReady}
+            onClick={() => setEditing(true)}
+          >
             Edit access
-          </Link>
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={!actionsReady}
+            onClick={() => setRotating(true)}
+          >
+            Rotate key…
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            disabled={!actionsReady}
+            onClick={() => setDeleting(true)}
+          >
+            Delete…
+          </button>
         </div>
       </header>
 
       <div className="adm-card-panel glass-panel">
         <dl className="adm-info-grid">
+          <dt>Consumer ID</dt>
+          <dd>
+            <CopyableId value={data.id} label="Consumer ID" />
+          </dd>
           <dt>Key fingerprint</dt>
           <dd>
             <code className="adm-fingerprint">{data.key_fingerprint || EM_DASH}</code>
@@ -97,8 +150,31 @@ function ConsumerDetailContent() {
             )}
           </dd>
         </dl>
-        <p className="adm-muted">Use Edit access to update role, scopes, and enabled state. Key rotation and deletion remain guarded list actions.</p>
       </div>
+
+      {editing && (
+        <EditConsumerModal
+          consumer={data}
+          isCurrentConsumer={isCurrentConsumer}
+          onClose={() => setEditing(false)}
+        />
+      )}
+      {rotating && (
+        <RotateConsumerModal
+          consumer={data}
+          isCurrentConsumer={isCurrentConsumer}
+          onClose={() => setRotating(false)}
+        />
+      )}
+      {deleting && (
+        <DeleteConsumerModal
+          consumer={data}
+          onClose={() => {
+            setDeleting(false)
+            navigate('/admin/consumers')
+          }}
+        />
+      )}
     </section>
   )
 }

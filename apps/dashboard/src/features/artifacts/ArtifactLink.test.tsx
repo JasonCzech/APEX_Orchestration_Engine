@@ -7,10 +7,11 @@ describe('artifact return context', () => {
   it.each(['https://evil.test', '//evil.test', '/\\evil.test', '/settings', '/runs/a\n', undefined, { path: '/approvals' }])('rejects unsafe or unrelated targets: %s', (target) => {
     expect(artifactReturnPath(target, 'run-a')).toBe('/runs/run-a')
   })
-  it('permits approval and phase deep links', () => {
+  it('permits approval, phase, and evidence deep links', () => {
     expect(artifactReturnPath('/approvals/run-a/int-a', 'run-a')).toBe('/approvals/run-a/int-a')
     expect(artifactReturnPath('/runs/run-a/phases/reporting?tab=details', 'run-a')).toBe('/runs/run-a/phases/reporting?tab=details')
     expect(artifactReturnPath('/runs/run-a/reviews/int-a?source=queue', 'run-a')).toBe('/runs/run-a/reviews/int-a?source=queue')
+    expect(artifactReturnPath('/evidence?project_id=proj-alpha', 'run-a')).toBe('/evidence?project_id=proj-alpha')
   })
   it('keeps artifact URLs directly usable', () => {
     render(<MemoryRouter initialEntries={['/runs/a/phases/reporting']}><ArtifactLink to="/runs/a/artifacts/report">Read report</ArtifactLink></MemoryRouter>)

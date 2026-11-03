@@ -210,4 +210,14 @@ describe('Provider script import', () => {
       screen.queryByRole('button', { name: 'Import export as draft' }),
     ).not.toBeInTheDocument()
   })
+  it('does not mark the form dirty when merely previewing a script, and resets edited overrides on Reset import draft', async () => {
+    mount('admin')
+    const user = await preview()
+    expect(screen.queryByRole('button', { name: 'Reset import draft' })).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Requirement and journey coverage'), 'Edited coverage')
+    expect(screen.getByRole('button', { name: 'Reset import draft' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Reset import draft' }))
+    expect(screen.getByLabelText('Requirement and journey coverage')).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Reset import draft' })).not.toBeInTheDocument()
+  })
 })

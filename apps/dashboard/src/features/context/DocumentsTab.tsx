@@ -25,7 +25,9 @@ import {
   type DocumentOut,
   type UploadDocumentBatchInput,
 } from '@/api/hooks/useDocuments'
+import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { queryKeys } from '@/api/queryKeys'
 import { useConsumer } from '@/auth/AuthProvider'
 import { canMutateAudience } from '@/auth/RequireRole'
@@ -223,6 +225,11 @@ export function DocumentsTab() {
 
   const items = documents.data ?? []
   const activeFilterCount = Object.values(activeFilters).filter(Boolean).length
+  const appsIndex = useApplicationsIndex()
+  const appLabel = (id: string) => {
+    const name = !appsIndex.isError ? appsIndex.data?.find(app => app.id === id)?.name : undefined
+    return name && name !== id ? `${name} (${id})` : id
+  }
 
   return (
     <>
@@ -244,7 +251,7 @@ export function DocumentsTab() {
               </option>
               {scopedAppIds.map((appId) => (
                 <option key={appId} value={appId}>
-                  {appId}
+                  {appLabel(appId)}
                 </option>
               ))}
             </select>
@@ -384,10 +391,25 @@ export function DocumentsTab() {
 
 function DocumentDetails({ doc, onClose }: { doc: DocumentOut; onClose: () => void }) {
   const detail = useDocument(doc.id)
+  const projectLabels = useProjectLabels()
+  const appsIndex = useApplicationsIndex()
   const current = detail.data ?? doc
+  const projectName = current.project_id
+    ? (!projectLabels.isError && projectLabels.data?.find(row => row.project_id === current.project_id)?.name) || current.project_id
+    : null
+  const appName = current.app_id
+    ? (!appsIndex.isError && appsIndex.data?.find(app => app.id === current.app_id)?.name) || current.app_id
+    : null
   return <Dialog ariaLabel={`Document details: ${doc.name}`} className="ctx-modal glass-panel" overlayClassName="ctx-overlay" onClose={onClose}>
     <h2>{doc.name}</h2>
     <p>{current.media_type} · {formatBytes(current.size_bytes)} · Uploaded {formatTimestamp(current.created_at)}</p>
+    {(projectName || appName) && (
+      <p className="ctx-caption">
+        {projectName && <>Project: <strong>{projectName}</strong></>}
+        {projectName && appName && ' · '}
+        {appName && <>Application: <strong>{appName}</strong></>}
+      </p>
+    )}
     <CopyableId value={doc.id} label="Document ID" />
     {detail.isPending && <p role="status">Loading document details…</p>}
     {detail.error && <p role="alert" className="tonal-card warning">{detail.error.message}<button type="button" className="btn btn-secondary" onClick={() => void detail.refetch()}>Retry</button></p>}

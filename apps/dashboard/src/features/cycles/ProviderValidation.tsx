@@ -40,7 +40,7 @@ export function ProviderValidation({
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
-          <button onClick={() => void query.refetch()}>Retry history</button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void query.refetch()}>Retry history</button>
         </p>
       )}
       {query.data && (

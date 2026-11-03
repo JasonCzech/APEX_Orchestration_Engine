@@ -4,8 +4,8 @@
  * for platform administrators, the raw configurable and its JSON editor.
  * Saving publishes a new assistant version.
  */
-import { useState } from 'react'
-import { useParams } from 'react-router'
+import { useCallback, useState } from 'react'
+import { useBeforeUnload, useParams } from 'react-router'
 
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
@@ -20,7 +20,9 @@ import { organizationPreset } from '@/api/hooks/useTestPresets'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useNavigationBlocker, type NavigationBlockPredicate } from '@/components/useNavigationBlocker'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { PresetDetail } from '@/features/presets/PresetDetail'
 import { useTimestampPreference } from '@/theme/preferences'
@@ -45,9 +47,19 @@ function EditPanel({
   const update = useUpdateGoldenConfig(entry.assistantId)
   const writeCount = usePendingMutationCount(goldenConfigWriteMutationKey(entry.assistantId))
   const writePending = writeCount > 0
-  const [text, setText] = useState(() => JSON.stringify(entry.configurable, null, 2))
+  const initialText = JSON.stringify(entry.configurable, null, 2)
+  const [text, setText] = useState(() => initialText)
   const parse = parseConfigurableJson(text)
   const canSave = parse.ok && !writePending
+  const isDirty = text !== initialText && !writePending && !update.isSuccess
+  const shouldBlock = useCallback<NavigationBlockPredicate>(
+    ({ nextLocation }) => !/^\/(test-presets|golden-configs)\/[^/]+$/.test(nextLocation.pathname),
+    [],
+  )
+  const blocker = useNavigationBlocker(isDirty, 0, shouldBlock)
+  useBeforeUnload((event) => {
+    if (isDirty) event.preventDefault()
+  })
 
   function patchConfig(patch: Record<string, unknown>) {
     if (parse.ok) setText(JSON.stringify({ ...parse.value, ...patch }, null, 2))
@@ -111,6 +123,25 @@ function EditPanel({
           {writePending ? 'Saving…' : 'Save new version'}
         </button>
       </div>
+      {blocker.state === 'blocked' && (
+        <Dialog
+          ariaLabel="Unsaved preset changes"
+          className="glass-panel"
+          overlayClassName="ux-dialog-overlay"
+          onClose={() => blocker.reset()}
+        >
+          <h2>Leave unsaved preset changes?</h2>
+          <p>Your configurable JSON edits have not been saved as a new version.</p>
+          <div className="ux-dialog-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => blocker.reset()}>
+              Keep editing
+            </button>
+            <button type="button" className="btn btn-danger" onClick={() => blocker.proceed()}>
+              Discard and leave
+            </button>
+          </div>
+        </Dialog>
+      )}
     </section>
   )
 }

@@ -4,12 +4,15 @@ import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { orchestrationTone, formatTimestamp, executionResultLabel } from '@/features/runs/runDisplay'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { useUsageAnalytics } from '@/api/hooks/useAnalytics'
-import { useDraftsList } from '@/api/hooks/useDrafts'
+import { deleteDraftRequest, useDraftsList } from '@/api/hooks/useDrafts'
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
+import { queryKeys } from '@/api/queryKeys'
 import { isApiError } from '@/api/errors'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { useTopbarContribution } from '@/components/layout/TopbarContributionProvider'
@@ -141,6 +144,14 @@ export function HomePage() {
   )
   useTopbarContribution(topbarActions)
 
+  const queryClient = useQueryClient()
+  const projectLabels = useProjectLabels()
+  const projectLabel = (id: string) =>
+    (!projectLabels.isError &&
+      projectLabels.data?.find((row) => row.project_id === id)?.name) ||
+    id
+  const [showAllDrafts, setShowAllDrafts] = useState(false)
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
   const fleet = usePipelines(HOME_FLEET_FILTER)
   const inbox = useApprovalsInbox()
   const drafts = useDraftsList()
@@ -186,6 +197,7 @@ export function HomePage() {
             <p>Launch a new test to populate health signals, reviews, and run history.</p>
           </StateCard>
         </div>
+        <HomePresets />
       </section>
     )
   }
@@ -197,6 +209,17 @@ export function HomePage() {
     loaded >= HOME_FLEET_LIMIT
       ? `latest ${HOME_FLEET_LIMIT}; fleet total unavailable`
       : 'recent accessible runs'
+  const visibleDrafts = showAllDrafts ? draftItems : draftItems.slice(0, 3)
+
+  async function handleDeleteDraft(draftId: string) {
+    setDeletingDraftId(draftId)
+    try {
+      await deleteDraftRequest(draftId)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.drafts.all })
+    } finally {
+      setDeletingDraftId(null)
+    }
+  }
 
   return (
     <section className="home-page animate-enter">
@@ -313,6 +336,15 @@ export function HomePage() {
         <section className="glass-panel home-drafts" data-testid="home-drafts">
           <div className="home-section-head">
             <h2 className="home-section-title">Resume drafts</h2>
+            {draftItems.length > 3 && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowAllDrafts((prev) => !prev)}
+              >
+                {showAllDrafts ? 'Show fewer' : `Show all (${draftItems.length})`}
+              </button>
+            )}
           </div>
           {drafts.isError && !drafts.data ? (
             <QueryErrorNotice
@@ -329,11 +361,27 @@ export function HomePage() {
                 />
               )}
               <div className="home-draft-row-list">
-                {draftItems.slice(0, 3).map((draft) => (
-                  <Link key={draft.id} to={`/runs/new?draft=${draft.id}`} className="home-draft-row">
-                    <span className="home-draft-title"><span>{draft.title || 'Untitled draft'}</span>{draft.project_id ? ` · ${draft.project_id}` : ''}</span>
-                    <span className="home-draft-updated">{formatRelative(draft.updated_at)}</span>
-                  </Link>
+                {visibleDrafts.map((draft) => (
+                  <div key={draft.id} className="home-draft-item-wrap">
+                    <Link to={`/runs/new?draft=${draft.id}`} className="home-draft-row">
+                      <span className="home-draft-title">
+                        <span>{draft.title || 'Untitled draft'}</span>
+                        {draft.project_id ? (
+                          <span title={draft.project_id}>{` · ${projectLabel(draft.project_id)}`}</span>
+                        ) : null}
+                      </span>
+                      <span className="home-draft-updated">{formatRelative(draft.updated_at)}</span>
+                    </Link>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      aria-label={`Delete draft ${draft.title || 'Untitled draft'}`}
+                      disabled={deletingDraftId === draft.id}
+                      onClick={() => void handleDeleteDraft(draft.id)}
+                    >
+                      {deletingDraftId === draft.id ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
                 ))}
               </div>
             </>

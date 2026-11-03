@@ -364,7 +364,7 @@ export function SavedQueriesPage() {
           <h2 className="wi-page-title">Tickets</h2>
           <nav className="wi-local-tabs" aria-label="Ticket sections">
             <Link className="wi-tab" to="/work-items">Search</Link>
-            <Link className="wi-tab active" to="/work-items/saved">Saved queries</Link>
+            <Link className="wi-tab active" aria-current="page" to="/work-items/saved">Saved queries</Link>
           </nav>
         </div>
       </header>

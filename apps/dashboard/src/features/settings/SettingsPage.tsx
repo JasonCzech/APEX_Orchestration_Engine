@@ -58,7 +58,7 @@ function ThemeSection() {
               key={name}
               className={`settings-theme-card${selected ? ' settings-theme-card--selected' : ''}`}
             >
-              <input type="radio" name="dashboard-theme" aria-label={name === 'system' ? 'System (Auto)' : THEME_LABELS[name]} checked={selected} onChange={() => setTheme(name)} />
+              <input type="radio" name="dashboard-theme" aria-label={name === 'system' ? 'System (auto)' : THEME_LABELS[name]} checked={selected} onChange={() => setTheme(name)} />
               <span
                 className="settings-theme-swatch"
                 style={{ background: preview.bg }}
@@ -68,7 +68,7 @@ function ThemeSection() {
                 <span className="settings-swatch-dot" style={{ background: preview.accent }} />
                 <span className="settings-swatch-line" style={{ background: preview.text }} />
               </span>
-              <span className="settings-theme-name">{name === 'system' ? 'System (Auto)' : THEME_LABELS[name]}</span>
+              <span className="settings-theme-name">{name === 'system' ? 'System (auto)' : THEME_LABELS[name]}</span>
               {selected && <span className="topbar-meta-chip accent">active</span>}
             </label>
           )
@@ -111,7 +111,7 @@ function ApiKeySection() {
       <section className="glass-panel settings-section" aria-label="Demo session">
         <h2 className="settings-section-title">Offline demo session</h2>
         <p className="settings-hint">
-          ACC add-a-line demo dataset v2.0 (PERFHYPER2) is running entirely in this browser. No API key, backend,
+          ACC add-a-line demo dataset v4.0 (PERFHYPER2) is running entirely in this browser. No API key, backend,
           integration, execution engine, or LLM is contacted.
         </p>
         <div className="settings-signout-row">
@@ -320,7 +320,7 @@ function PersonalPreferences() {
     <ThemeSection />
     <section className="glass-panel settings-section" aria-label="Tables and editor preferences">
       <h2 className="settings-section-title">Display, tables & editor</h2><div className="ux-fields">
-        <label className="ux-field">Timestamp time zone<select aria-label="Timestamp time zone" aria-describedby="timestamp-zone-help" value={preferences.timeZone} onChange={event => setPreferences({ timeZone: event.target.value === 'UTC' ? 'UTC' : 'local' })}><option value="local">Local time</option><option value="UTC">UTC</option></select><small id="timestamp-zone-help">Absolute timestamps include the selected zone. Relative ages stay unchanged; analytics date buckets remain UTC.</small></label>
+        <label className="ux-field">Timestamp time zone<select className="field-select" aria-label="Timestamp time zone" aria-describedby="timestamp-zone-help" value={preferences.timeZone} onChange={event => setPreferences({ timeZone: event.target.value === 'UTC' ? 'UTC' : 'local' })}><option value="local">Local time</option><option value="UTC">UTC</option></select><small id="timestamp-zone-help">Absolute timestamps include the selected zone. Relative ages stay unchanged; analytics date buckets remain UTC.</small></label>
         <label className="ux-field">Motion<select className="field-select" value={String(preferences.reduceMotion)} onChange={event => setPreferences({reduceMotion: event.target.value === 'true'})}><option value="false">Follow device preference</option><option value="true">Reduce motion</option></select><small>Reduce interface animations and smooth scrolling.</small></label>
         <label className="ux-field">Default rows in Tests<select className="field-select" value={preferences.rows} onChange={event => setPreferences({rows: Number(event.target.value) as 10 | 25 | 50 | 100})}><option value="10">10 rows</option><option value="25">25 rows</option><option value="50">50 rows</option><option value="100">100 rows</option></select><small>Applies to Tests unless its Rows control overrides this value. Specialized tables retain their own limits.</small></label>
         <label className="ux-field">Editor word wrap<select className="field-select" value={String(preferences.wordWrap)} onChange={event => setPreferences({wordWrap:event.target.value === 'true'})}><option value="true">Wrap long lines</option><option value="false">Scroll horizontally</option></select><small>Applies to read-only code and evidence previews; does not modify saved content.</small></label>

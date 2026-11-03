@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { isApiError } from '@/api/errors'
 import { roleAtLeast } from '@/auth/RequireRole'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
@@ -13,6 +14,7 @@ import { ProblemCard } from '@/components/ProblemCard'
 import { CopyableId } from '@/components/ux/CopyableId'
 import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { Pagination } from '@/components/ux/Pagination'
+import { ProjectField } from '@/components/ux/ProjectField'
 import { TableToolbar } from '@/components/ux/TableToolbar'
 import { SortableHeader } from '@/components/ux/SortableHeader'
 import { usePreferences, useTimestampPreference } from '@/theme/preferences'
@@ -110,6 +112,7 @@ function RunRow({
   selected,
   selection,
   canRerun,
+  projectLabel,
 }: {
   run: PipelineSummary
   onRerun: (threadId: string) => void
@@ -118,10 +121,12 @@ function RunRow({
   selected: boolean
   selection?: RowSelection
   canRerun: boolean
+  projectLabel: (id: string) => string
 }) {
   const displayPhase = run.pending_gate?.phase ?? run.current_phase
   const rerunBlocked = rerunRestriction(run.rerun_blocked_reason)
   const compact = useCompactLayout()
+  const resolvedProject = run.project_id ? projectLabel(run.project_id) : EM_DASH
   if (compact) return (
     <article className={`glass-panel run-card${selected ? ' is-selected' : ''}`} data-testid={`runs-row-${run.thread_id}`}>
       <button type="button" className="runs-run-title runs-run-button" aria-label={`Open ${run.title || 'Untitled run'} details`} onClick={() => onOpen(run.thread_id)}>
@@ -133,7 +138,7 @@ function RunRow({
       <p>Progress: {phaseProgressLabel(phaseProgress(run.phase_strip))}</p>
       {run.pending_gate && <button type="button" className="runs-gate-action" aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`} onClick={() => onReview(run)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
-      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd><ApplicationLabel project={run.project_id} application={run.app_id} empty={EM_DASH} /></dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
+      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{resolvedProject}</dd><dt>Application</dt><dd><ApplicationLabel project={run.project_id} application={run.app_id} empty={EM_DASH} /></dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
       <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && (rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>)}</div>
     </article>
   )
@@ -162,7 +167,7 @@ function RunRow({
         <CopyableId value={run.thread_id} label="run ID" />
       </td>
       <td>
-        <span className="runs-story-cell">{run.project_id ?? EM_DASH}</span>
+        <span className="runs-story-cell">{resolvedProject}</span>
       </td>
       <td>
         <span className="runs-application-cell"><ApplicationLabel project={run.project_id} application={run.app_id} empty={EM_DASH} /></span>
@@ -227,20 +232,21 @@ function RunMasterListItem({
   run,
   selected,
   onOpen,
-  onReview,
+  projectLabel,
 }: {
   run: PipelineSummary
   selected: boolean
   onOpen: (threadId: string, phase?: PhaseName) => void
-  onReview: (run: PipelineSummary) => void
+  projectLabel: (id: string) => string
 }) {
   const phase = isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined
+  const resolvedProject = run.project_id ? projectLabel(run.project_id) : EM_DASH
   return (
     <button
       type="button"
       className={`runs-master-item${selected ? ' is-selected' : ''}`}
       aria-pressed={selected}
-      onClick={() => run.pending_gate ? onReview(run) : onOpen(run.thread_id, phase)}
+      onClick={() => onOpen(run.thread_id, phase)}
     >
       <span className="runs-master-item-head">
         <strong>{run.title || 'Untitled run'}</strong>
@@ -249,7 +255,7 @@ function RunMasterListItem({
         </span>
       </span>
       <span className="runs-master-item-meta">
-        <span>{run.project_id ?? EM_DASH}</span>
+        <span>{resolvedProject}</span>
         <span>{phaseProgressLabel(phaseProgress(run.phase_strip))}</span>
         <span>{formatTimestamp(run.updated_at)}</span>
       </span>
@@ -276,6 +282,14 @@ export function RunsListPage() {
   const masterDetail = useMasterDetailLayout()
   const navigate = useNavigate()
   const consumer = useOptionalConsumer()
+  const projectLabels = useProjectLabels()
+  const projectLabel = useCallback(
+    (id: string) =>
+      (!projectLabels.isError &&
+        projectLabels.data?.find((row) => row.project_id === id)?.name) ||
+      id,
+    [projectLabels.data, projectLabels.isError],
+  )
   const canRerun = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => ({...parseRunsFilters(searchParams), ...(!searchParams.has('limit') ? {limit:preferences.rows} : {})}), [searchParams, preferences.rows])
@@ -519,7 +533,12 @@ export function RunsListPage() {
         <Link to="/runs/new" className="btn btn-primary">New test</Link>
       </TableToolbar>
       <details className="ux-filters"><summary>Filters{hasActiveFilters(filters) ? ' · Active' : ''}</summary><div>
-        <label className="ux-field">Project<input className="field-input" aria-label="Filter by project" value={filters.project ?? ''} onChange={event => applyFilters({project:event.target.value || undefined,offset:0})} /></label>
+        <ProjectField
+          label="Project"
+          ariaLabel="Filter by project"
+          value={filters.project ?? ''}
+          onChange={(value) => applyFilters({ project: value || undefined, offset: 0 })}
+        />
         <p className="ux-context">Filters apply to the accessible run history. Use search to narrow run titles.</p>
       </div></details>
       {compareMode && <p role="status" className="ux-context">Select 2–{MAX_COMPARE_RUNS} runs to compare their results and evidence.</p>}
@@ -559,6 +578,7 @@ export function RunsListPage() {
                     canRerun={canRerun}
                     onOpen={openRun}
                     onReview={openReview}
+                    projectLabel={projectLabel}
                     selected={false}
                     selection={
                       compareMode
@@ -595,7 +615,7 @@ export function RunsListPage() {
                       run={run}
                       selected={selectedRunId === run.thread_id}
                       onOpen={openRun}
-                      onReview={openReview}
+                      projectLabel={projectLabel}
                     />
                   ))}
                 </div>
@@ -648,6 +668,7 @@ export function RunsListPage() {
                         canRerun={canRerun}
                         onOpen={openRun}
                         onReview={openReview}
+                        projectLabel={projectLabel}
                         selected={false}
                         selection={
                           compareMode

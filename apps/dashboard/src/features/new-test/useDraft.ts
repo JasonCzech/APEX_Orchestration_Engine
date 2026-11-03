@@ -353,6 +353,10 @@ export interface UseDraftResult {
   loadDraft: (id: string) => Promise<boolean>
   /** Flush any pending change immediately (Save draft button). */
   saveNow: () => Promise<void>
+  /** Save pending work and reset the wizard to a blank draft. */
+  startFresh: () => Promise<boolean>
+  /** Delete the current server draft (if any) and reset to a blank draft. */
+  discardDraft: () => Promise<void>
   /** Best-effort delete-on-launch; never throws. */
   deleteCurrentDraft: () => Promise<void>
   /** Delete one captured draft without consulting the currently loaded record. */
@@ -982,6 +986,36 @@ export function useDraft({
     await deleteDraftById(id)
   }, [deleteDraftById, flush])
 
+  const discardDraft = useCallback(async () => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    dirtyRef.current = false
+    const id = idRef.current
+    discardFreshDraftHandoff(
+      queryClient,
+      authRevisionRef.current,
+      sessionRevisionRef.current,
+    )
+    if (id !== null) {
+      await deleteDraftById(id)
+    }
+    advanceDraftGeneration()
+    operationGenerationRef.current += 1
+    const fresh = emptyDraft()
+    draftRef.current = fresh
+    freshRevisionRef.current = 0
+    persistenceAllowedRef.current = canPersistWizardDraft(consumerRef.current, fresh)
+    idRef.current = null
+    if (mountedRef.current) {
+      setDraftState(fresh)
+      setDraftId(null)
+      setSaveState('idle')
+      clearLoadFailure()
+    }
+  }, [advanceDraftGeneration, clearLoadFailure, deleteDraftById, queryClient])
+
   return {
     draft,
     setDraft,
@@ -995,6 +1029,8 @@ export function useDraft({
     isLoadFailureCurrent,
     loadDraft,
     saveNow,
+    startFresh,
+    discardDraft,
     deleteCurrentDraft,
     deleteDraftById,
   }

@@ -256,6 +256,20 @@ export function CycleHandoff({
               />{' '}
               Carry unresolved actions as open work
             </label>
+            {(name || selected.length > 0 || !carry) && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setName('')
+                  setSelected([])
+                  setCarry(true)
+                  next.reset()
+                }}
+              >
+                Clear next-cycle form
+              </button>
+            )}
             <button className="btn btn-primary" type="submit">
               {next.isPending ? 'Creating…' : 'Create next cycle'}
             </button>

@@ -1,4 +1,5 @@
 import { useTimestampPreference } from '@/theme/preferences'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { StateCard } from '@/components/ux/StateCard'
 /**
  * Summaries tab — subject + work-item key chips + project -> POST
@@ -7,11 +8,14 @@ import { StateCard } from '@/components/ux/StateCard'
  * /runs/{thread_id} when the stream URL carries one.
  */
 import { ProjectField } from '@/components/ux/ProjectField'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { notifyUnauthorized } from '@/api/apexClient'
 import { fetchWithoutRedirects } from '@/api/fetchPolicy'
+import type { DocumentOut } from '@/api/hooks/useDocuments'
+import { queryKeys } from '@/api/queryKeys'
 import { getApiKey, getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { getDevRawFetch } from '@/dev-data'
@@ -268,14 +272,35 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
     project,
     keys,
     keyDraft,
+    documentIds,
+    docIdDraft,
+    workTrackingConnectionId,
     history,
     setSubject,
     setProject,
     setKeyDraft,
     addKey,
     removeKey,
+    setDocIdDraft,
+    addDocumentId,
+    removeDocumentId,
+    setWorkTrackingConnectionId,
     submit,
   } = lifecycle
+  const queryClient = useQueryClient()
+  const availableDocuments = useMemo(() => {
+    const entries = queryClient.getQueriesData<DocumentOut[]>({ queryKey: queryKeys.documents.all })
+    const byId = new Map<string, DocumentOut>()
+    const trimmedProject = project.trim()
+    for (const [, docs] of entries) {
+      if (!Array.isArray(docs)) continue
+      for (const doc of docs) {
+        if (trimmedProject && doc.project_id && doc.project_id !== trimmedProject) continue
+        if (!documentIds.includes(doc.id)) byId.set(doc.id, doc)
+      }
+    }
+    return Array.from(byId.values())
+  }, [documentIds, project, queryClient])
   const latest = history[0]
 
   return (
@@ -343,6 +368,77 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             </div>
           )}
         </div>
+        <div className="ctx-field">
+          <label className="ctx-field-label" htmlFor="ctx-doc-id-draft">
+            Document IDs (optional)
+          </label>
+          <div className="ctx-row">
+            <input
+              id="ctx-doc-id-draft"
+              type="text"
+              className="field-input"
+              placeholder="doc-checkout-slo"
+              value={docIdDraft}
+              onChange={(event) => setDocIdDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  addDocumentId()
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={docIdDraft.trim() === ''}
+              onClick={() => addDocumentId()}
+            >
+              Add document
+            </button>
+          </div>
+          {availableDocuments.length > 0 && (
+            <div className="ctx-chip-row" data-testid="summary-available-documents">
+              {availableDocuments.map((doc) => (
+                <button
+                  key={doc.id}
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => addDocumentId(doc.id)}
+                >
+                  + {doc.name} ({doc.id})
+                </button>
+              ))}
+            </div>
+          )}
+          {documentIds.length > 0 && (
+            <div className="ctx-chip-row" data-testid="summary-document-ids">
+              {documentIds.map((docId) => (
+                <span key={docId} className="ctx-chip">
+                  {docId}
+                  <button
+                    type="button"
+                    className="ctx-chip-remove"
+                    aria-label={`Remove ${docId}`}
+                    onClick={() => removeDocumentId(docId)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <label className="ctx-field">
+          <span className="ctx-field-label">Work-tracking connection ID (optional)</span>
+          <input
+            type="text"
+            className="field-input"
+            aria-label="Work-tracking connection ID"
+            placeholder="conn-jira-prod"
+            value={workTrackingConnectionId}
+            onChange={(event) => setWorkTrackingConnectionId(event.target.value)}
+          />
+        </label>
         <ProjectField label="Project" ariaLabel="Project id" value={project} onChange={setProject} />
         {createSummary.isError && (
           <div className="ctx-inline-error" role="alert">
@@ -373,15 +469,16 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             data-testid="summary-accepted"
           >
             <span className="strong">Summary run accepted</span>
-            <span>Execution ID: <code className="ctx-run-id">{latest.runId}</code></span>
-            {latest.threadId && <span>Run ID: <code className="ctx-run-id">{latest.threadId}</code></span>}
-            {latest.threadId ? (
-              <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
-                Open run
-              </Link>
-            ) : (
+            <span>Execution ID: <CopyableId value={latest.runId} label="Execution ID" /></span>
+            {latest.threadId && <span>Run ID: <CopyableId value={latest.threadId} label="Run ID" /></span>}
+            <div className="ctx-row">
+              {latest.threadId && (
+                <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
+                  Open run
+                </Link>
+              )}
               <SummaryStreamButton streamUrl={latest.streamUrl} />
-            )}
+            </div>
           </div>
         ) : (
           <StateCard kind="empty" title="No summary runs yet" compact action={<button className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('[aria-label="Summary subject"]')?.focus()}>Enter a subject</button>}>
@@ -398,11 +495,9 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             <ul className="ctx-history" data-testid="summary-history">
               {history.map((entry) => (
                 <li key={entry.runId} className="ctx-history-item">
-                    <span>Execution ID: <code className="ctx-run-id">{entry.runId}</code></span>
-                    {entry.threadId && <span>Run ID: <code className="ctx-run-id">{entry.threadId}</code></span>}
-                    {!entry.threadId && (
-                      <SummaryStreamButton streamUrl={entry.streamUrl} />
-                    )}
+                    <span>Execution ID: <CopyableId value={entry.runId} label="Execution ID" /></span>
+                    {entry.threadId && <span>Run ID: <CopyableId value={entry.threadId} label="Run ID" /></span>}
+                    <SummaryStreamButton streamUrl={entry.streamUrl} />
                   <span className="ctx-caption">
                     {entry.subject} · {formatRelative(entry.at)}
                   </span>

@@ -36,9 +36,9 @@ export type WizardStepId = (typeof WIZARD_STEPS)[number]
 
 export const STEP_LABELS: Record<WizardStepId, string> = {
   scope: 'Scope',
+  config: 'Config',
   'work-items': 'Tickets',
   context: 'Knowledge',
-  config: 'Config',
   prompts: 'Prompts',
   review: 'Review',
 }

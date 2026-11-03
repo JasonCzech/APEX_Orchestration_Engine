@@ -26,6 +26,8 @@ import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
 
+import { CopyableId } from '@/components/ux/CopyableId'
+import { PROMPT_LABELS } from './promptCategories'
 import { PromptDiff } from './PromptDiff'
 import { promptPath, usePromptRouteParams } from './promptPaths'
 import { RollbackConfirm } from './RollbackConfirm'
@@ -138,7 +140,7 @@ function PromptVersionContent({
       <header className="prompt-detail-header glass-panel">
         <div className="prompt-detail-title">
           <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
-            <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{ns}</Link>
+            <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{PROMPT_LABELS[ns] ?? ns}</Link>
             <span aria-hidden="true"> / </span>
             <Link to={promptPath(ns, name)}>{detail.key}</Link>
             <span aria-hidden="true"> / </span>
@@ -146,6 +148,7 @@ function PromptVersionContent({
           </nav>
           <div className="prompts-badges">
             {isActive && <span className="status-badge success">active</span>}
+            <CopyableId value={version.id} label="Version ID" />
             <span className="prompts-muted">
               {version.created_by ?? 'unknown'} · {formatRelative(version.created_at)}
             </span>

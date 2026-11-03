@@ -1,8 +1,15 @@
 import { useTimestampPreference } from '@/theme/preferences'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getApexClient } from '@/api/apexClient'
+import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
+import { ProblemCard } from '@/components/ProblemCard'
+import { CopyableId } from '@/components/ux/CopyableId'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
 import { formatTimestamp } from '@/utils/time'
 import './modelPricing.css'
 
@@ -12,9 +19,14 @@ type HistoryParams = { from?: string; to?: string; view?: 'mine' | 'authorized';
 export function UsageHistory({ modelId, filters = {} }: { modelId?: string; filters?: HistoryParams }) {
   useTimestampPreference()
   const consumer = useOptionalConsumer()
+  const applications = useApplicationsIndex()
+  const projectLabels = useProjectLabels()
+  const appNames = useMemo(() => new Map((applications.data ?? []).map((app) => [app.id, app.name])), [applications.data])
+  const projectNames = useMemo(() => new Map((projectLabels.data ?? []).map((p) => [p.project_id, p.name])), [projectLabels.data])
   const view = filters.view ?? (consumer?.role === 'admin' ? 'authorized' : 'mine')
   const [window] = useState(() => { const to = new Date(); return { from: new Date(to.getTime() - 7 * 86400000).toISOString(), to: to.toISOString() } })
   const [cursor, setCursor] = useState<string | undefined>()
+  const [prevCursors, setPrevCursors] = useState<(string | undefined)[]>([])
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [exportError, setExportError] = useState('')
@@ -44,12 +56,26 @@ export function UsageHistory({ modelId, filters = {} }: { modelId?: string; filt
       const a = document.createElement('a'); a.href = url; a.download = 'agent-usage.csv'; a.click(); URL.revokeObjectURL(url)
     } catch (e) { setExportError(e instanceof Error ? e.message : 'Export failed') } finally { setExporting(false) }
   }
-  return <section className="glass-panel pricing-history"><header className="pricing-heading"><div><h2>Usage history</h2><p>Retained invocation records, including archived models.</p></div><button className="btn btn-secondary" disabled={exporting} onClick={() => void download()}>{exporting ? 'Exporting…' : 'Export CSV'}</button></header>
-    {modelId && <div className="pricing-toolbar"><label>From (local time)<input type="datetime-local" value={start} onChange={e => { setStart(e.target.value); setCursor(undefined) }} /></label><label>To, exclusive (local time)<input type="datetime-local" value={end} onChange={e => { setEnd(e.target.value); setCursor(undefined) }} /></label></div>}
-    {exportError && <p role="alert">{exportError}</p>}{history.error && <p role="alert">{history.data ? 'Showing cached data. ' : ''}{history.error.message} <button onClick={() => void history.refetch()}>Retry</button></p>}{history.isPending && <p role="status">Loading usage…</p>}
-    {history.data && <><div className="pricing-table-wrap"><table className="pricing-table"><thead><tr><th>Time</th><th>Model</th><th>Application</th><th>User</th><th className="numeric">Tokens</th><th className="numeric">Estimated cost</th><th>Status</th></tr></thead><tbody>{history.data.items.map(event => <tr key={event.id}><td><button className="analytics-link-button" onClick={() => setSelected(event.id)}>{formatTimestamp(event.at)}</button></td><td>{event.model ?? 'Unknown'}{event.archived && <small>Archived</small>}</td><td>{event.app_id ?? 'Unknown'}<small>{event.project_id}</small></td><td>{event.consumer_name_snapshot ?? event.consumer_id ?? 'Unattributed'}</td><td className="numeric">{event.total_tokens.toLocaleString()}</td><td className="numeric">{!history.data.cost_visible ? 'Hidden' : event.effective_cost_usd === null ? 'Not priced' : `$${event.effective_cost_usd}`}</td><td>{event.status}</td></tr>)}{!history.data.items.length && <tr><td colSpan={7}>No usage in this interval.</td></tr>}</tbody></table></div><footer className="pricing-pagination"><button disabled={!cursor} onClick={() => setCursor(undefined)}>First page</button><button disabled={!history.data.next_cursor} onClick={() => setCursor(history.data!.next_cursor!)}>Next page</button></footer></>}
-    {selected && <section className="pricing-preview" aria-label="Usage event details"><button onClick={() => setSelected(null)}>Close details</button><h3>Usage and pricing provenance</h3>{detail.isPending ? <p>Loading details…</p> : detail.error ? <p role="alert">{detail.error.message}</p> : <><dl>{[
-      ['Model', detail.data?.model], ['Application', detail.data?.app_id], ['User', detail.data?.consumer_name_snapshot ?? detail.data?.consumer_id], ['Phase', detail.data?.phase],
+  return <section className="glass-panel pricing-history"><header className="pricing-heading"><div><h2>Usage history</h2><p>Retained invocation records, including archived models.</p></div><button type="button" className="btn btn-secondary btn-sm" disabled={exporting} onClick={() => void download()}>{exporting ? 'Exporting…' : 'Export CSV'}</button></header>
+    {modelId && <div className="pricing-toolbar"><label>From (local time)<input type="datetime-local" className="field-input" value={start} onChange={e => { setStart(e.target.value); setCursor(undefined); setPrevCursors([]) }} /></label><label>To, exclusive (local time)<input type="datetime-local" className="field-input" value={end} onChange={e => { setEnd(e.target.value); setCursor(undefined); setPrevCursors([]) }} /></label></div>}
+    {exportError && <p role="alert">{exportError}</p>}
+    {history.error && history.data && <CachedDataWarning error={history.error} onRetry={() => void history.refetch()} />}
+    {history.error && !history.data && <ProblemCard title="Usage history unavailable" message={history.error.message} onRetry={() => void history.refetch()} />}
+    {history.isPending && <Skeleton label="Loading usage…" rows={3} />}
+    {history.data && <>{history.data.items.length === 0 ? (
+      <StateCard kind="empty" compact title="No usage in this interval" action={null}>
+        <p>No invocation events were recorded in the selected time interval.</p>
+      </StateCard>
+    ) : (
+      <div className="pricing-table-wrap"><table className="pricing-table"><thead><tr><th>Time</th><th>Model</th><th>Application</th><th>User</th><th className="numeric">Tokens</th><th className="numeric">Estimated cost</th><th>Status</th></tr></thead><tbody>{history.data.items.map(event => <tr key={event.id}><td><button type="button" className="analytics-link-button" onClick={() => setSelected(event.id)}>{formatTimestamp(event.at)}</button></td><td>{event.model ?? 'Unknown'}{event.archived && <small>Archived</small>}</td><td>{(event.app_id ? appNames.get(event.app_id) ?? event.app_id : null) ?? 'Unknown'}{event.project_id && <small>{projectNames.get(event.project_id) ?? event.project_id}</small>}</td><td>{event.consumer_name_snapshot ?? event.consumer_id ?? 'Unattributed'}</td><td className="numeric">{event.total_tokens.toLocaleString()}</td><td className="numeric">{!history.data.cost_visible ? 'Hidden' : event.effective_cost_usd === null ? 'Not priced' : `$${event.effective_cost_usd}`}</td><td>{event.status}</td></tr>)}</tbody></table></div>
+    )}
+    <footer className="pricing-pagination">
+      <button type="button" className="btn btn-secondary btn-sm" disabled={!cursor} onClick={() => { setCursor(undefined); setPrevCursors([]) }}>First page</button>
+      <button type="button" className="btn btn-secondary btn-sm" disabled={!prevCursors.length} onClick={() => { const nextStack = prevCursors.slice(0, -1); setCursor(prevCursors[prevCursors.length - 1]); setPrevCursors(nextStack) }}>Previous page</button>
+      <button type="button" className="btn btn-secondary btn-sm" disabled={!history.data.next_cursor} onClick={() => { setPrevCursors(prev => [...prev, cursor]); setCursor(history.data!.next_cursor!) }}>Next page</button>
+    </footer></>}
+    {selected && <section className="pricing-preview" aria-label="Usage event details"><button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelected(null)}>Close details</button><h3>Usage and pricing provenance</h3>{detail.isPending ? <Skeleton label="Loading details…" rows={2} /> : detail.error ? <ProblemCard title="Usage event unavailable" message={detail.error.message} onRetry={() => void detail.refetch()} /> : <><dl><div><dt>Event ID</dt><dd><CopyableId value={selected} label="Event ID" /></dd></div>{[
+      ['Model', detail.data?.model], ['Application', detail.data?.app_id ? appNames.get(detail.data.app_id) ?? detail.data.app_id : null], ['Project', detail.data?.project_id ? projectNames.get(detail.data.project_id) ?? detail.data.project_id : null], ['User', detail.data?.consumer_name_snapshot ?? detail.data?.consumer_id], ['Phase', detail.data?.phase],
       ['Input tokens', detail.data?.input_tokens?.toLocaleString()], ['Output tokens', detail.data?.output_tokens?.toLocaleString()], ['Cache-read tokens', detail.data?.cache_read_tokens?.toLocaleString()], ['Cache-write tokens', detail.data?.cache_creation_tokens?.toLocaleString()],
       ['Original estimated cost', detail.data?.cost_visible === false || history.data?.cost_visible === false ? 'Hidden' : detail.data?.original_cost_usd != null ? `$${detail.data.original_cost_usd}` : 'Not priced'], ['Corrected estimated cost', detail.data?.cost_visible === false || history.data?.cost_visible === false ? 'Hidden' : detail.data?.effective_cost_usd != null ? `$${detail.data.effective_cost_usd}` : 'Not priced']
     ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? 'Not available'}</dd></div>)}</dl>{detail.data?.original_pricing && <section><h4>Original rate snapshot</h4><p>USD per million tokens</p><dl>{([['input', 'Input'], ['output', 'Output'], ['cache_read', 'Cache read'], ['cache_creation', 'Cache write']] as const).map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{detail.data?.original_pricing?.[key] != null ? `$${detail.data.original_pricing[key]}` : 'Not recorded'}</dd></div>)}</dl></section>}{!!detail.data?.corrections?.length && <><h4>Published cost corrections</h4><ul>{detail.data.corrections.map(c => <li key={c.generation}>Revision {c.generation} · ${c.cost_usd} · {formatTimestamp(c.at)}{c.pricing && <p>USD / million tokens: Input ${c.pricing.input}, output ${c.pricing.output}, cache read ${c.pricing.cache_read}, cache write ${c.pricing.cache_creation}</p>}</li>)}</ul></>}</>}</section>}

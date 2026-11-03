@@ -27,10 +27,12 @@ import {
   type WorkItemPage,
   type WorkTrackingBinding,
 } from '@/api/hooks/useWorkTracking'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
 import { useConsumer } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { canMutateAudience } from '@/auth/RequireRole'
 import { Pagination } from '@/components/ux/Pagination'
+import { ProjectField } from '@/components/ux/ProjectField'
 import { Dialog } from '@/components/Dialog'
 
 import { ExternalLink, KindChip, LabelChips, StatusBadge } from './workItemsBits'
@@ -789,12 +791,18 @@ export function WorkItemsPage() {
       ? `${offset + 1}–${offset + items.length}${total !== undefined ? ` of ${total}` : ''}`
       : 'No items'
 
+  const projectLabels = useProjectLabels()
+  const projectOptionLabel = (id: string) => {
+    const name = !projectLabels.isError ? projectLabels.data?.find(row => row.project_id === id)?.name : undefined
+    return name && name !== id ? `${name} (${id})` : id
+  }
+
   return (
     <section className="wi-page animate-enter">
       <header className="wi-toolbar glass-panel">
         <div>
           <nav className="wi-local-tabs" aria-label="Ticket sections">
-            <Link className="wi-tab active" to="/work-items">Search</Link>
+            <Link className="wi-tab active" aria-current="page" to="/work-items">Search</Link>
             <Link className="wi-tab" to="/work-items/saved">Saved queries</Link>
           </nav>
         </div>
@@ -811,7 +819,7 @@ export function WorkItemsPage() {
       </header>
 
       <div className="wi-console glass-panel">
-        {scopedProjects.length > 1 && (
+        {scopedProjects.length > 1 ? (
           <label className="wi-field">
             <span className="wi-field-label">Project</span>
             <select
@@ -823,12 +831,19 @@ export function WorkItemsPage() {
               <option value="">Select a project…</option>
               {scopedProjects.map((projectId) => (
                 <option key={projectId} value={projectId}>
-                  {projectId}
+                  {projectOptionLabel(projectId)}
                 </option>
               ))}
             </select>
           </label>
-        )}
+        ) : scopedProjects.length === 0 ? (
+          <ProjectField
+            label="Project"
+            ariaLabel="Work tracking project"
+            value={project}
+            onChange={changeProject}
+          />
+        ) : null}
         <div className="wi-mode-toggle" role="group" aria-label="Query mode">
           <button
             type="button"
@@ -951,7 +966,7 @@ export function WorkItemsPage() {
               />
 
               <label className="wi-field"><span className="wi-field-label">Rows per query</span>
-                <select aria-label="Query rows" value={limit} disabled={execute.isPending} onChange={event => setLimit(Number(event.target.value))}>
+                <select className="field-select" aria-label="Query rows" value={limit} disabled={execute.isPending} onChange={event => setLimit(Number(event.target.value))}>
                   {[10, 25, 50].map(size => <option key={size} value={size}>{size}</option>)}
                 </select>
               </label>

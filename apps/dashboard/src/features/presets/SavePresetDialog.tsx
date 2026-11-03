@@ -35,10 +35,11 @@ import './presets.css'
 
 type Visibility = 'personal' | 'project' | 'organization'
 
-export function SavePresetDialog({ draft, existing, initialName, initialDescription, initialSections, onClose, onSaved }: {
+export function SavePresetDialog({ draft, existing, initialMode, initialName, initialDescription, initialSections, onClose, onSaved }: {
   draft: WizardDraft
   /** The preset this test started from, when known (offers Update). */
   existing?: Preset | null
+  initialMode?: 'update' | 'new'
   initialName?: string
   initialDescription?: string | null
   initialSections?: SectionId[]
@@ -53,9 +54,9 @@ export function SavePresetDialog({ draft, existing, initialName, initialDescript
   const appId = primaryApplication(draft)
   const canShareWithTeam = Boolean(projectId) && (admin || hasFullProjectScope(consumer, projectId))
   const canUpdate = Boolean(existing && (existing.kind === 'team' ? existing.editable : admin))
-  const [mode, setMode] = useState<'update' | 'new'>(canUpdate ? 'update' : 'new')
+  const [mode, setMode] = useState<'update' | 'new'>(initialMode === 'new' ? 'new' : canUpdate ? 'update' : 'new')
   const updating = mode === 'update' && canUpdate && existing
-  const [name, setName] = useState(updating ? existing.name : initialName ?? draft.title.trim())
+  const [name, setName] = useState(updating ? existing.name : initialName ?? (existing ? `${existing.name} (copy)` : draft.title.trim()))
   const [description, setDescription] = useState(updating ? existing.description ?? '' : initialDescription ?? '')
   const [visibility, setVisibility] = useState<Visibility>(
     updating ? existing.visibility : initialName && admin ? 'organization' : canShareWithTeam ? 'project' : 'personal')

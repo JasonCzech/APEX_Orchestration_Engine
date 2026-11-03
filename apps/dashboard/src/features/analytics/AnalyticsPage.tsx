@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ux/Skeleton'
 import { TableToolbar } from '@/components/ux/TableToolbar'
 import { Pagination, type PageSelection } from '@/components/ux/Pagination'
 import { SortableHeader } from '@/components/ux/SortableHeader'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { CHART_TOOLTIP_STYLE } from '@/utils/chartTheme'
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
@@ -581,7 +582,13 @@ function renderKeyCell(
     return <span>{row.label ?? 'Unattributed'}</span>
   }
   if (group === 'test') {
-    return <Link to={`/runs/${row.thread_id ?? row.key}`}>{row.key}</Link>
+    const runId = row.thread_id ?? row.key
+    return (
+      <span className="analytics-run-cell">
+        <Link to={`/runs/${runId}`}>{row.label ?? row.key}</Link>{' '}
+        <CopyableId value={runId} label="Run ID" />
+      </span>
+    )
   }
   if (group === 'date') {
     return (
@@ -720,8 +727,8 @@ export function AnalyticsPage() {
       <header className="pricing-heading"><h2>{isAdmin ? 'Usage overview' : 'My usage'}</h2>{isGlobalAdmin && <Link className="btn btn-secondary" to="/analytics/models">Manage model pricing</Link>}</header>
       <div className="pricing-toolbar glass-panel">
         <UsageFacetControls filters={{ ...filters, view, from: query.from ?? data?.window.from, to: query.to ?? data?.window.to }} isAdmin={isAdmin} onChange={applyFilters} />
-        {isAdmin && <label>Usage view<select value={query.view} onChange={e => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', e.target.value); next.delete('consumer_id'); next.delete('offset'); if (e.target.value === 'mine' && next.get('group') === 'user') next.delete('group'); return next })}><option value="authorized">Authorized usage</option><option value="mine">My usage</option></select></label>}
-        <label>Cost basis<select value={filters.cost_basis ?? 'corrected'} onChange={e => applyFilters({ cost_basis: e.target.value as 'corrected' | 'original' })}><option value="corrected">Latest corrected costs</option><option value="original">Original recorded costs</option></select></label>
+        {isAdmin && <label>Usage view<select className="field-select" value={query.view} onChange={e => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', e.target.value); next.delete('consumer_id'); next.delete('offset'); if (e.target.value === 'mine' && next.get('group') === 'user') next.delete('group'); return next })}><option value="authorized">Authorized usage</option><option value="mine">My usage</option></select></label>}
+        <label>Cost basis<select className="field-select" value={filters.cost_basis ?? 'corrected'} onChange={e => applyFilters({ cost_basis: e.target.value as 'corrected' | 'original' })}><option value="corrected">Latest corrected costs</option><option value="original">Original recorded costs</option></select></label>
       </div>
       <TableToolbar label="Analytics filters" filterCount={[filters.from || filters.to, filters.project, filters.app, filters.consumer_id, filters.model_id, filters.provider, filters.cost_basis, filters.model?.length, filters.stage?.length, filters.agent?.length, filters.test, filters.status].filter(Boolean).length} onClear={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams(view === 'mine' ? { view: 'mine' } : {})) }} className="analytics-toolbar glass-panel">
         <WindowPresets

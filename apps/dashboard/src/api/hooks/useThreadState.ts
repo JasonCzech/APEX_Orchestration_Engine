@@ -59,6 +59,11 @@ function normalizeDriftedState(raw: unknown): PipelineState {
   const safe: Record<string, unknown> = {}
   if (typeof source.title === 'string') safe.title = source.title
   if (typeof source.request === 'string') safe.request = source.request
+  if (typeof source.summary === 'string') safe.summary = source.summary
+  if (typeof source.completion === 'string') safe.completion = source.completion
+  if (typeof source.rendered_prompt === 'string' || isRecord(source.rendered_prompt)) {
+    safe.rendered_prompt = source.rendered_prompt
+  }
   if (Array.isArray(source.phases_plan)) {
     safe.phases_plan = source.phases_plan.filter((phase): phase is string => typeof phase === 'string')
   }
@@ -100,6 +105,7 @@ function normalizeDriftedState(raw: unknown): PipelineState {
   if (Array.isArray(source.artifacts)) safe.artifacts = validArrayItems(source.artifacts, ArtifactRefSchema)
   if (Array.isArray(source.dialogue)) safe.dialogue = validArrayItems(source.dialogue, DialogueEntrySchema)
   if (Array.isArray(source.context_packets)) safe.context_packets = validArrayItems(source.context_packets, ContextPacketSchema)
+  if (Array.isArray(source.evidence)) safe.evidence = validArrayItems(source.evidence, ContextPacketSchema)
   if (isRecord(source.engine_handle)) {
     const engine: Record<string, unknown> = {}
     for (const [field, schema] of Object.entries(EngineHandleSchema.shape)) {

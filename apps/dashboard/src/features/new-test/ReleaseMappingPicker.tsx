@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { getApexClient } from '@/api/apexClient'
+import { useApplications } from '@/api/hooks/useCatalog'
+import { CopyableId } from '@/components/ux/CopyableId'
 import type { StepProps } from './NewRunWizard'
 
 function record(value: unknown): Record<string, unknown> {
@@ -33,6 +35,7 @@ export function ReleaseMappingPicker({ draft, onChange, disabled }: StepProps) {
       return result.data.release_mapping ?? null
     },
   })
+  const apps = useApplications(eligible && mapping.data ? project : undefined)
   function select(connection: string, release?: string) {
     onChange(previous => {
       const bundle = previous.config.golden_configurable ?? {}
@@ -53,6 +56,9 @@ export function ReleaseMappingPicker({ draft, onChange, disabled }: StepProps) {
   }
   const selectedRelease = eligible && mapping.data && mapping.data.revision === loadTest.mapping_revision && mapping.data.releases.some(item => item.id === loadTest.release_id)
     ? String(loadTest.release_id) : ''
+  const mappedAppName = mapping.data
+    ? apps.data?.find(app => app.id === mapping.data?.application_id)?.name ?? mapping.data.application_id
+    : ''
   return <div className="wizard-field">
     <label className="wizard-label" htmlFor="release-connection">Load connection</label>
     <select className="field-select" id="release-connection" value={connectionId} disabled={disabled || catalog.isFetching} onChange={event => select(event.target.value)}>
@@ -60,9 +66,9 @@ export function ReleaseMappingPicker({ draft, onChange, disabled }: StepProps) {
       {connectionId && !eligible && <option value={connectionId}>Unavailable connection · {connectionId}</option>}
       {catalog.data?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
     </select>
-    {catalog.isError && <p role="alert">{catalog.error.message} <button type="button" onClick={() => void catalog.refetch()}>Retry connections</button></p>}
+    {catalog.isError && <p role="alert">{catalog.error.message} <button type="button" className="btn btn-secondary btn-sm" onClick={() => void catalog.refetch()}>Retry connections</button></p>}
     {connectionId && catalog.isSuccess && !eligible && <p role="alert">The saved Load connection is unavailable in this project. Select an available connection or explicitly choose the project default.</p>}
-    {eligible && mapping.isError && <p role="alert">{mapping.error.message} <button type="button" onClick={() => void mapping.refetch()}>Retry releases</button></p>}
+    {eligible && mapping.isError && <p role="alert">{mapping.error.message} <button type="button" className="btn btn-secondary btn-sm" onClick={() => void mapping.refetch()}>Retry releases</button></p>}
     {eligible && mapping.isSuccess && !mapping.data && <p className="wizard-caption">No release mapping is configured for this connection.</p>}
     {eligible && mapping.isFetching && <p role="status">Loading releases…</p>}
     {eligible && mapping.data && <>
@@ -71,7 +77,11 @@ export function ReleaseMappingPicker({ draft, onChange, disabled }: StepProps) {
         <option value="">Select a release</option>
         {mapping.data.releases.map(item => <option key={item.id} value={item.id}>{item.name} · {item.id}</option>)}
       </select>
-      <p className="wizard-caption">Application {mapping.data.application_id} · mapping {mapping.data.revision}. This identity is recorded with the run.</p>
+      <p className="wizard-caption">
+        Application {mappedAppName}
+        {mappedAppName !== mapping.data.application_id && <> (<CopyableId value={mapping.data.application_id} label="Application ID" />)</>}
+        {' '}· mapping {mapping.data.revision}. This identity is recorded with the run.
+      </p>
       {!selectedRelease && <p role="status">Select an active release before launching this mapped connection.</p>}
     </>}
   </div>

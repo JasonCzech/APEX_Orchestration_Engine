@@ -71,6 +71,7 @@
  * ============================================================ */
 
 .btn {
+  min-height: 36px;
   padding: 8px 16px;
   border-radius: 999px;
   font-size: var(--font-size-md);
@@ -172,6 +173,7 @@
 }
 
 .btn-sm {
+  min-height: 32px;
   padding: 4px 10px;
   font-size: var(--font-size-sm);
 }
@@ -445,7 +447,7 @@
 
 .field-input,
 .field-select {
-  min-height: 34px;
+  min-height: 36px;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;

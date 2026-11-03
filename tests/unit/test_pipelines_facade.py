@@ -2194,3 +2194,103 @@ def test_recovery_gates_do_not_claim_phase_output_is_ready(kind: str) -> None:
         values, thread_status="interrupted", gates=[{"phase": "execution", "kind": kind}]
     )
     assert projected["phase_results"]["execution"]["status"] == "pending"
+
+
+async def test_list_pipelines_excludes_context_summary_and_prompt_test_threads() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    threads = [
+        {
+            "thread_id": "t-pipeline",
+            "status": "idle",
+            "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+            "values": {"project_id": "proj-alpha", "title": "Main test run"},
+        },
+        {
+            "thread_id": "t-context",
+            "status": "idle",
+            "metadata": {
+                "project_id": "proj-alpha",
+                "kind": "context_summary",
+                "graph_id": "context",
+            },
+            "values": {"project_id": "proj-alpha", "summary": "Synthesized context"},
+        },
+        {
+            "thread_id": "t-playground",
+            "status": "idle",
+            "metadata": {
+                "project_id": "proj-alpha",
+                "kind": "prompt_test",
+                "graph_id": "playground",
+            },
+            "values": {"project_id": "proj-alpha", "completion": "[playground stub]"},
+        },
+    ]
+    client = SimpleNamespace(
+        threads=SimpleNamespace(
+            search=AsyncMock(return_value=threads),
+        )
+    )
+    result = await PipelineReadService(cast(Any, client)).list_pipelines(limit=20, offset=0)
+    assert [item["thread_id"] for item in result.items] == ["t-pipeline"]
+
+
+def test_public_pipeline_state_retains_context_summary_and_playground_outputs() -> None:
+    from apex.services.pipeline_public import public_pipeline_state
+
+    projected = public_pipeline_state(
+        {
+            "project_id": "proj-alpha",
+            "summary": "Synthesized summary markdown",
+            "evidence": [{"id": "ev-1", "title": "Packet 1"}],
+            "completion": "[playground stub] rendered",
+            "rendered_prompt": {"system": "Be concise.", "user": "Hello world"},
+            "internal_secret": "must-not-leak",
+        }
+    )
+    assert projected["summary"] == "Synthesized summary markdown"
+    assert projected["evidence"] == [{"id": "ev-1", "title": "Packet 1"}]
+    assert projected["completion"] == "[playground stub] rendered"
+    assert projected["rendered_prompt"] == {"system": "Be concise.", "user": "Hello world"}
+    assert "internal_secret" not in projected
+
+
+async def test_list_pipelines_tops_up_full_page_when_non_pipeline_threads_filtered() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    page_1 = [
+        {
+            "thread_id": "t-context",
+            "status": "idle",
+            "metadata": {
+                "project_id": "proj-alpha",
+                "kind": "context_summary",
+                "graph_id": "context",
+            },
+            "values": {"project_id": "proj-alpha", "summary": "Synthesized context"},
+        },
+        {
+            "thread_id": "t-pipeline-1",
+            "status": "idle",
+            "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+            "values": {"project_id": "proj-alpha", "title": "First pipeline run"},
+        },
+    ]
+    page_2 = [
+        {
+            "thread_id": "t-pipeline-2",
+            "status": "idle",
+            "metadata": {"project_id": "proj-alpha", "graph_id": "pipeline"},
+            "values": {"project_id": "proj-alpha", "title": "Second pipeline run"},
+        },
+    ]
+    search_mock = AsyncMock(side_effect=[page_1, page_2])
+    client = SimpleNamespace(threads=SimpleNamespace(search=search_mock))
+    result = await PipelineReadService(cast(Any, client)).list_pipelines(limit=2, offset=0)
+    assert [item["thread_id"] for item in result.items] == ["t-pipeline-1", "t-pipeline-2"]
+    assert search_mock.call_count == 2
+
+

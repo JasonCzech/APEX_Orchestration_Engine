@@ -50,7 +50,7 @@ export function ScriptStorage({
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
-          <button onClick={() => void query.refetch()}>Retry</button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void query.refetch()}>Retry</button>
         </p>
       )}
       {artifact && (

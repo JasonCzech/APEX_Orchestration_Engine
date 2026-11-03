@@ -7,8 +7,10 @@
  *    so a preset never overwrites work.
  */
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
-import { useDraftsList } from '@/api/hooks/useDrafts'
+import { deleteDraftRequest, useDraftsList } from '@/api/hooks/useDrafts'
+import { queryKeys } from '@/api/queryKeys'
 import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { usePipelines } from '@/api/hooks/usePipelines'
@@ -43,6 +45,7 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
   /** A choice is being loaded (e.g. a draft); every start action waits. */
   busy?: boolean
 }) {
+  const queryClient = useQueryClient()
   const consumer = useOptionalConsumer()
   const names = useFieldNames()
   const applications = useApplicationsIndex()
@@ -53,6 +56,7 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
   const [option, setOption] = useState<StartOption | null>(null)
   const [copying, setCopying] = useState<string | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
   const visibleApps = (applications.data ?? []).filter(app => !app.archived_at)
   const projects = reachableProjects(visibleApps, consumer)
     .sort((a, b) => names.project(a).localeCompare(names.project(b)))
@@ -86,6 +90,16 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
       setCopyError(failure instanceof Error ? failure.message : 'Could not copy this test setup.')
     } finally {
       setCopying(null)
+    }
+  }
+
+  async function deleteSavedDraft(draftId: string) {
+    setDeletingDraftId(draftId)
+    try {
+      await deleteDraftRequest(draftId)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.drafts.all })
+    } finally {
+      setDeletingDraftId(null)
     }
   }
 
@@ -169,7 +183,8 @@ export function StartPanel({ onPreset, onRecent, onDraft, onBlank, busy = false 
                     <div className="preset-row-main"><span className="preset-row-name">{draft.title || 'Untitled draft'}</span>
                       <span className="preset-muted">{draft.project_id ? names.project(draft.project_id) : 'No project'}{draft.updated_at ? ` · ${formatRelative(draft.updated_at)}` : ''}</span></div>
                     <div className="preset-row-actions">
-                      <button type="button" className="btn btn-secondary btn-sm" disabled={busy} aria-label={`Resume ${draft.title || 'Untitled draft'}`} onClick={() => onDraft(draft.id)}>Resume</button>
+                      <button type="button" className="btn btn-secondary btn-sm" disabled={busy || deletingDraftId === draft.id} aria-label={`Resume ${draft.title || 'Untitled draft'}`} onClick={() => onDraft(draft.id)}>Resume</button>
+                      <button type="button" className="btn btn-ghost btn-sm" disabled={busy || deletingDraftId === draft.id} aria-label={`Delete draft ${draft.title || 'Untitled draft'}`} onClick={() => void deleteSavedDraft(draft.id)}>{deletingDraftId === draft.id ? 'Deleting…' : 'Delete'}</button>
                     </div>
                   </li>
                 ))}</ul>}

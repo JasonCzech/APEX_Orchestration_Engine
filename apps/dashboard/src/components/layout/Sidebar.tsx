@@ -78,6 +78,7 @@ const TESTING_NAV_ITEMS: NavItem[] = [
     icon: <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />,
   },
   { to: '/work-items', label: 'Tickets', icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /> },
+  { to: '/apex-load', label: 'APEX Load', icon: <Icon d="M13 2 3 14h8l-1 8 10-12h-8z" /> },
 ]
 
 const RESOURCE_NAV_ITEMS: NavItem[] = [
