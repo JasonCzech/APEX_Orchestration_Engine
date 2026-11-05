@@ -8,7 +8,32 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: pip
+    ignore:
+      # Pinned to Node 24 LTS (.nvmrc, apps/dashboard/Dockerfile).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # v6+ requires Vite 8+ (Oxc/Rolldown); dashboard is on Vite 6.
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
+      # v7+ enables React Compiler rules in recommended config.
+      - dependency-name: "eslint-plugin-react-hooks"
+        update-types: ["version-update:semver-major"]
+      # React 19 migration must be coordinated across react, react-dom, @types/*, and recharts.
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Pinned exactly in pyproject.toml; bump deliberately in a standalone reformat commit.
+      - dependency-name: "ruff"
+      # LangGraph production base image (/api/constraints.txt) enforces redis>=6.4.0,<8.0.
+      - dependency-name: "redis"
+        versions: [">= 8.0.0"]
