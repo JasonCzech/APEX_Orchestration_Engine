@@ -278,6 +278,9 @@ export const PhaseResultEntrySchema = z
     engine_started_at: z.string().optional(),
     engine_poll_last: EnginePollSampleSchema.optional(),
     engine_poll_count: z.number().int().optional(),
+    // AIFx Context Services the agent ran with (phase_subgraph._aifx_audit)
+    aifx_snapshot_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    aifx_entry_ids: z.array(z.string()).optional(),
   })
   .passthrough();
 export type PhaseResultEntry = z.infer<typeof PhaseResultEntrySchema>;

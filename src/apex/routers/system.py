@@ -34,7 +34,7 @@ async def get_system_info(settings: SettingsDep, identity: CurrentIdentity) -> S
         name=settings.app_name,
         version=settings.version,
         environment=settings.environment,
-        features={"cycles": settings.cycles_enabled},
+        features={"cycles": settings.cycles_enabled, "aifx": settings.aifx_enabled},
         limits=SystemLimits(
             max_context_packets=settings.runs.max_context_packets,
             max_test_participants=settings.runs.max_test_participants,

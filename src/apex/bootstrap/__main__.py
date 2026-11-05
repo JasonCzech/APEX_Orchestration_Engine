@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from apex.bootstrap.runner import BootstrapError, apply_document
 from apex.bootstrap.schema import BootstrapDocument
 from apex.domain.diagnostics import safe_type_name
+from apex.domain.safe_yaml import SafeYamlError, load_yaml_safely
 from apex.settings import database_uri_has_safe_transport, get_settings
 
 MAX_BOOTSTRAP_BYTES = 1_048_576
@@ -125,77 +126,15 @@ def _load_document(path: str) -> dict[str, Any]:
     suffix = "" if path == "-" else Path(path).suffix.lower()
     data: Any = None
     if suffix in (".yaml", ".yml"):
-        yaml_module: Any | None = None
-        yaml_error_kind: str | None = None
         try:
-            import yaml as yaml_module  # transitive; JSON needs no dependency
-        except ModuleNotFoundError:  # pragma: no cover - environment dependent
-            pass
-        if yaml_module is None:
-            raise BootstrapError(
-                "YAML bootstrap files need PyYAML installed; use JSON or `pip install pyyaml`"
+            data = load_yaml_safely(
+                raw,
+                subject="bootstrap",
+                max_depth=MAX_BOOTSTRAP_DEPTH,
+                max_nodes=MAX_BOOTSTRAP_NODES,
             )
-        yaml = yaml_module
-        try:
-            depth = 0
-            nodes = 0
-            for event in yaml.parse(raw, Loader=yaml.SafeLoader):
-                if isinstance(event, yaml.events.AliasEvent):
-                    raise BootstrapError("bootstrap YAML aliases are not allowed")
-                if isinstance(
-                    event,
-                    (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent),
-                ):
-                    depth += 1
-                    nodes += 1
-                    if depth > MAX_BOOTSTRAP_DEPTH:
-                        raise BootstrapError(
-                            f"bootstrap document exceeds maximum depth {MAX_BOOTSTRAP_DEPTH}"
-                        )
-                elif isinstance(
-                    event,
-                    (yaml.events.MappingEndEvent, yaml.events.SequenceEndEvent),
-                ):
-                    depth -= 1
-                elif isinstance(event, yaml.events.ScalarEvent):
-                    nodes += 1
-                if nodes > MAX_BOOTSTRAP_NODES:
-                    raise BootstrapError(
-                        f"bootstrap document exceeds the {MAX_BOOTSTRAP_NODES}-node limit"
-                    )
-
-            class UniqueKeyLoader(yaml.SafeLoader):
-                pass
-
-            def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict[Any, Any]:
-                loader.flatten_mapping(node)
-                result: dict[Any, Any] = {}
-                for key_node, value_node in node.value:
-                    key = loader.construct_object(key_node, deep=deep)
-                    invalid_key = False
-                    try:
-                        duplicate = key in result
-                    except TypeError:
-                        invalid_key = True
-                        duplicate = False
-                    if invalid_key:
-                        raise BootstrapError("bootstrap YAML mapping keys must be scalar")
-                    if duplicate:
-                        raise BootstrapError("bootstrap document contains a duplicate key")
-                    result[key] = loader.construct_object(value_node, deep=deep)
-                return result
-
-            UniqueKeyLoader.add_constructor(
-                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-                construct_mapping,
-            )
-            data = yaml.load(raw, Loader=UniqueKeyLoader)
-        except BootstrapError:
-            raise
-        except (yaml.YAMLError, RecursionError) as exc:
-            yaml_error_kind = safe_type_name(exc)
-        if yaml_error_kind is not None:
-            raise BootstrapError(f"invalid YAML bootstrap document ({yaml_error_kind})")
+        except SafeYamlError as exc:
+            raise BootstrapError(str(exc)) from None
     else:
         _validate_json_nesting(raw)
         json_error_kind: str | None = None

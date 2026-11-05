@@ -42,6 +42,46 @@ def require_bounded_credential(
     return value
 
 
+def require_pem_private_key(value: Any, *, label: str, max_bytes: int = 16_384) -> Any:
+    """Load an unencrypted RSA private key from PEM text and return the key object.
+
+    ``require_bounded_credential`` rejects newlines, which every PEM block
+    contains, so keys get their own boundary. Environment files often carry the
+    key on one line with literal ``\\n`` escapes; those are expanded first. The
+    caller keeps only the returned key object, never the PEM text, and errors
+    never include input.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty PEM private key")
+    text = value.strip().replace("\\n", "\n")
+    try:
+        encoded: bytes | None = text.encode("ascii")
+    except UnicodeError:
+        encoded = None
+    if encoded is None:
+        raise ValueError(f"{label} must be ASCII PEM text")
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{label} must not exceed {max_bytes} bytes")
+    if any(
+        (ord(character) < 0x20 and character not in "\n\r") or ord(character) == 0x7F
+        for character in text
+    ):
+        raise ValueError(f"{label} contains invalid control characters")
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    try:
+        key = load_pem_private_key(encoded, password=None)
+    except Exception:  # noqa: BLE001 - parser errors can quote key material
+        key = None
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError(f"{label} must be an unencrypted RSA private key in PEM format")
+    if key.key_size < 2048:
+        raise ValueError(f"{label} must be at least 2048 bits")
+    return key
+
+
 def normalize_host_port_endpoint(value: Any, *, secure: bool) -> tuple[str, bool]:
     """Normalize an S3/MinIO endpoint to the SDK's ``host[:port]`` contract.
 

@@ -185,6 +185,45 @@ async def test_work_tracking_connection_guard_includes_retained_live_results() -
 
 
 @pytest.mark.asyncio
+async def test_source_control_connection_guard_includes_aifx_organizations() -> None:
+    class ScalarSession:
+        def __init__(self) -> None:
+            self.statements: list[Any] = []
+
+        async def scalar(self, statement: Any) -> object:
+            self.statements.append(statement)
+            return "aifx-org-1"
+
+    session = ScalarSession()
+    repo = ConnectionsRepository(cast(Any, session))
+    conn = _make_connection(kind="source_control", provider="stub", name="ghe")
+
+    assert await repo.durable_reference_reason(conn) == "AIFx organizations"
+    assert len(session.statements) == 1
+    sql = str(
+        session.statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "aifx_organizations.connection_id" in sql
+    assert conn.id in sql
+    assert "LIMIT 1" in sql
+
+
+@pytest.mark.asyncio
+async def test_source_control_connection_guard_is_clear_without_aifx_organizations() -> None:
+    class ScalarSession:
+        async def scalar(self, _statement: object) -> object:
+            return None
+
+    repo = ConnectionsRepository(cast(Any, ScalarSession()))
+    conn = _make_connection(kind="source_control", provider="stub", name="ghe")
+
+    assert await repo.durable_reference_reason(conn) is None
+
+
+@pytest.mark.asyncio
 async def test_connections_repository_rejects_nul_from_non_http_writers() -> None:
     repo = ConnectionsRepository(cast(Any, object()))
     connection = _make_connection(kind="work_tracking", provider="stub", name="tracker")
@@ -1733,6 +1772,82 @@ def test_work_tracking_reference_does_not_block_reenabling_connection(
     assert repo.connections[conn_id].runtime_version != configuration_version
 
 
+def _global_source_control(repo: FakeConnectionsRepository) -> Connection:
+    conn = _make_connection(kind="source_control", provider="stub", name="ghe-global")
+    repo.connections[conn.id] = conn
+    return conn
+
+
+def test_source_control_referenced_by_aifx_cannot_become_project_scoped(
+    repo: FakeConnectionsRepository,
+    admin: TestClient,
+) -> None:
+    conn = _global_source_control(repo)
+    repo.reference_reason = "AIFx organizations"
+
+    response = admin.patch(f"/admin/connections/{conn.id}", json={"project_id": "proj-a"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "connection is still referenced; migrate references first"
+    assert "AIFx organizations" not in response.text
+    assert conn.project_id is None
+
+
+def test_source_control_referenced_by_aifx_allows_edits_that_stay_global(
+    repo: FakeConnectionsRepository,
+    admin: TestClient,
+) -> None:
+    conn = _global_source_control(repo)
+    repo.reference_reason = "AIFx organizations"
+
+    renamed = admin.patch(f"/admin/connections/{conn.id}", json={"name": "ghe-renamed"})
+    explicit_global = admin.patch(f"/admin/connections/{conn.id}", json={"project_id": None})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "ghe-renamed"
+    assert explicit_global.status_code == 200
+    assert conn.project_id is None
+
+
+def test_unreferenced_source_control_can_become_project_scoped(
+    repo: FakeConnectionsRepository,
+    admin: TestClient,
+) -> None:
+    conn = _global_source_control(repo)
+    repo.reference_reason = None
+
+    response = admin.patch(f"/admin/connections/{conn.id}", json={"project_id": "proj-a"})
+
+    assert response.status_code == 200
+    assert response.json()["project_id"] == "proj-a"
+    assert conn.project_id == "proj-a"
+
+
+def test_referenced_source_control_delete_is_409(
+    repo: FakeConnectionsRepository,
+    admin: TestClient,
+) -> None:
+    conn = _global_source_control(repo)
+    repo.reference_reason = "AIFx organizations"
+
+    response = admin.delete(f"/admin/connections/{conn.id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "connection is still referenced; migrate references first"
+    assert "AIFx organizations" not in response.text
+    assert conn.id in repo.connections
+
+
+def test_unreferenced_source_control_delete_succeeds(
+    repo: FakeConnectionsRepository,
+    admin: TestClient,
+) -> None:
+    conn = _global_source_control(repo)
+
+    assert admin.delete(f"/admin/connections/{conn.id}").status_code == 204
+    assert conn.id not in repo.connections
+
+
 def test_host_mappings_put_replaces_full_list(admin: TestClient) -> None:
     conn_id = admin.post(
         "/admin/connections",
@@ -2151,6 +2266,28 @@ async def test_probe_rejects_forged_model_key_before_rehashing_it() -> None:
         await _probe_source_control(Adapter())
 
     assert key.hash_calls == 1
+
+
+async def test_source_control_probe_prefers_adapter_probe() -> None:
+    class Adapter:
+        async def probe(self) -> str:
+            return "authenticated as GitHub App apex-aifx-reader"
+
+        async def get_file(self, repo: Any, path: str) -> FileContent:
+            raise AssertionError("probe-capable adapters must not read a fixed file")
+
+    assert await _probe_source_control(Adapter()) == (
+        "authenticated as GitHub App apex-aifx-reader"
+    )
+
+
+async def test_source_control_probe_rejects_invalid_probe_result() -> None:
+    class Adapter:
+        async def probe(self) -> object:
+            return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="invalid result"):
+        await _probe_source_control(Adapter())
 
 
 def test_probe_ok_for_stub_connection(admin: TestClient) -> None:

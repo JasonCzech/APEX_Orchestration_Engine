@@ -272,6 +272,16 @@ function SidebarContent({ drawer = false, collapsed = false, onNavigate, onExpan
   const { signOut, state: authState } = useAuth()
   const { status } = useConnectivity()
   const { preference, themes, setTheme } = useTheme()
+  const adminSection: NavSection = {
+    ...ADMIN_NAV_SECTION,
+    items: [
+      ...ADMIN_NAV_SECTION.items.slice(0, 1),
+      ...(authState.status === 'authenticated' && authState.systemInfo.features.aifx
+        ? [{ to: '/admin/aifx', label: 'AIFx context', icon: <Icon d="M4 6h16M4 12h10M4 18h7M17 14l3 3-3 3M14 17h6" /> }]
+        : []),
+      ...ADMIN_NAV_SECTION.items.slice(1),
+    ],
+  }
   const testingItems = [
     ...TESTING_NAV_ITEMS,
     ...(authState.status === 'authenticated' && authState.systemInfo.features.cycles
@@ -311,7 +321,7 @@ function SidebarContent({ drawer = false, collapsed = false, onNavigate, onExpan
           <NavSection section={{ label: 'Resources', items: RESOURCE_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
           <NavSection section={{ label: 'Investigation', items: INVESTIGATION_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
           <RequireRole role={ADMIN_NAV_SECTION.requiresRole as Role}>
-            <NavSection section={ADMIN_NAV_SECTION} pathname={location.pathname} onNavigate={onNavigate} />
+            <NavSection section={adminSection} pathname={location.pathname} onNavigate={onNavigate} />
           </RequireRole>
         </div>
         <div className="nav-section nav-section--settings">

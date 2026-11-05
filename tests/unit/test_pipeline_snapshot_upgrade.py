@@ -53,6 +53,7 @@ def test_prior_complete_snapshot_migrates_without_mutating_saved_data(old_snapsh
         "test_scope": None,
         "test_scope_snapshot": None,
         "rerun_phases": None,
+        "aifx_snapshot": None,
     }
     assert old_snapshot == original
     assert (

@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from apex.domain.aifx import AifxSnapshotV1
 from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import (
     NoNulStr,
@@ -98,6 +99,17 @@ def normalize_durable_pipeline_snapshot(snapshot: dict[str, Any]) -> dict[str, A
         "test_scope_snapshot",
     }:
         snapshot = {**snapshot, "rerun_phases": None}
+    if set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS | {
+        "cycle_dispatch_id",
+        "prompt_selections",
+        "prompt_manifest",
+        "phase_execution",
+        "analysis",
+        "test_scope",
+        "test_scope_snapshot",
+        "rerun_phases",
+    }:
+        snapshot = {**snapshot, "aifx_snapshot": None}
     return snapshot
 
 
@@ -180,6 +192,9 @@ class PipelineConfigurable(BaseModel):
     prompt_overrides: dict[str, PromptOverride] = Field(default_factory=dict, max_length=32)
     prompt_selections: PromptSelectionsV1 | None = None
     prompt_manifest: PromptManifestV1 | None = None
+    # Server-owned AIFx Context Services content pinned at launch (repos at a
+    # commit). Self-verifying; resumes and reruns reuse it, never re-read GitHub.
+    aifx_snapshot: AifxSnapshotV1 | None = None
     pre_execution_context: list[NoNulStr] = Field(default_factory=list, max_length=32)
     model_by_phase: dict[Phase, NoNulStr] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
     # Per-run LoadTestSpec overrides plus provider-specific execution options.
@@ -358,6 +373,14 @@ class PipelineConfigurable(BaseModel):
                     raise ValueError("Prompt manifest environment scope is invalid")
         elif self.prompt_manifest is not None:
             raise ValueError("prompt_manifest requires prompt_selections")
+        return self
+
+    @model_validator(mode="after")
+    def validate_aifx_snapshot(self):
+        if self.aifx_snapshot is not None and not self.aifx_snapshot.application_ids() <= (
+            self.application_ids
+        ):
+            raise ValueError("AIFx snapshot names applications outside this test")
         return self
 
     @field_validator("connections")
@@ -578,6 +601,10 @@ class PipelineConfigurable(BaseModel):
             != canonical_snapshot
         ):
             raise ValueError("checkpointed pipeline configuration is not canonical")
+        if current.aifx_snapshot is None and durable.aifx_snapshot is not None:
+            # The pinned AIFx snapshot is server-owned: clients cannot resend it, so
+            # a native resume arrives without it. The checkpoint is authoritative.
+            current = current.model_copy(update={"aifx_snapshot": durable.aifx_snapshot})
         if (
             json.dumps(
                 current.snapshot(),

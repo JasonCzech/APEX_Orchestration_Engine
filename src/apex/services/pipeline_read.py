@@ -1008,6 +1008,8 @@ class PipelineReadService:
                 raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
             if run_configurable.get("prompt_manifest") is not None:
                 raise ValueError("prompt_manifest is server-owned")
+            if run_configurable.get("aifx_snapshot") is not None:
+                raise ValueError("aifx_snapshot is server-owned")
             if RUNTIME_ACTOR_ID_KEY in run_configurable:
                 raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
             if (
@@ -1823,6 +1825,7 @@ class PipelineReadService:
             if type(key) is str and key in PipelineConfigurable.model_fields
         }
         submitted.pop("prompt_manifest", None)
+        submitted.pop("aifx_snapshot", None)
         invalid = False
         try:
             validate_json_object(
@@ -1849,6 +1852,23 @@ class PipelineReadService:
                 "Submitted launch configuration contains untrusted provider selectors"
             )
         return validated
+
+    async def get_aifx_snapshot(self, thread_id: str) -> JsonDict:
+        """The AIFx Context Services content this run pinned at launch.
+
+        Read through the caller's scoped client, so runs outside the caller's
+        scope are not found. The snapshot re-verifies its own hashes here.
+        """
+        from apex.domain.aifx import AifxSnapshotV1
+
+        state = await self._client.threads.get_state(thread_id)
+        raw_values = state.get("values") or {}
+        stored = raw_values.get("run_config") if isinstance(raw_values, dict) else None
+        raw = stored.get("aifx_snapshot") if isinstance(stored, dict) else None
+        if raw is None:
+            return {"status": "none", "snapshot": None}
+        snapshot = AifxSnapshotV1.model_validate(raw)
+        return {"status": snapshot.status.value, "snapshot": snapshot.model_dump(mode="json")}
 
     async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
         """Effective prompt-review draft for a phase, with old-run fallback.

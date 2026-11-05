@@ -487,6 +487,30 @@ class DocumentIngestionSettings(BaseModel):
     summary_chars: int = Field(default=280, ge=32, le=MAX_CONTEXT_SUMMARY_CHARS)
 
 
+class AifxSettings(BaseModel):
+    """AIFx Context Services read and prompt budgets (env: APEX_AIFX__*).
+
+    Launch reads every mapped GitHub Enterprise repository at a commit and
+    freezes the content into the run configuration, which travels with every
+    checkpoint and resume. These caps keep that copy, and the share of each
+    phase's model input it takes, bounded. ``required_in_locked`` makes an
+    unreadable source fail the launch outside dev environments.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    max_manifest_bytes: int = Field(default=32_768, ge=1_024, le=262_144)
+    max_file_chars: int = Field(default=50_000, ge=1_000, le=100_000)
+    max_entries_per_source: int = Field(default=50, ge=1, le=200)
+    max_sources: int = Field(default=8, ge=1, le=16)
+    max_snapshot_chars: int = Field(default=250_000, ge=10_000, le=600_000)
+    max_phase_system_chars: int = Field(default=60_000, ge=1_000, le=200_000)
+    max_phase_memory_chars: int = Field(default=30_000, ge=1_000, le=200_000)
+    fetch_timeout_s: float = Field(default=30.0, gt=0, le=120)
+    fetch_concurrency: int = Field(default=4, ge=1, le=16)
+    required_in_locked: bool = True
+
+
 class ApexSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
@@ -511,6 +535,8 @@ class ApexSettings(BaseSettings):
     model_pricing_admin_enabled: bool = False
     cycles_enabled: bool = False
     cycles_independent_review: bool = False
+    # AIFx Context Services: GitHub Enterprise repos that inform the phase agents.
+    aifx_enabled: bool = False
     # Serializes costly remote run creation across API/worker replicas through
     # PostgreSQL advisory locks. Local single-process development may leave it off.
     distributed_remote_creation_lock: bool = False
@@ -535,6 +561,7 @@ class ApexSettings(BaseSettings):
     llm: LLMSettings = LLMSettings()
     documents: DocumentIngestionSettings = DocumentIngestionSettings()
     runs: RunControlSettings = RunControlSettings()
+    aifx: AifxSettings = AifxSettings()
 
     @field_validator("cors_origins")
     @classmethod

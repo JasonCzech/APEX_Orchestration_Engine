@@ -300,6 +300,9 @@ class EnvironmentSnapshot(BaseModel):
 class RepoRef(BaseModel):
     name: NoNulStr = Field(min_length=1, max_length=255)
     url: NoNulStr | None = Field(default=None, max_length=4_096)
+    # Organization or user that owns the repository on a multi-tenant host
+    # (GitHub Enterprise). Single-namespace providers leave it unset.
+    owner: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
 
 
 class FileContent(BaseModel):

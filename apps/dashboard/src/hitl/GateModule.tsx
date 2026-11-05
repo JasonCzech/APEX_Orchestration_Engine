@@ -212,6 +212,7 @@ export function GateModuleView({
           disabled={disabled}
           compact={compact}
           onEdit={onEdit}
+          threadId={threadId}
         />
       )}
       {payload?.kind === 'human_completion' && <HumanCompletionPanel key={gateDraftSignature(gate)} payload={payload} output={draft.output} disabled={disabled} onChange={output => onEdit({ output })} />}

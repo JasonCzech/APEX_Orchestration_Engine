@@ -354,6 +354,17 @@ async def _probe_cluster_inventory(adapter: Any) -> str:
 
 
 async def _probe_source_control(adapter: Any) -> str:
+    probe = getattr(adapter, "probe", None)
+    if callable(probe):
+        # Multi-tenant hosts (GitHub Enterprise) have no well-known repository
+        # to read, so the adapter authenticates against the host itself.
+        probe_result = probe()
+        if not isawaitable(probe_result):
+            raise RuntimeError("source-control probe returned an invalid result")
+        detail = await probe_result
+        if type(detail) is not str or not detail or len(detail) > 1_024:
+            raise RuntimeError("source-control probe returned an invalid result")
+        return detail
     file = _validated_file_content(
         await adapter.get_file(
             RepoRef(name="connection-probe").model_copy(deep=True),
@@ -1066,6 +1077,13 @@ async def update_connection(
     if (PortKind(conn.kind) is PortKind.EXECUTION_ENGINE and runtime_identity_changed) or (
         PortKind(conn.kind) is PortKind.WORK_TRACKING and any_field_changed
     ):
+        await _protect_durable_references(repo, conn)
+    if (
+        PortKind(conn.kind) is PortKind.SOURCE_CONTROL
+        and changes.get("project_id", conn.project_id) is not None
+        and conn.project_id is None
+    ):
+        # AIFx organizations read through global connections only.
         await _protect_durable_references(repo, conn)
     _validate_connection_target(
         changes.get("base_url", conn.base_url),

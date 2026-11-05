@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import ConnectionConfig, PortKind
 from apex.persistence.models import (
+    AifxOrganization,
     ApexLoadNativeRun,
     ArtifactReference,
     ArtifactUploadIntent,
@@ -388,6 +389,14 @@ class ConnectionsRepository:
             )
             if retained_mutation_id is not None:
                 return "retained work-item idempotency records"
+        if conn.kind == "source_control":
+            organization_id = await self._session.scalar(
+                select(AifxOrganization.id)
+                .where(AifxOrganization.connection_id == conn.id)
+                .limit(1)
+            )
+            if organization_id is not None:
+                return "AIFx organizations"
         return None
 
     async def replace_host_mappings(

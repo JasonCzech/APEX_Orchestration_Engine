@@ -4,6 +4,122 @@
  */
 
 export interface paths {
+    "/v1/admin/aifx/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Application Sources
+         * @description Mappings ordered by APM ID; a page holds the visible rows of ``limit`` mappings.
+         */
+        get: operations["listAifxApplicationSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/aifx/applications/{application_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Application Source */
+        get: operations["getAifxApplicationSource"];
+        /** Put Application Source */
+        put: operations["putAifxApplicationSource"];
+        post?: never;
+        /** Delete Application Source */
+        delete: operations["deleteAifxApplicationSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/aifx/applications/{application_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Application Source
+         * @description Dry run: pin and validate what a launch for this application would read.
+         *
+         *     Send the draft mapping as the body to check it before saving; with no body
+         *     the saved mapping is previewed.
+         */
+        post: operations["previewAifxApplicationSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/aifx/applications/{application_id}/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Suggest Application Source */
+        get: operations["suggestAifxApplicationSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/aifx/organizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Organizations */
+        get: operations["listAifxOrganizations"];
+        put?: never;
+        /** Create Organization */
+        post: operations["createAifxOrganization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/aifx/organizations/{organization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Organization */
+        get: operations["getAifxOrganization"];
+        put?: never;
+        post?: never;
+        /** Delete Organization */
+        delete: operations["deleteAifxOrganization"];
+        options?: never;
+        head?: never;
+        /** Update Organization */
+        patch: operations["updateAifxOrganization"];
+        trace?: never;
+    };
     "/v1/admin/compliance/audit/chain": {
         parameters: {
             query?: never;
@@ -1730,6 +1846,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pipelines/{thread_id}/aifx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pipeline Aifx */
+        get: operations["getPipelineAifx"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/pipelines/{thread_id}/gates/{interrupt_id}/resume": {
         parameters: {
             query?: never;
@@ -2677,6 +2810,98 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** AifxEntry */
+        AifxEntry: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Content */
+            content: string;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Description */
+            description?: string | null;
+            /** Id */
+            id: string;
+            /** Path */
+            path: string;
+            /**
+             * Phases
+             * @default all
+             */
+            phases: "all" | components["schemas"]["Phase"][];
+            /** Repo */
+            repo: string;
+            role: components["schemas"]["AifxRole"];
+            /** Title */
+            title: string;
+            type: components["schemas"]["AifxEntryType"];
+        };
+        /**
+         * AifxEntryType
+         * @enum {string}
+         */
+        AifxEntryType: "rule" | "memory" | "skill" | "context";
+        /** AifxPreview */
+        AifxPreview: {
+            /** Issues */
+            issues: components["schemas"]["PreviewIssue"][];
+            /** Ok */
+            ok: boolean;
+            /** Sources */
+            sources: components["schemas"]["PreviewSource"][];
+            /** Total Chars */
+            total_chars: number;
+        };
+        /**
+         * AifxRole
+         * @enum {string}
+         */
+        AifxRole: "global-rules" | "team-documents" | "application-context" | "environment-context" | "phase-context";
+        /**
+         * AifxSnapshotStatus
+         * @enum {string}
+         */
+        AifxSnapshotStatus: "pinned" | "degraded";
+        /**
+         * AifxSnapshotV1
+         * @description Everything AIFx contributed to one run, frozen at launch.
+         */
+        AifxSnapshotV1: {
+            /** Entries */
+            entries?: components["schemas"]["AifxEntry"][];
+            /** Issues */
+            issues?: string[];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Snapshot Sha256 */
+            snapshot_sha256: string;
+            /** Sources */
+            sources?: components["schemas"]["AifxSource"][];
+            /** @default pinned */
+            status: components["schemas"]["AifxSnapshotStatus"];
+        };
+        /** AifxSource */
+        AifxSource: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Application Name */
+            application_name?: string | null;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Ref */
+            ref: string;
+            /** Repo */
+            repo: string;
+            role: components["schemas"]["AifxRole"];
+            /** Web Url */
+            web_url?: string | null;
+        };
         /** AnalysisConnectionChoice */
         AnalysisConnectionChoice: {
             /** Id */
@@ -2719,6 +2944,58 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** ApplicationSourceOut */
+        ApplicationSourceOut: {
+            /** Acb Repo */
+            acb_repo: string | null;
+            /** Apm Id */
+            apm_id: string;
+            /** Application Id */
+            application_id: string;
+            /** Application Name */
+            application_name: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Organization Id */
+            organization_id: string;
+            /** Ref */
+            ref: string | null;
+            /** Team Documents Repo */
+            team_documents_repo: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** ApplicationSourceSuggestion */
+        ApplicationSourceSuggestion: {
+            /** Acb Repo */
+            acb_repo: string | null;
+            /** Apm Id */
+            apm_id: string;
+            /** Organization Id */
+            organization_id: string;
+            /** Ref */
+            ref: string;
+            /** Team Documents Repo */
+            team_documents_repo: string | null;
+        };
+        /** ApplicationSourceWrite */
+        ApplicationSourceWrite: {
+            /** Acb Repo */
+            acb_repo?: string | null;
+            /** Apm Id */
+            apm_id: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Organization Id */
+            organization_id: string;
+            /** Ref */
+            ref?: string | null;
+            /** Team Documents Repo */
+            team_documents_repo?: string | null;
         };
         /** ApplicationUpdate */
         ApplicationUpdate: {
@@ -4956,6 +5233,90 @@ export interface components {
             /** Version Ids */
             version_ids?: string[];
         };
+        /** OrganizationOut */
+        OrganizationOut: {
+            /** Acb Repo Pattern */
+            acb_repo_pattern: string | null;
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Default Ref */
+            default_ref: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Ghe Owner */
+            ghe_owner: string;
+            /** Global Rules Repo */
+            global_rules_repo: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Team Documents Repo Pattern */
+            team_documents_repo_pattern: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** OrganizationUpdate */
+        OrganizationUpdate: {
+            /** Acb Repo Pattern */
+            acb_repo_pattern?: string | null;
+            /** Connection Id */
+            connection_id?: string | null;
+            /** Default Ref */
+            default_ref?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Ghe Owner */
+            ghe_owner?: string | null;
+            /** Global Rules Repo */
+            global_rules_repo?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Team Documents Repo Pattern */
+            team_documents_repo_pattern?: string | null;
+        };
+        /** OrganizationWrite */
+        OrganizationWrite: {
+            /**
+             * Acb Repo Pattern
+             * @default {apm}-acb
+             */
+            acb_repo_pattern: string | null;
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Default Ref
+             * @default main
+             */
+            default_ref: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Ghe Owner */
+            ghe_owner: string;
+            /**
+             * Global Rules Repo
+             * @default global-rules
+             */
+            global_rules_repo: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Team Documents Repo Pattern
+             * @default {apm}-team-documents
+             */
+            team_documents_repo_pattern: string | null;
+        };
         /** Page */
         Page: {
             /**
@@ -5051,6 +5412,18 @@ export interface components {
              * @default false
              */
             truncated: boolean;
+        };
+        /**
+         * PipelineAifx
+         * @description AIFx content pinned at launch; ``none`` when no application was onboarded.
+         */
+        PipelineAifx: {
+            snapshot?: components["schemas"]["AifxSnapshotV1"] | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "none" | "pinned" | "degraded";
         };
         /** PipelineDetail */
         PipelineDetail: {
@@ -5413,6 +5786,49 @@ export interface components {
             preset_id: string;
             /** Tests */
             tests: number;
+        };
+        /** PreviewEntry */
+        PreviewEntry: {
+            /** Chars */
+            chars: number;
+            /** Id */
+            id: string;
+            /** Path */
+            path: string;
+            /** Phases */
+            phases: components["schemas"]["Phase"][] | string;
+            /** Title */
+            title: string;
+            type: components["schemas"]["AifxEntryType"];
+        };
+        /** PreviewIssue */
+        PreviewIssue: {
+            /** Lines */
+            lines?: number[];
+            /** Message */
+            message: string;
+            /** Path */
+            path?: string | null;
+            /** Repo */
+            repo: string;
+        };
+        /** PreviewSource */
+        PreviewSource: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Commit Sha */
+            commit_sha?: string | null;
+            /** Entries */
+            entries?: components["schemas"]["PreviewEntry"][];
+            /** Ok */
+            ok: boolean;
+            /** Ref */
+            ref: string;
+            /** Repo */
+            repo: string;
+            role: components["schemas"]["AifxRole"];
+            /** Web Url */
+            web_url?: string | null;
         };
         /** PriceGenerationResponse */
         PriceGenerationResponse: {
@@ -6757,6 +7173,358 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listAifxApplicationSources: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationSourceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAifxApplicationSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationSourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    putAifxApplicationSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationSourceWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationSourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteAifxApplicationSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    previewAifxApplicationSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ApplicationSourceWrite"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AifxPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggestAifxApplicationSource: {
+        parameters: {
+            query: {
+                organization_id: string;
+                apm_id: string;
+            };
+            header?: never;
+            path: {
+                /** @description Application id */
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationSourceSuggestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listAifxOrganizations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationOut"][];
+                };
+            };
+        };
+    };
+    createAifxOrganization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrganizationWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAifxOrganization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description AIFx organization id */
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteAifxOrganization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description AIFx organization id */
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    updateAifxOrganization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description AIFx organization id */
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrganizationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     verifyAuditChain: {
         parameters: {
             query?: {
@@ -11055,6 +11823,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PipelineActors"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getPipelineAifx: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineAifx"];
                 };
             };
             /** @description Validation Error */

@@ -455,6 +455,62 @@ class Connection(Base):
     )
 
 
+class AifxOrganization(Base):
+    """An organization onboarded to AIFx Context Services on GitHub Enterprise.
+
+    It names the (global) source-control connection, the GHE owner whose
+    repositories hold AIFx content, its global-rules repository, and the
+    naming conventions that pre-fill each application's repositories.
+    """
+
+    __tablename__ = "aifx_organizations"
+    __table_args__ = (UniqueConstraint("name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    ghe_owner: Mapped[str] = mapped_column(String(100))
+    global_rules_repo: Mapped[str | None] = mapped_column(String(100))
+    team_documents_repo_pattern: Mapped[str | None] = mapped_column(String(120))
+    acb_repo_pattern: Mapped[str | None] = mapped_column(String(120))
+    default_ref: Mapped[str] = mapped_column(String(255), default="main", server_default="main")
+    enabled: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AifxApplicationSource(Base):
+    """An application's AIFx repositories: its APM ID, team documents and ACB.
+
+    Repository names are confirmed by an admin; the organization's conventions
+    only suggest them. A null ``ref`` follows the organization's default ref.
+    """
+
+    __tablename__ = "aifx_application_sources"
+    __table_args__ = (
+        UniqueConstraint("apm_id"),
+        Index("ix_aifx_application_sources_organization_id", "organization_id"),
+    )
+
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True
+    )
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("aifx_organizations.id", ondelete="RESTRICT")
+    )
+    apm_id: Mapped[str] = mapped_column(String(64))
+    team_documents_repo: Mapped[str | None] = mapped_column(String(100))
+    acb_repo: Mapped[str | None] = mapped_column(String(100))
+    ref: Mapped[str | None] = mapped_column(String(255))
+    enabled: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class HostMapping(Base):
     __tablename__ = "host_mappings"
     __table_args__ = (Index("ix_host_mappings_connection_id", "connection_id"),)

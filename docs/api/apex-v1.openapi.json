@@ -1249,6 +1249,307 @@
         "title": "AgentUsageHistoryResponse",
         "type": "object"
       },
+      "AifxEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "content": {
+            "maxLength": 100000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Content",
+            "type": "string"
+          },
+          "content_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Path",
+            "type": "string"
+          },
+          "phases": {
+            "anyOf": [
+              {
+                "const": "all",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Phase"
+                },
+                "type": "array"
+              }
+            ],
+            "default": "all",
+            "title": "Phases"
+          },
+          "repo": {
+            "maxLength": 201,
+            "minLength": 3,
+            "pattern": "^[^\\x00]*$",
+            "title": "Repo",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AifxRole"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AifxEntryType"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "repo",
+          "type",
+          "title",
+          "path",
+          "content_sha256",
+          "content"
+        ],
+        "title": "AifxEntry",
+        "type": "object"
+      },
+      "AifxEntryType": {
+        "enum": [
+          "rule",
+          "memory",
+          "skill",
+          "context"
+        ],
+        "title": "AifxEntryType",
+        "type": "string"
+      },
+      "AifxPreview": {
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "total_chars": {
+            "title": "Total Chars",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "sources",
+          "issues",
+          "total_chars"
+        ],
+        "title": "AifxPreview",
+        "type": "object"
+      },
+      "AifxRole": {
+        "enum": [
+          "global-rules",
+          "team-documents",
+          "application-context",
+          "environment-context",
+          "phase-context"
+        ],
+        "title": "AifxRole",
+        "type": "string"
+      },
+      "AifxSnapshotStatus": {
+        "enum": [
+          "pinned",
+          "degraded"
+        ],
+        "title": "AifxSnapshotStatus",
+        "type": "string"
+      },
+      "AifxSnapshotV1": {
+        "additionalProperties": false,
+        "description": "Everything AIFx contributed to one run, frozen at launch.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/AifxEntry"
+            },
+            "maxItems": 400,
+            "title": "Entries",
+            "type": "array"
+          },
+          "issues": {
+            "items": {
+              "maxLength": 500,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Issues",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "snapshot_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Snapshot Sha256",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/AifxSource"
+            },
+            "maxItems": 16,
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AifxSnapshotStatus",
+            "default": "pinned"
+          }
+        },
+        "required": [
+          "snapshot_sha256"
+        ],
+        "title": "AifxSnapshotV1",
+        "type": "object"
+      },
+      "AifxSource": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "application_name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Name"
+          },
+          "commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Commit Sha",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "ref": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Ref",
+            "type": "string"
+          },
+          "repo": {
+            "maxLength": 201,
+            "minLength": 3,
+            "pattern": "^[^\\x00]*$",
+            "title": "Repo",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AifxRole"
+          },
+          "web_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Web Url"
+          }
+        },
+        "required": [
+          "role",
+          "repo",
+          "ref",
+          "commit_sha",
+          "manifest_sha256"
+        ],
+        "title": "AifxSource",
+        "type": "object"
+      },
       "AnalysisConnectionChoice": {
         "properties": {
           "id": {
@@ -1381,6 +1682,201 @@
           "updated_at"
         ],
         "title": "ApplicationOut",
+        "type": "object"
+      },
+      "ApplicationSourceOut": {
+        "properties": {
+          "acb_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acb Repo"
+          },
+          "apm_id": {
+            "title": "Apm Id",
+            "type": "string"
+          },
+          "application_id": {
+            "title": "Application Id",
+            "type": "string"
+          },
+          "application_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Name"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "organization_id": {
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "team_documents_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Documents Repo"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "application_id",
+          "application_name",
+          "organization_id",
+          "apm_id",
+          "team_documents_repo",
+          "acb_repo",
+          "ref",
+          "enabled"
+        ],
+        "title": "ApplicationSourceOut",
+        "type": "object"
+      },
+      "ApplicationSourceSuggestion": {
+        "properties": {
+          "acb_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acb Repo"
+          },
+          "apm_id": {
+            "title": "Apm Id",
+            "type": "string"
+          },
+          "organization_id": {
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "team_documents_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Documents Repo"
+          }
+        },
+        "required": [
+          "organization_id",
+          "apm_id",
+          "team_documents_repo",
+          "acb_repo",
+          "ref"
+        ],
+        "title": "ApplicationSourceSuggestion",
+        "type": "object"
+      },
+      "ApplicationSourceWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "acb_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acb Repo"
+          },
+          "apm_id": {
+            "title": "Apm Id",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "organization_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "team_documents_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Documents Repo"
+          }
+        },
+        "required": [
+          "organization_id",
+          "apm_id"
+        ],
+        "title": "ApplicationSourceWrite",
         "type": "object"
       },
       "ApplicationUpdate": {
@@ -7468,6 +7964,267 @@
         "title": "NextCycleRequest",
         "type": "object"
       },
+      "OrganizationOut": {
+        "properties": {
+          "acb_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acb Repo Pattern"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "default_ref": {
+            "title": "Default Ref",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "ghe_owner": {
+            "title": "Ghe Owner",
+            "type": "string"
+          },
+          "global_rules_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Rules Repo"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "team_documents_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Documents Repo Pattern"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "connection_id",
+          "ghe_owner",
+          "global_rules_repo",
+          "team_documents_repo_pattern",
+          "acb_repo_pattern",
+          "default_ref",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OrganizationOut",
+        "type": "object"
+      },
+      "OrganizationUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "acb_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acb Repo Pattern"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "default_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Ref"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "ghe_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ghe Owner"
+          },
+          "global_rules_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Rules Repo"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "team_documents_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Documents Repo Pattern"
+          }
+        },
+        "title": "OrganizationUpdate",
+        "type": "object"
+      },
+      "OrganizationWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "acb_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "{apm}-acb",
+            "title": "Acb Repo Pattern"
+          },
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "default_ref": {
+            "default": "main",
+            "title": "Default Ref",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "ghe_owner": {
+            "title": "Ghe Owner",
+            "type": "string"
+          },
+          "global_rules_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "global-rules",
+            "title": "Global Rules Repo"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "team_documents_repo_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "{apm}-team-documents",
+            "title": "Team Documents Repo Pattern"
+          }
+        },
+        "required": [
+          "name",
+          "connection_id",
+          "ghe_owner"
+        ],
+        "title": "OrganizationWrite",
+        "type": "object"
+      },
       "Page": {
         "properties": {
           "limit": {
@@ -7736,6 +8493,35 @@
           "names"
         ],
         "title": "PipelineActors",
+        "type": "object"
+      },
+      "PipelineAifx": {
+        "description": "AIFx content pinned at launch; ``none`` when no application was onboarded.",
+        "properties": {
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AifxSnapshotV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "none",
+              "pinned",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PipelineAifx",
         "type": "object"
       },
       "PipelineDetail": {
@@ -9000,6 +9786,156 @@
           "last_used_at"
         ],
         "title": "PresetUsage",
+        "type": "object"
+      },
+      "PreviewEntry": {
+        "properties": {
+          "chars": {
+            "title": "Chars",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "phases": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Phase"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Phases"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AifxEntryType"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "title",
+          "path",
+          "phases",
+          "chars"
+        ],
+        "title": "PreviewEntry",
+        "type": "object"
+      },
+      "PreviewIssue": {
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "message"
+        ],
+        "title": "PreviewIssue",
+        "type": "object"
+      },
+      "PreviewSource": {
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "commit_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Sha"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AifxRole"
+          },
+          "web_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Web Url"
+          }
+        },
+        "required": [
+          "role",
+          "repo",
+          "ref",
+          "ok"
+        ],
+        "title": "PreviewSource",
         "type": "object"
       },
       "PriceGenerationResponse": {
@@ -13298,6 +14234,548 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/admin/aifx/applications": {
+      "get": {
+        "description": "Mappings ordered by APM ID; a page holds the visible rows of ``limit`` mappings.",
+        "operationId": "listAifxApplicationSources",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApplicationSourceOut"
+                  },
+                  "title": "Response Listaifxapplicationsources",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Application Sources",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
+    "/v1/admin/aifx/applications/{application_id}": {
+      "delete": {
+        "operationId": "deleteAifxApplicationSource",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Application Source",
+        "tags": [
+          "aifx"
+        ]
+      },
+      "get": {
+        "operationId": "getAifxApplicationSource",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationSourceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Application Source",
+        "tags": [
+          "aifx"
+        ]
+      },
+      "put": {
+        "operationId": "putAifxApplicationSource",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplicationSourceWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationSourceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Application Source",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
+    "/v1/admin/aifx/applications/{application_id}/preview": {
+      "post": {
+        "description": "Dry run: pin and validate what a launch for this application would read.\n\nSend the draft mapping as the body to check it before saving; with no body\nthe saved mapping is previewed.",
+        "operationId": "previewAifxApplicationSource",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Application Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationSourceWrite"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AifxPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Application Source",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
+    "/v1/admin/aifx/applications/{application_id}/suggest": {
+      "get": {
+        "operationId": "suggestAifxApplicationSource",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Application Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "apm_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Apm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationSourceSuggestion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Application Source",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
+    "/v1/admin/aifx/organizations": {
+      "get": {
+        "operationId": "listAifxOrganizations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationOut"
+                  },
+                  "title": "Response Listaifxorganizations",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Organizations",
+        "tags": [
+          "aifx"
+        ]
+      },
+      "post": {
+        "operationId": "createAifxOrganization",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Organization",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
+    "/v1/admin/aifx/organizations/{organization_id}": {
+      "delete": {
+        "operationId": "deleteAifxOrganization",
+        "parameters": [
+          {
+            "description": "AIFx organization id",
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "description": "AIFx organization id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Organization",
+        "tags": [
+          "aifx"
+        ]
+      },
+      "get": {
+        "operationId": "getAifxOrganization",
+        "parameters": [
+          {
+            "description": "AIFx organization id",
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "description": "AIFx organization id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Organization",
+        "tags": [
+          "aifx"
+        ]
+      },
+      "patch": {
+        "operationId": "updateAifxOrganization",
+        "parameters": [
+          {
+            "description": "AIFx organization id",
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "description": "AIFx organization id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Organization",
+        "tags": [
+          "aifx"
+        ]
+      }
+    },
     "/v1/admin/compliance/audit/chain": {
       "get": {
         "operationId": "verifyAuditChain",
@@ -21783,6 +23261,53 @@
           }
         },
         "summary": "Get Pipeline Actors",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
+    "/v1/pipelines/{thread_id}/aifx": {
+      "get": {
+        "operationId": "getPipelineAifx",
+        "parameters": [
+          {
+            "description": "Pipeline thread id",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineAifx"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Aifx",
         "tags": [
           "pipelines"
         ]

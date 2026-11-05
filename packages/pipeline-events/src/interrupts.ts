@@ -80,6 +80,39 @@ export const ContextPacketPreviewSchema = z
   .passthrough();
 export type ContextPacketPreview = z.infer<typeof ContextPacketPreviewSchema>;
 
+/** AIFx Context Services pinned for the run: sources at a commit, this phase's
+ * entry titles. Content is never in the gate; read it from GET /v1/pipelines/{id}/aifx. */
+export const AifxSourcePreviewSchema = z.object({
+  role: z.enum(["global-rules", "team-documents", "application-context"]),
+  repo: z.string(),
+  ref: z.string(),
+  commit_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  web_url: z.string().nullable(),
+  application_name: z.string().nullable(),
+});
+export type AifxSourcePreview = z.infer<typeof AifxSourcePreviewSchema>;
+
+export const AifxEntryPreviewSchema = z.object({
+  id: z.string(),
+  type: z.enum(["rule", "memory", "skill", "context"]),
+  title: z.string(),
+  repo: z.string(),
+  path: z.string(),
+});
+export type AifxEntryPreview = z.infer<typeof AifxEntryPreviewSchema>;
+
+export const AifxGatePreviewSchema = z.object({
+  status: z.enum(["pinned", "degraded"]),
+  snapshot_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sources: z.array(AifxSourcePreviewSchema),
+  entries: z.array(AifxEntryPreviewSchema),
+  issues: z.array(z.string()),
+  /** Totals behind the capped `entries` / `issues` lists (absent on older gates). */
+  entry_count: z.number().int().nonnegative().optional(),
+  issue_count: z.number().int().nonnegative().optional(),
+});
+export type AifxGatePreview = z.infer<typeof AifxGatePreviewSchema>;
+
 export const PromptReviewPayloadSchema = z
   .object({
     schema_version: schemaVersion,
@@ -93,6 +126,8 @@ export const PromptReviewPayloadSchema = z
     actions: z.array(z.string()),
     /** Present only when a prior resume was rejected (re-interrupt). */
     error: z.string().optional(),
+    /** Present only when the run pinned AIFx Context Services content. */
+    aifx: AifxGatePreviewSchema.optional(),
   })
   .passthrough();
 export type PromptReviewPayload = z.infer<typeof PromptReviewPayloadSchema>;

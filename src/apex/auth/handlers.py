@@ -81,6 +81,7 @@ _SYSTEM_ASSISTANT_GRAPHS = {
 _ASSISTANT_SERVER_OWNED_CONFIG = frozenset(
     {
         "prompt_manifest",
+        "aifx_snapshot",
         "test_scope_snapshot",
         "environment_target",
         "environment_target_version",
@@ -2324,6 +2325,11 @@ async def on_threads_create_run(
         raise Auth.exceptions.HTTPException(
             status_code=422, detail="prompt_manifest is server-owned"
         )
+    if not trusted_loopback and (
+        run_configurable.get("aifx_snapshot") is not None
+        or supplied_context.get("aifx_snapshot") is not None
+    ):
+        raise Auth.exceptions.HTTPException(status_code=422, detail="aifx_snapshot is server-owned")
 
     if (
         not trusted_loopback
@@ -2424,6 +2430,27 @@ async def on_threads_create_run(
     except Exception:
         raise HTTPException(503, "Model availability cannot be checked; retry later") from None
     if (
+        not trusted_loopback
+        and not continuing
+        and assistant_graph_id not in {"context", "playground"}
+        and runtime_config.get("aifx_snapshot") is None
+    ):
+        from apex.services.aifx_context import AifxUnavailableError, prepare_aifx_snapshot
+
+        try:
+            await prepare_aifx_snapshot(runtime_config)
+        except AifxUnavailableError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except Exception:
+            import structlog
+
+            structlog.get_logger(__name__).exception(
+                "aifx_snapshot_preparation_failed", consumer_id=identity.consumer_id
+            )
+            raise HTTPException(503, "AIFx context could not be pinned; retry later") from None
+        if isinstance(run_args.get("context"), dict):
+            run_args["context"]["aifx_snapshot"] = runtime_config.get("aifx_snapshot")
+    if (
         runtime_config.get("prompt_selections") is not None
         and runtime_config.get("prompt_manifest") is None
     ):
@@ -2442,6 +2469,17 @@ async def on_threads_create_run(
             raise
         if isinstance(run_args.get("context"), dict):
             run_args["context"]["prompt_manifest"] = runtime_config["prompt_manifest"]
+    if (
+        not trusted_loopback
+        and not continuing
+        and assistant_graph_id not in {"context", "playground"}
+    ):
+        from apex.services.aifx_context import AifxUnavailableError, check_configurable_size
+
+        try:
+            check_configurable_size(runtime_config)
+        except AifxUnavailableError as exc:
+            raise HTTPException(422, str(exc)) from None
     runtime_config["model_by_phase"] = resolved_models
     if isinstance(run_args.get("context"), dict):
         run_args["context"]["model_by_phase"] = resolved_models
@@ -2626,6 +2664,13 @@ async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.t
     ):
         raise Auth.exceptions.HTTPException(
             status_code=422, detail="prompt_manifest cannot be stored in an assistant"
+        )
+    if (
+        assistant_config.get("aifx_snapshot") is not None
+        or assistant_context.get("aifx_snapshot") is not None
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="aifx_snapshot cannot be stored in an assistant"
         )
     for field, label in (("graph_id", "assistant graph_id"), ("name", "assistant name")):
         _validate_persisted_text_field(

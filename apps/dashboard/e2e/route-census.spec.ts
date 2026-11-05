@@ -39,6 +39,7 @@ const routes = [
   ['/apex-load', 'APEX Load'],
   ['/admin/connections', 'Connections'],
   ['/admin/connections/conn-jira', 'Connection'],
+  ['/admin/aifx', 'AIFx Context Services'],
   ['/admin/consumers', 'API consumers'],
   ['/admin/consumers/cons-admin', 'Consumer'],
   ['/admin/system', 'System status'],

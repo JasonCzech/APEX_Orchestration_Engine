@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -65,6 +66,91 @@ def _text(value: Any, max_chars: int, *, allow_empty: bool = True) -> str | None
     if type(value) is not str or len(value) > max_chars or (not allow_empty and not value):
         return None
     return bounded_diagnostic(value, max_chars=max(1, len(value)))
+
+
+_SHA1_RE = re.compile(r"[0-9a-f]{40}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_AIFX_ROLES = frozenset({"global-rules", "team-documents", "application-context"})
+_AIFX_ENTRY_TYPES = frozenset({"rule", "memory", "skill", "context"})
+
+
+def _public_aifx(value: Any) -> JsonDict | None:
+    """Project prompt-gate AIFx metadata (sources and titles only) or drop it whole."""
+
+    if type(value) is not dict:
+        return None
+    status = value.get("status")
+    digest = value.get("snapshot_sha256")
+    sources = value.get("sources")
+    entries = value.get("entries")
+    issues = value.get("issues")
+    if (
+        status not in {"pinned", "degraded"}
+        or type(digest) is not str
+        or _SHA256_RE.fullmatch(digest) is None
+        or type(sources) is not list
+        or len(sources) > 16
+        or type(entries) is not list
+        or len(entries) > 64
+        or type(issues) is not list
+        or len(issues) > 8
+    ):
+        return None
+    projected_sources: list[JsonDict] = []
+    for raw in sources:
+        if type(raw) is not dict:
+            return None
+        commit = raw.get("commit_sha")
+        source = {
+            "role": raw.get("role") if raw.get("role") in _AIFX_ROLES else None,
+            "repo": _text(raw.get("repo"), 201, allow_empty=False),
+            "ref": _text(raw.get("ref"), 255, allow_empty=False),
+            "commit_sha": commit if type(commit) is str and _SHA1_RE.fullmatch(commit) else None,
+        }
+        if any(item is None for item in source.values()):
+            return None
+        web_url = raw.get("web_url")
+        if web_url is not None:
+            web_url = _text(web_url, 2_048, allow_empty=False)
+            if web_url is None or urlsplit(web_url).scheme not in {"http", "https"}:
+                return None
+        name = raw.get("application_name")
+        if name is not None and (name := _text(name, 255, allow_empty=False)) is None:
+            return None
+        projected_sources.append({**source, "web_url": web_url, "application_name": name})
+    projected_entries: list[JsonDict] = []
+    for raw in entries:
+        if type(raw) is not dict:
+            return None
+        entry = {
+            "id": _text(raw.get("id"), 64, allow_empty=False),
+            "type": raw.get("type") if raw.get("type") in _AIFX_ENTRY_TYPES else None,
+            "title": _text(raw.get("title"), 200, allow_empty=False),
+            "repo": _text(raw.get("repo"), 201, allow_empty=False),
+            "path": _text(raw.get("path"), 1_024, allow_empty=False),
+        }
+        if any(item is None for item in entry.values()):
+            return None
+        projected_entries.append(entry)
+    projected_issues = [item for raw in issues if (item := _text(raw, 500)) is not None]
+    if len(projected_issues) != len(issues):
+        return None
+    projected: JsonDict = {
+        "status": status,
+        "snapshot_sha256": digest,
+        "sources": projected_sources,
+        "entries": projected_entries,
+        "issues": projected_issues,
+    }
+    # Totals behind the (capped) lists; older gates omit them.
+    for key, shown in (("entry_count", projected_entries), ("issue_count", projected_issues)):
+        total = value.get(key)
+        if total is None:
+            continue
+        if type(total) is not int or not len(shown) <= total <= 10_000:
+            return None
+        projected[key] = total
+    return projected
 
 
 def public_text(value: Any, max_chars: int, *, allow_empty: bool = True) -> str | None:
@@ -423,6 +509,16 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     transcript = _public_artifact(value.get("transcript_ref"))
     if transcript is not None:
         result["transcript_ref"] = transcript
+    aifx_digest = value.get("aifx_snapshot_sha256")
+    if type(aifx_digest) is str and _SHA256_RE.fullmatch(aifx_digest):
+        result["aifx_snapshot_sha256"] = aifx_digest
+    aifx_entries = value.get("aifx_entry_ids")
+    if type(aifx_entries) is list and len(aifx_entries) <= 256:
+        projected_entries = [
+            item for raw in aifx_entries if (item := _text(raw, 300, allow_empty=False)) is not None
+        ]
+        if len(projected_entries) == len(aifx_entries):
+            result["aifx_entry_ids"] = projected_entries
 
     artifact_ids = value.get("artifact_ids")
     if type(artifact_ids) is list and len(artifact_ids) <= 256:
@@ -1229,6 +1325,9 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
         ]
         result["tools"] = [_text(raw, 256) for raw in payload["tools"]]
         result["editable"] = payload["editable"]
+        aifx = _public_aifx(payload.get("aifx"))
+        if aifx is not None:
+            result["aifx"] = aifx
     elif kind == "phase_review":
         result["actions"] = _public_actions(payload.get("actions"), _PHASE_ACTIONS)
         result["summary"] = (

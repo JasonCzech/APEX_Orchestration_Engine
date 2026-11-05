@@ -17,6 +17,7 @@ def register_builtin_adapters() -> None:
     import apex.adapters.apex_load  # noqa: F401  (registers the "apex_load" execution-engine provider)
     import apex.adapters.confluence  # noqa: F401
     import apex.adapters.elk  # noqa: F401  (registers the "elasticsearch" log-search provider)
+    import apex.adapters.github_enterprise  # noqa: F401  (registers the "github_enterprise" source-control provider)
     import apex.adapters.jira  # noqa: F401  (registers the "jira" work-tracking provider)
     import apex.adapters.jira_align  # noqa: F401  (registers the "jira_align" work-tracking provider)
     import apex.adapters.k8s  # noqa: F401  (registers the "kubernetes" cluster-inventory provider)

@@ -176,6 +176,33 @@ async def test_source_control_returns_fixture_content() -> None:
     assert "checkout-baseline" in content.text
 
 
+async def test_source_control_resolves_deterministic_commits() -> None:
+    adapter = StubSourceControlAdapter()
+    repo = RepoRef(owner="aifx", name="global-rules")
+    sha = await adapter.resolve_commit(repo, "main")
+    assert len(sha) == 40 and set(sha) <= set("0123456789abcdef")
+    assert await adapter.resolve_commit(repo, "main") == sha
+    assert await adapter.resolve_commit(repo, "release") != sha
+    assert await adapter.resolve_commit(repo, sha) == sha
+
+
+@pytest.mark.parametrize(
+    ("name", "role"),
+    [
+        ("global-rules", "global-rules"),
+        ("apm1234-team-documents", "team-documents"),
+        ("apm1234-acb", "application-context"),
+    ],
+)
+async def test_source_control_serves_aifx_fixture_repositories(name: str, role: str) -> None:
+    adapter = StubSourceControlAdapter()
+    manifest = await adapter.get_file(RepoRef(owner="aifx", name=name), "aifx.yaml")
+    assert f"role: {role}" in manifest.text
+    assert manifest.media_type == "application/yaml"
+    with pytest.raises(KeyError):
+        await adapter.get_file(RepoRef(owner="aifx", name=name), "rules/missing.md")
+
+
 # --- secrets ----------------------------------------------------------------------
 
 

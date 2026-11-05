@@ -17,7 +17,7 @@ export function getDevSystemInfo(): SystemInfo {
       name: 'APEX Orchestration Engine',
       version: 'telecom-perf-demo-4.0',
       environment: 'offline-demo',
-      features: { engines: true, documents: true, dummy_data: true },
+      features: { engines: true, documents: true, dummy_data: true, aifx: true },
       limits: { max_test_participants: 32, max_context_packets: 32 },
       consumer: {
         name: 'Demo Presenter',
@@ -30,7 +30,7 @@ export function getDevSystemInfo(): SystemInfo {
     name: 'APEX Orchestration Engine',
     version: 'dev',
     environment: 'development',
-    features: { engines: true, documents: true },
+    features: { engines: true, documents: true, aifx: true },
     limits: { max_test_participants: 32, max_context_packets: 32 },
     consumer: {
       name: 'Dev Admin',

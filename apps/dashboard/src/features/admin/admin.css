@@ -576,3 +576,44 @@
   color: var(--text-secondary);
   font-size: 0.82rem;
 }
+
+/* AIFx Context Services onboarding */
+
+.adm-aifx-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.adm-aifx-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.adm-aifx-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.adm-aifx-source-title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.adm-aifx-entries,
+.adm-aifx-issues {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}

@@ -32,6 +32,19 @@ describe('providerCatalog', () => {
     expect(providerSpec('work_tracking', 'JIRA')?.id).toBe('jira')
   })
 
+  it('offers GitHub Enterprise for source control with a private-key secret reference', () => {
+    expect(providersForKind('source_control').map((spec) => spec.id)).toEqual([
+      'github_enterprise',
+      'stub',
+    ])
+    const spec = providerSpec('source_control', 'github_enterprise')!
+    expect(spec.optionFields.filter((field) => field.required).map((field) => field.key)).toEqual([
+      'base_url',
+      'app_id',
+    ])
+    expect(spec.secretRef?.placeholder).toMatch(/^env:APEX_INTEGRATION_/)
+  })
+
   it('round-trips known options and preserves the ones it does not know', () => {
     const stored = {
       base_url: 'https://acme.atlassian.net',

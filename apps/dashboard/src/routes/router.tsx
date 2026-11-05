@@ -208,6 +208,11 @@ export const appRoutes: RouteObject[] = [
             lazy: lazyPage(admin, 'ConsumerDetailPage'),
           },
           {
+            path: 'admin/aifx',
+            handle: handle('AIFx Context Services'),
+            lazy: lazyPage(admin, 'AifxPage'),
+          },
+          {
             path: 'admin/system',
             handle: handle('System status'),
             lazy: lazyPage(admin, 'AdminSystemPage'),

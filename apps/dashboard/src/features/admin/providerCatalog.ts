@@ -156,8 +156,37 @@ const STUB: ProviderSpec = {
   optionFields: [],
 }
 
+const GITHUB_ENTERPRISE: ProviderSpec = {
+  id: 'github_enterprise',
+  label: 'GitHub Enterprise (GitHub App)',
+  optionFields: [
+    {
+      key: 'base_url',
+      label: 'API URL',
+      required: true,
+      input: 'text',
+      placeholder: 'https://github.example.com/api/v3',
+      help: 'GitHub Enterprise Server REST root (ends in /api/v3), or https://api.github.com',
+      mirrorsBaseUrl: true,
+    },
+    {
+      key: 'app_id',
+      label: 'GitHub App ID',
+      required: true,
+      input: 'text',
+      placeholder: '12345',
+      help: 'Numeric ID of the read-only GitHub App installed on the AIFx organizations',
+    },
+  ],
+  secretRef: {
+    placeholder: 'env:APEX_INTEGRATION_GHE_APP_PRIVATE_KEY',
+    help: "The GitHub App's PEM private key; it mints short-lived, contents:read installation tokens",
+  },
+}
+
 export const PROVIDER_CATALOG: Partial<Record<PortKind, readonly ProviderSpec[]>> = {
   analysis: ['lra_engine', 'perfreportforge', 'other'].map(id => ({ id, label: ({ lra_engine: 'LRA Engine', perfreportforge: 'PerfReportForge', other: 'Other analysis service' } as Record<string, string>)[id]!, optionFields: [{ key: 'base_url', label: 'Analysis service URL', required: true, input: 'text' as const, mirrorsBaseUrl: true, help: 'Service must implement the APEX analysis v1 contract.' }], secretRef: { placeholder: 'env://ANALYSIS_API_TOKEN', help: 'Managed bearer token for the analysis service.' } })),
+  source_control: [GITHUB_ENTERPRISE, STUB],
   work_tracking: [JIRA, JIRA_ALIGN, STUB],
 }
 

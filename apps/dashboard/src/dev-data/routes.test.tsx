@@ -69,13 +69,19 @@ describe('dev-data route smoke', () => {
     ['/analytics', 'Agents / runs'],
     ['/apex-load', 'IBM MQ backlog recovery'],
     ['/admin/connections', 'Jira Align Portfolio'],
+    ['/admin/aifx', 'Consumer & Mobility'],
     ['/admin/consumers', 'Nightly Certification'],
     ['/admin/system', 'offline-demo'],
   ])('renders %s from dummy data', async (path, expectedText) => {
     const user = userEvent.setup()
+    const authState = authenticatedState()
+    // Demo sign-in (devAuth) and the dev-data system response both report AIFx enabled.
+    if (authState.status === 'authenticated' && path === '/admin/aifx') {
+      authState.systemInfo = { ...authState.systemInfo, features: { ...authState.systemInfo.features, aifx: true } }
+    }
     renderApp({
       initialEntries: [path],
-      authState: authenticatedState(),
+      authState,
       // This route specifically verifies the dev-data system response. Other
       // smoke routes retain the static session seed and avoid unrelated IO.
       seedSystemInfo: path !== '/admin/system',
@@ -117,6 +123,7 @@ describe('dev-data route smoke', () => {
     ['/apex-load', 'APEX Load'],
     ['/admin/connections', 'Connections'],
     ['/admin/connections/conn-align', 'Connection'],
+    ['/admin/aifx', 'AIFx Context Services'],
     ['/admin/consumers', 'API consumers'],
     ['/admin/consumers/cons-ci', 'Consumer'],
     ['/admin/system', 'System status'],

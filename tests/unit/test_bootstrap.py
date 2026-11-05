@@ -5,7 +5,6 @@ tests/integration/test_bootstrap_apply.py; here we cover everything that needs
 no database.
 """
 
-import builtins
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -338,28 +337,16 @@ def test_bootstrap_loader_rejects_yaml_aliases_and_duplicate_keys(tmp_path: Path
         _load_document(str(duplicate_path))
 
 
-def test_bootstrap_loader_detaches_missing_yaml_dependency(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_loader_rejects_yaml_aliases_without_chaining(tmp_path: Path) -> None:
+    # PyYAML is a declared runtime dependency; the loader is the shared
+    # hardened one (apex.domain.safe_yaml), which refuses alias expansion.
     path = tmp_path / "bootstrap.yaml"
-    path.write_text("admin: null\n")
-    canary = "missing-yaml-dependency-canary"
-    import_error = ModuleNotFoundError(canary)
-    real_import = builtins.__import__
+    path.write_text("base: &a [x, x]\nadmin: *a\n")
 
-    def fail_yaml_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "yaml":
-            raise import_error
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fail_yaml_import)
-
-    with pytest.raises(BootstrapError, match="PyYAML") as caught:
+    with pytest.raises(BootstrapError, match="bootstrap YAML aliases are not allowed") as caught:
         _load_document(str(path))
 
     assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
-    assert canary not in str(caught.value)
 
 
 def test_admin_defaults() -> None:

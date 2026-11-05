@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from apex.domain.aifx import RenderedAifx
     from apex.services.prompts import ResolvedPhasePrompt
 
 from fastapi import HTTPException
@@ -17,6 +18,7 @@ from apex.domain.prompt_selection import PromptManifestEntry, PromptManifestV1
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.repositories.prompts import PromptRepository
+from apex.services.aifx_context import render_phase_aifx
 from apex.settings import get_settings
 
 
@@ -147,9 +149,15 @@ async def prepare_prompt_manifest(
         prepared = cfg.model_copy(update={"prompt_manifest": manifest})
         for phase in manifest.phases:
             resolved = resolve_manifest(phase, prepared, variables)
-            system = output_contract(phase) + "\n\n" + compose_selected_system(resolved)
+            aifx = render_phase_aifx(cfg.aifx_snapshot, phase)
+            system = output_contract(phase) + "\n\n" + compose_selected_system(resolved, aifx)
             user = f"Title: {variables['title']}\nRequest: {variables['request']}"
-            if len(system) + len(user) > get_settings().runs.max_model_input_chars:
+            memories = (
+                sum(len(heading) + len(content) + 16 for heading, content in aifx.memories)
+                if aifx is not None
+                else 0
+            )
+            if len(system) + len(user) + memories > get_settings().runs.max_model_input_chars:
                 raise HTTPException(
                     422,
                     [
@@ -263,8 +271,12 @@ def compose_contexts(contexts: list[dict[str, Any]]) -> str:
     )
 
 
-def compose_selected_system(resolved: Mapping[str, Any]) -> str:
-    """Use identical policy and entry boundaries at admission and execution."""
+def compose_selected_system(resolved: Mapping[str, Any], aifx: "RenderedAifx | None" = None) -> str:
+    """Use identical policy and entry boundaries at admission and execution.
+
+    Pinned AIFx rules follow the platform policy (which keeps precedence) and
+    ACB application context follows the catalog's application contexts.
+    """
     labels = {
         entry["prompt_id"]: entry["scope_label"]
         for entry in resolved.get("selections", [])
@@ -282,11 +294,15 @@ def compose_selected_system(resolved: Mapping[str, Any]) -> str:
         )
     # Application and environment context frame the phase: they come before
     # its instructions, matching the order the wizard presents them.
+    head = aifx.system_head if aifx is not None else ""
+    acb = aifx.system_application if aifx is not None else ""
     return (
         PLATFORM_POLICY
+        + (f"\n{head}\n" if head else "")
         + "\n=== SHARED SYSTEM PROMPT ===\n"
         + resolved["system"].strip()
         + (f"\n\n{application}" if application else "")
+        + (f"\n\n{acb}" if acb else "")
         + "\n=== PHASE CONTEXT ===\n"
         + resolved["user"]
     )

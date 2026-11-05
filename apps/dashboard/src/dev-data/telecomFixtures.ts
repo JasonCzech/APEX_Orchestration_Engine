@@ -12,7 +12,7 @@ export const TELECOM_DATASET_REQUIREMENTS = {
   projects: 5,
   applications: 10,
   environments: 29,
-  connections: 14,
+  connections: 15,
   consumers: 4,
   documents: 8,
   evidencePackets: 12,

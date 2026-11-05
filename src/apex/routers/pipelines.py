@@ -19,6 +19,7 @@ from apex.app.errors import problem
 from apex.auth.handlers import ensure_thread_scope
 from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
+from apex.domain.aifx import AifxSnapshotV1
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
     NoNulStr,
@@ -302,6 +303,8 @@ class StartPipelineRequest(BaseModel):
             raise ValueError("rerun_phases is server-owned; use the phase rerun endpoint")
         if value.get("prompt_manifest") is not None:
             raise ValueError("prompt_manifest is server-owned")
+        if value.get("aifx_snapshot") is not None:
+            raise ValueError("aifx_snapshot is server-owned")
         if RUNTIME_ACTOR_ID_KEY in value:
             raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
         return validate_json_object(value, label="pipeline configurable")
@@ -821,14 +824,36 @@ async def create_pipeline_run(
     async def prepare_server_owned_config(
         configurable: dict[str, Any], run_input: dict[str, Any]
     ) -> None:
+        from apex.services.aifx_context import (
+            AifxUnavailableError,
+            check_configurable_size,
+            prepare_aifx_snapshot,
+        )
         from apex.services.prompt_selections import prepare_prompt_manifest
 
+        try:
+            # Pin AIFx first: the prompt manifest's model-input admission check
+            # must count the AIFx instructions each phase will carry.
+            await prepare_aifx_snapshot(configurable)
+        except AifxUnavailableError as exc:
+            raise LaunchReadinessError(str(exc)) from None
+        except Exception:
+            import structlog
+
+            structlog.get_logger(__name__).exception("aifx_snapshot_preparation_failed")
+            raise LaunchReadinessError(
+                "AIFx context could not be pinned; retry later or check the AIFx admin page"
+            ) from None
         try:
             await prepare_prompt_manifest(configurable, identity, run_input)
         except HTTPException as exc:
             raise LaunchReadinessError(_prompt_selection_error(exc.detail)) from None
         except ValueError:
             raise LaunchReadinessError(_prompt_selection_error(None)) from None
+        try:
+            check_configurable_size(configurable)
+        except AifxUnavailableError as exc:
+            raise LaunchReadinessError(str(exc)) from None
 
     result = None
     launch_error: HTTPException | None = None
@@ -1053,6 +1078,34 @@ async def get_pipeline_setup(
             "This run's stored setup is incomplete or no longer valid, so it can't be "
             "copied. Start a new test from New test instead.",
         ) from None
+
+
+class PipelineAifx(BaseModel):
+    """AIFx content pinned at launch; ``none`` when no application was onboarded."""
+
+    status: Literal["none", "pinned", "degraded"]
+    snapshot: AifxSnapshotV1 | None = None
+
+
+@router.get("/{thread_id}/aifx", operation_id="getPipelineAifx", response_model=PipelineAifx)
+async def get_pipeline_aifx(
+    thread_id: ThreadId, identity: CurrentIdentity, service: PipelineService
+) -> Any:
+    result: Any = None
+    failure: HTTPException | None = None
+    try:
+        result = await service.get_aifx_snapshot(thread_id)
+    except NotFoundError:
+        failure = HTTPException(status_code=404, detail="pipeline thread not found")
+    except ValueError:
+        failure = HTTPException(
+            status_code=409, detail="This run's pinned AIFx context failed verification"
+        )
+    except Exception:
+        failure = _pipeline_runtime_unavailable()
+    if failure is not None:
+        raise failure
+    return result
 
 
 @router.get(

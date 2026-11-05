@@ -9,7 +9,7 @@ const pageHelp: readonly [string, string, string?][] = [
   ['/golden-configs', 'drafts-presets'], ['/work-items', 'tickets'],
   ['/environments', 'catalogs'], ['/context', 'knowledge'], ['/evidence', 'results'],
   ['/analytics/models', 'analytics', 'model-pricing'], ['/analytics', 'analytics'], ['/logs', 'analytics', 'logs'],
-  ['/apex-load', 'apex-load'], ['/admin/connections', 'connections'],
+  ['/apex-load', 'apex-load'], ['/admin/connections', 'connections'], ['/admin/aifx', 'aifx'],
   ['/admin/consumers', 'access'], ['/admin/system', 'operations'], ['/settings', 'settings'],
 ]
 const wizardHelp: Record<string, [string, string?]> = {

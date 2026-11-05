@@ -18,6 +18,7 @@ from apex.app.security import (
     SecurityHeadersMiddleware,
 )
 from apex.app.test_scope_security import TestScopeAccessMiddleware
+from apex.routers.aifx import router as aifx_router
 from apex.routers.analytics import router as analytics_router
 from apex.routers.apex_load import index_router as apex_load_index_router
 from apex.routers.apex_load import router as apex_load_router
@@ -151,6 +152,7 @@ app.include_router(inventory_router, prefix="/v1")
 app.include_router(context_router, prefix="/v1")
 app.include_router(consumers_router, prefix="/v1")
 app.include_router(connections_router, prefix="/v1")
+app.include_router(aifx_router, prefix="/v1")
 app.include_router(compliance_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")
 app.include_router(model_pricing_router, prefix="/v1")

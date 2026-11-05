@@ -11,6 +11,7 @@ import type { PromptReviewPayload } from '@apex/pipeline-events'
 
 import { PromptTabsEditor, type PromptTabField } from '@/features/runs/PromptTabsEditor'
 
+import { AifxGateCard } from './AifxGateCard'
 import { originalPromptOf, type GateDraftPatch, type GateInstance, type PromptDraft } from './gateMachine'
 
 export function PromptReviewPanel({
@@ -22,6 +23,7 @@ export function PromptReviewPanel({
   disabled,
   compact = false,
   onEdit,
+  threadId,
 }: {
   gate: GateInstance
   payload: PromptReviewPayload
@@ -32,6 +34,8 @@ export function PromptReviewPanel({
   disabled: boolean
   compact?: boolean
   onEdit: (patch: GateDraftPatch) => void
+  /** Lets the AIFx card load the run's pinned content on demand. */
+  threadId?: string
 }) {
   const editable = payload.editable && !disabled
   const draft = prompt ?? originalPromptOf(gate)
@@ -112,6 +116,8 @@ export function PromptReviewPanel({
             Prompt source: <strong>{promptSourceLabel(source)}</strong>
           </p>
         </section>
+
+        {payload.aifx && <AifxGateCard aifx={payload.aifx} threadId={threadId} phase={payload.phase} />}
 
         {payload.context_packets.length > 0 && (
           <section className="gate-info-card" data-testid="gate-context-packets">

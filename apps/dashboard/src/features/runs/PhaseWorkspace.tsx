@@ -430,6 +430,18 @@ export function ReasoningTab({
         </>
       )}
 
+      {entry?.aifx_snapshot_sha256 && (
+        <>
+          <h3 className="workspace-section-title">AIFx context</h3>
+          <p className="workspace-caption" data-testid="phase-aifx">
+            Ran with {entry.aifx_entry_ids?.length ?? 0} pinned AIFx entr
+            {(entry.aifx_entry_ids?.length ?? 0) === 1 ? 'y' : 'ies'} (snapshot{' '}
+            <code>{entry.aifx_snapshot_sha256.slice(0, 12)}</code>)
+            {entry.aifx_entry_ids?.length ? `: ${entry.aifx_entry_ids.join(', ')}` : ''}.
+          </p>
+        </>
+      )}
+
       {entries.length > 0 && (
         <>
           <h3 className="workspace-section-title">Operator dialogue</h3>

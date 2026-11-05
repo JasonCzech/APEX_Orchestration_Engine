@@ -409,3 +409,23 @@ a.gate-artifact-chip:hover {
   font-size: var(--font-size-sm);
   margin: 12px 0 14px;
 }
+
+/* AIFx Context Services: pinned, read-only content at prompt review */
+.gate-aifx-content {
+  max-height: 240px;
+  overflow: auto;
+  margin: 4px 0 8px;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gate-aifx-issues {
+  margin: 4px 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}

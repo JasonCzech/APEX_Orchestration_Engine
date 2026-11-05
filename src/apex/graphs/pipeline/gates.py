@@ -95,6 +95,7 @@ def build_prompt_review_payload(
     tools: Sequence[str],
     error: str | None = None,
     additional_context: str = "",
+    aifx: JsonDict | None = None,
 ) -> JsonDict:
     payload: JsonDict = {
         "schema_version": GATE_SCHEMA_VERSION,
@@ -129,6 +130,10 @@ def build_prompt_review_payload(
         "editable": True,
         "actions": list(PROMPT_REVIEW_ACTIONS),
     }
+    if aifx is not None:
+        # Pinned AIFx sources (repo@commit) and this phase's entry titles; the
+        # content itself is read-only and served by the run's AIFx endpoint.
+        payload["aifx"] = aifx
     if error:
         payload["error"] = error
     return payload

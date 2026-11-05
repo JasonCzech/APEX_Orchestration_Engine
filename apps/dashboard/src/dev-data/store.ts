@@ -33,6 +33,16 @@ import {
   type DemoEnvCode,
   type DemoRunProfile,
 } from './telecomCatalog'
+import {
+  AIFX_DEMO_CONNECTION_ID,
+  demoAifxOrganizations,
+  demoAifxPreview,
+  demoAifxSources,
+  demoGateAifx,
+  demoPipelineAifx,
+  type DemoAifxOrganization,
+  type DemoAifxSource,
+} from './aifxDemo'
 import { buildDemoUsage, DEMO_MODELS, demoModel, demoPriceAt, type DemoHistoricalRun, type DemoModel, type DemoPriceGeneration, type DemoUsageEvent } from './agentUsage'
 
 type Application = components['schemas']['ApplicationOut']
@@ -574,6 +584,9 @@ export class DevDataStore {
   private environments: Environment[]
   private inventories = new Map<string, InventoryView>()
   private connections: Connection[]
+  private aifxOrganizations: DemoAifxOrganization[] = []
+  private aifxSources: DemoAifxSource[] = []
+  private aifxPinned = new Map<string, ReturnType<typeof demoPipelineAifx> | null>()
   private hostMappings = new Map<string, HostMappingOut[]>()
   private consumers: Consumer[]
   private documents: DocumentOut[]
@@ -620,7 +633,7 @@ export class DevDataStore {
     name: 'APEX Orchestration Engine',
     version: TELECOM_DATASET_VERSION,
     environment: 'offline-demo',
-    features: { engines: true, documents: true, dummy_data: true },
+    features: { engines: true, documents: true, dummy_data: true, aifx: true },
     limits: { max_test_participants: 32, max_context_packets: 32 },
     consumer: {
       name: 'Demo Presenter',
@@ -704,6 +717,7 @@ export class DevDataStore {
     this.environments = clone(this.baseline.environments)
     this.inventories = new Map(clone([...this.baseline.inventories]))
     this.connections = clone(this.baseline.connections)
+    this.seedAifx(this.applications[0]?.updated_at ?? new Date(0).toISOString())
     this.hostMappings = new Map(clone([...this.baseline.hostMappings]))
     this.consumers = clone(this.baseline.consumers)
     this.documents = clone(this.baseline.documents)
@@ -764,8 +778,10 @@ export class DevDataStore {
       this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', null, null, true, {}, null),
       this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERFHYPER Clusters', null, null, true, { kube_context: 'aks-perfhyper' }, null),
       this.connection('conn-source', 'source_control', 'stub', 'Script Repository', null, null, true, {}, null),
+      this.connection(AIFX_DEMO_CONNECTION_ID, 'source_control', 'github_enterprise', 'GitHub Enterprise — AIFx', null, 'https://ghe.example.test/api/v3', true, { base_url: 'https://ghe.example.test/api/v3', app_id: '4242' }, 'env:APEX_INTEGRATION_GHE_APP_PRIVATE_KEY'),
       this.connection('conn-artifacts', 'artifact_store', 'stub', 'Demo Artifact Store', null, null, true, {}, null),
     ]
+    this.seedAifx(updated)
     this.hostMappings.clear()
     this.hostMappings.set('conn-jira', [{ id: 'map-jira-1', pattern: 'jira.internal.example.test', target: 'jira.example.test', enabled: true }])
     this.consumers = [
@@ -878,6 +894,7 @@ export class DevDataStore {
     else if (path.startsWith('/v1/prompts')) response = await this.handlePrompts(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/admin/connections')) response = await this.handleConnections(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/admin/consumers')) response = await this.handleConsumers(method, path, request)
+    else if (path.startsWith('/v1/admin/aifx')) response = await this.handleAifx(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/apex-load')) response = await this.handleApexLoad(method, path, request, url.searchParams)
     else response = problemResponse(501, 'demo_handler_missing', `Offline demo has no handler for ${method} ${path}.`)
 
@@ -1320,6 +1337,12 @@ export class DevDataStore {
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
     const pathThread = decodePart(path.split('/')[3])
     if (pathThread.startsWith('hist-')) this.ensureHistoricalRun(pathThread)
+    const aifxRead = method === 'GET' ? path.match(/^\/v1\/pipelines\/([^/]+)\/aifx$/) : null
+    if (aifxRead) {
+      const detail = this.pipelineDetails.get(decodePart(aifxRead[1]))
+      if (!detail) return problemResponse(404, 'not_found', 'pipeline thread not found')
+      return jsonResponse(this.pinnedAifxFor(detail) ?? { status: 'none', snapshot: null })
+    }
     const presetLink = method === 'GET' ? path.match(/^\/v1\/pipelines\/([^/]+)\/preset$/) : null
     if (presetLink) {
       const threadId = decodePart(presetLink[1])
@@ -2334,6 +2357,158 @@ export class DevDataStore {
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
   }
 
+  private seedAifx(at: string): void {
+    this.aifxOrganizations = demoAifxOrganizations(at)
+    this.aifxSources = demoAifxSources(this.applications, at)
+    this.aifxPinned.clear()
+  }
+
+  /**
+   * What a run pinned, from its primary system's mapping (plus every onboarded
+   * participant's ACB). Frozen on first read, like a launch: later mapping
+   * edits only affect runs that have not been opened yet.
+   */
+  private pinnedAifxFor(detail: PipelineDetail) {
+    const key = detail.thread_id
+    if (this.aifxPinned.has(key)) return this.aifxPinned.get(key) ?? null
+    const ids = this.aifxApplicationsOf(detail)
+    const sources = ids.flatMap((id) => this.aifxSources.filter((item) => item.application_id === id && item.enabled))
+    const org = sources[0] && this.aifxOrganizations.find((item) => item.id === sources[0]!.organization_id && item.enabled)
+    // An unonboarded primary still gets global rules from the first onboarded participant.
+    const pinned = org
+      ? demoPipelineAifx(org, sources.filter((item) => item.organization_id === org.id), ids[0] === sources[0]?.application_id)
+      : null
+    this.aifxPinned.set(key, pinned)
+    return pinned
+  }
+
+  /** The run's participating application ids, primary first (seeded profile or launch scope). */
+  private aifxApplicationsOf(detail: PipelineDetail): string[] {
+    const scoped = this.aifxScopeApplications(detail)
+    if (scoped.length > 0) return scoped
+    if (detail.values?.['demo_profile']) {
+      const profile = this.profileOf(detail)
+      const names = [
+        ...profile.participants.filter((item) => item.id === profile.primary),
+        ...profile.participants.filter((item) => item.id !== profile.primary),
+      ].map((item) => DEMO_APPS[item.app].name)
+      return names.flatMap((name) => this.applications.filter((app) => app.name === name).map((app) => app.id))
+    }
+    return []
+  }
+
+  /** Launch scope from the run's config (seeded and launched runs both carry it). */
+  private aifxScopeApplications(detail: PipelineDetail): string[] {
+    const runConfig = (detail.values?.['run_config'] ?? {}) as {
+      app_id?: string | null
+      test_scope?: { participants?: { id?: string; application_id?: string }[]; primary_participant_id?: string } | null
+    }
+    const participants = runConfig.test_scope?.participants ?? []
+    const primaryId = runConfig.test_scope?.primary_participant_id
+    const ordered = [
+      ...participants.filter((item) => item.id === primaryId),
+      ...participants.filter((item) => item.id !== primaryId),
+    ].flatMap((item) => (item.application_id ? [item.application_id] : []))
+    const fallback = runConfig.app_id ?? detail.app_id ?? null
+    return [...new Set(ordered.length > 0 ? ordered : fallback ? [fallback] : [])]
+  }
+
+  private async handleAifx(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    const parts = path.split('/')
+    const now = new Date().toISOString()
+    if (parts[4] === 'organizations') {
+      if (method === 'GET' && parts.length === 5) return jsonResponse(this.aifxOrganizations)
+      if (method === 'POST' && parts.length === 5) {
+        const body = (await request.json()) as Partial<DemoAifxOrganization>
+        if (this.aifxOrganizations.some((org) => org.name === body.name)) return problemResponse(409, 'conflict', 'an AIFx organization with this name already exists')
+        const created: DemoAifxOrganization = {
+          id: this.id('aifx-org'),
+          name: body.name ?? 'Organization',
+          connection_id: body.connection_id ?? AIFX_DEMO_CONNECTION_ID,
+          ghe_owner: body.ghe_owner ?? 'aifx',
+          global_rules_repo: body.global_rules_repo ?? 'global-rules',
+          team_documents_repo_pattern: body.team_documents_repo_pattern ?? '{apm}-team-documents',
+          acb_repo_pattern: body.acb_repo_pattern ?? '{apm}-acb',
+          default_ref: body.default_ref ?? 'main',
+          enabled: body.enabled ?? true,
+          created_at: now,
+          updated_at: now,
+        }
+        this.aifxOrganizations.push(created)
+        return jsonResponse(created, 201)
+      }
+      const index = this.aifxOrganizations.findIndex((org) => org.id === decodePart(parts[5]))
+      if (index === -1) return problemResponse(404, 'not_found', 'AIFx organization not found')
+      if (method === 'GET') return jsonResponse(this.aifxOrganizations[index])
+      if (method === 'PATCH') {
+        const body = (await request.json()) as Partial<DemoAifxOrganization>
+        this.aifxOrganizations[index] = { ...this.aifxOrganizations[index]!, ...body, updated_at: now }
+        return jsonResponse(this.aifxOrganizations[index])
+      }
+      if (method === 'DELETE') {
+        if (this.aifxSources.some((source) => source.organization_id === this.aifxOrganizations[index]!.id)) {
+          return problemResponse(409, 'conflict', 'This organization is in use; remove its application mappings first')
+        }
+        this.aifxOrganizations.splice(index, 1)
+        return emptyResponse()
+      }
+    }
+    if (parts[4] === 'applications') {
+      if (method === 'GET' && parts.length === 5) return jsonResponse(this.aifxSources)
+      const applicationId = decodePart(parts[5])
+      const app = this.applications.find((item) => item.id === applicationId)
+      if (!app) return problemResponse(404, 'not_found', 'application not found')
+      const current = this.aifxSources.find((item) => item.application_id === applicationId)
+      if (parts[6] === 'suggest' && method === 'GET') {
+        const org = this.aifxOrganizations.find((item) => item.id === params.get('organization_id'))
+        const apm = (params.get('apm_id') ?? '').toLowerCase()
+        if (!org) return problemResponse(404, 'not_found', 'AIFx organization not found')
+        return jsonResponse({
+          organization_id: org.id,
+          apm_id: params.get('apm_id'),
+          team_documents_repo: org.team_documents_repo_pattern?.replace('{apm}', apm) ?? null,
+          acb_repo: org.acb_repo_pattern?.replace('{apm}', apm) ?? null,
+          ref: org.default_ref,
+        })
+      }
+      if (parts[6] === 'preview' && method === 'POST') {
+        const text = await request.text()
+        const draft = (text ? JSON.parse(text) : current) as DemoAifxSource | undefined
+        if (!draft) return problemResponse(404, 'not_found', 'this application is not onboarded to AIFx')
+        const org = this.aifxOrganizations.find((item) => item.id === draft.organization_id)
+        if (!org) return problemResponse(404, 'not_found', 'AIFx organization not found')
+        return jsonResponse(demoAifxPreview(org, { ...draft, application_id: applicationId, application_name: app.name }))
+      }
+      if (method === 'GET') return current ? jsonResponse(current) : problemResponse(404, 'not_found', 'this application is not onboarded to AIFx')
+      if (method === 'PUT') {
+        const body = (await request.json()) as Partial<DemoAifxSource>
+        const apm = (body.apm_id ?? '').toLowerCase()
+        if (this.aifxSources.some((item) => item.application_id !== applicationId && item.apm_id.toLowerCase() === apm)) {
+          return problemResponse(409, 'conflict', 'this APM ID is already mapped to another application')
+        }
+        const next: DemoAifxSource = {
+          application_id: applicationId,
+          application_name: app.name,
+          organization_id: body.organization_id ?? current?.organization_id ?? '',
+          apm_id: body.apm_id ?? '',
+          team_documents_repo: body.team_documents_repo ?? null,
+          acb_repo: body.acb_repo ?? null,
+          ref: body.ref ?? null,
+          enabled: body.enabled ?? true,
+          updated_at: now,
+        }
+        this.aifxSources = [...this.aifxSources.filter((item) => item.application_id !== applicationId), next]
+        return jsonResponse(next)
+      }
+      if (method === 'DELETE') {
+        if (!current) return problemResponse(404, 'not_found', 'this application is not onboarded to AIFx')
+        this.aifxSources = this.aifxSources.filter((item) => item.application_id !== applicationId)
+        return emptyResponse()
+      }
+    }
+    return problemResponse(405, 'method_not_allowed', `${method} ${path} is not supported in demo mode`)
+  }
+
   private async handleConsumers(method: string, path: string, request: Request): Promise<Response> {
     if (method === 'GET' && path === '/v1/admin/consumers') return jsonResponse(this.consumers)
     if (method === 'POST' && path === '/v1/admin/consumers') {
@@ -2767,6 +2942,11 @@ export class DevDataStore {
           tools: ['jira_align.query', 'documents.search'],
           editable: true,
           actions: ['approve', 'modify', 'skip_phase', 'abort'],
+          ...(() => {
+            const pinned = this.pinnedAifxFor(detail)
+            const aifx = pinned ? demoGateAifx(pinned, 'test_planning') : undefined
+            return aifx ? { aifx } : {}
+          })(),
         },
       },
     ]

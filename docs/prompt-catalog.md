@@ -42,14 +42,22 @@ fails explicitly. Reruns retain the original manifest and ownership plan while a
 server-owned execution window limits which phases run again.
 Creating a new test from a saved configuration revalidates its selections.
 
-Model input is composed in this order:
+Model input is composed in this order (the system message, then the user message):
 
-1. Fixed platform policy and runtime output contract.
-2. The one shared System Prompt.
-3. Current Phase context.
+1. Runtime output contract, then the fixed platform policy.
+2. AIFx Context Services rules, team documents and skills, when the run pinned
+   them ([AIFx context](aifx-context.md)).
+3. The one shared System Prompt.
 4. Application context entries in selected order.
 5. Environment Context entries in selected order.
-6. Operator request, upstream handoffs and supporting evidence.
+6. AIFx ACB application context, when pinned.
+7. Current Phase context.
+8. User message: operator request, AIFx memories (fenced as evidence), context
+   packets, upstream handoffs and other supporting evidence.
+
+Application and environment context frame the phase, so they come before its
+instructions. Platform policy and the output contract keep precedence over
+everything that follows them, AIFx included.
 
 During phase review the shared system content is read-only, enforced by both UI
 and server. Phase and optional context content may be revised for the current

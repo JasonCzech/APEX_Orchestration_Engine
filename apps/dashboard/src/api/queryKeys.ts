@@ -30,6 +30,8 @@ export const queryKeys = {
     activeRun: (threadId: string) => [...queryKeys.threads.all, threadId, 'active-run'] as const,
     artifact: (threadId: string, artifactId: string) =>
       [...queryKeys.threads.all, threadId, 'artifact', artifactId] as const,
+    /** AIFx append: the run's pinned AIFx content (immutable once launched). */
+    aifx: (threadId: string) => [...queryKeys.threads.all, threadId, 'aifx'] as const,
   },
   approvals: {
     // Keep the inbox under the pipeline-list prefix so broad pipeline
@@ -158,6 +160,10 @@ export const queryKeys = {
      */
     connectionHostMappings: (id: string) =>
       [...queryKeys.admin.connection(id), 'host-mappings'] as const,
+    /** AIFx append: onboarded organizations and application repo mappings. */
+    aifx: () => [...queryKeys.admin.all, 'aifx'] as const,
+    aifxOrganizations: () => [...queryKeys.admin.aifx(), 'organizations'] as const,
+    aifxSources: () => [...queryKeys.admin.aifx(), 'applications'] as const,
   },
   documents: {
     all: ['documents'] as const,
